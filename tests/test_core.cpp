@@ -8,6 +8,7 @@
 #include "devcard/error.h"
 #include "devcard/migrations.h"
 #include "devcard/service/device_service.h"
+#include "devcard/xlsx.h"
 
 namespace {
 
@@ -203,6 +204,62 @@ int main() {
       CHECK(missing_remove);
     }
     std::filesystem::remove_all(service_file.parent_path());
+  }
+
+  {
+    const std::filesystem::path import_file = temp_db();
+    {
+      devcard::Db db(import_file);
+      devcard::migrate(db);
+      devcard::DeviceService service(db);
+
+      const std::vector<std::vector<std::string>> rows = {
+          {"设备名称", "位置", "控制范围", "维护电话"},
+          {"1号泵", "B1栋", "1-3层", "13800000001"},
+          {"2号泵", "B1栋", "1-3层", "13800000002"},
+          {"风机", "A2栋", "屋顶", "13800000003"},
+          {"", "", "", ""},
+          {"一二三四五六七八九十十一", "A2栋", "1层", "13800000004"},
+      };
+
+      const devcard::ImportReport first = service.import_rows(rows);
+      CHECK(first.imported == 4);
+      CHECK(first.skipped_empty == 1);
+      CHECK(first.truncated == 1);
+      CHECK(first.duplicates == 0);
+
+      const devcard::ImportReport second = service.import_rows(rows);
+      CHECK(second.imported == 4);
+      CHECK(second.duplicates == 4);
+      CHECK(second.skipped_empty == 1);
+
+      devcard::DeviceQuery query;
+      query.page_size = 1000;
+      CHECK(service.list(query).total == 8);
+
+      // 表头不对整批拒绝，且不允许错位对齐。
+      bool bad_header = false;
+      try {
+        service.import_rows({{"位置", "设备名称", "控制范围", "维护电话"},
+                             {"B1栋", "3号泵", "1层", "138"}});
+      } catch (const devcard::AppError& error) {
+        bad_header = std::string(error.code()) == "bad_header";
+      }
+      CHECK(bad_header);
+      CHECK(service.list(query).total == 8);
+
+      const auto exported = service.export_rows();
+      CHECK(exported.size() == 9);
+      CHECK(exported.front() == devcard::DeviceService::expected_header());
+      const std::string bytes = devcard::xlsx::write(exported);
+      CHECK(!bytes.empty());
+      const auto roundtrip = devcard::xlsx::read(bytes);
+      CHECK(roundtrip.size() == exported.size());
+      CHECK(roundtrip.front() == exported.front());
+      CHECK(roundtrip[1] == exported[1]);
+      CHECK(roundtrip.back() == exported.back());
+    }
+    std::filesystem::remove_all(import_file.parent_path());
   }
 
   {

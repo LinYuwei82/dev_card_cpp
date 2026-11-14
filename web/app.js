@@ -28,6 +28,9 @@
     prev: document.getElementById('prev'),
     next: document.getElementById('next'),
     add: document.getElementById('add'),
+    importBtn: document.getElementById('import-btn'),
+    exportBtn: document.getElementById('export-btn'),
+    importFile: document.getElementById('import-file'),
     scrim: document.getElementById('scrim'),
     drawer: document.getElementById('drawer'),
     drawerTitle: document.getElementById('drawer-title'),
@@ -254,6 +257,74 @@
 
   el.add.addEventListener('click', function () {
     openDrawer(null);
+  });
+
+  el.importBtn.addEventListener('click', function () {
+    el.importFile.value = '';
+    el.importFile.click();
+  });
+
+  el.importFile.addEventListener('change', function () {
+    var file = el.importFile.files && el.importFile.files[0];
+    if (!file) return;
+    el.importBtn.disabled = true;
+    fetch('/api/devices/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file
+    })
+      .then(function (response) {
+        return response.text().then(function (text) {
+          var data = {};
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch (error) {
+            data = { message: text };
+          }
+          if (!response.ok) throw new Error(data.message || '导入失败');
+          return data;
+        });
+      })
+      .then(function (report) {
+        var parts = ['导入成功 ' + report.imported + ' 条'];
+        if (report.skipped_empty) parts.push('跳过空行 ' + report.skipped_empty);
+        if (report.duplicates) parts.push('与现有记录重复 ' + report.duplicates + ' 条（已保留）');
+        if (report.truncated) parts.push('有 ' + report.truncated + ' 行字段被截断');
+        toast(parts.join('，'));
+        return loadOptions().then(load);
+      })
+      .catch(function (error) {
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.importBtn.disabled = false;
+      });
+  });
+
+  el.exportBtn.addEventListener('click', function () {
+    el.exportBtn.disabled = true;
+    fetch('/api/devices/export')
+      .then(function (response) {
+        if (!response.ok) throw new Error('导出失败（' + response.status + '）');
+        return response.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = '设备台账.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        toast('已导出 设备台账.xlsx');
+      })
+      .catch(function (error) {
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.exportBtn.disabled = false;
+      });
   });
 
   el.drawerClose.addEventListener('click', closeDrawer);

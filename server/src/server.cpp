@@ -12,6 +12,7 @@
 #include "devcard/migrations.h"
 #include "devcard/models.h"
 #include "devcard/service/device_service.h"
+#include "devcard/xlsx.h"
 #include "web_assets.h"
 
 namespace devcard {
@@ -101,7 +102,8 @@ int status_for(const AppError& error) {
   if (error.code() == "not_found") return 404;
   if (error.code() == "legacy_db") return 409;
   if (error.code() == "invalid_device" || error.code() == "bad_field" ||
-      error.code() == "bad_json")
+      error.code() == "bad_json" || error.code() == "bad_header" ||
+      error.code() == "bad_xlsx")
     return 400;
   return 500;
 }
@@ -142,6 +144,33 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     const DeviceOptions values = impl.devices->options();
                     set_json(response, json{{"names", values.names},
                                             {"locations", values.locations}});
+                  });
+
+  impl.server.Post("/api/devices/import",
+                   [&impl](const httplib::Request& request,
+                           httplib::Response& response) {
+                     const auto rows = xlsx::read(request.body);
+                     const ImportReport report = impl.devices->import_rows(rows);
+                     set_json(response, json{{"imported", report.imported},
+                                             {"skipped_empty", report.skipped_empty},
+                                             {"duplicates", report.duplicates},
+                                             {"truncated", report.truncated}});
+                   });
+
+  impl.server.Get("/api/devices/export",
+                  [&impl](const httplib::Request&, httplib::Response& response) {
+                    const std::string body =
+                        xlsx::write(impl.devices->export_rows());
+                    response.status = 200;
+                    response.set_header(
+                        "Content-Type",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+                    response.set_header(
+                        "Content-Disposition",
+                        "attachment; filename=\"devices.xlsx\"; "
+                        "filename*=UTF-8''%E8%AE%BE%E5%A4%87%E5%8F%B0%E8%B4%A6.xlsx");
+                    response.set_header("Cache-Control", "no-store");
+                    response.body = body;
                   });
 
   impl.server.Get(R"(/api/devices/(\d+))",

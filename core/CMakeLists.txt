@@ -4,6 +4,8 @@ add_library(devcard_core STATIC
     src/dao/device_dao.cpp
     src/service/device_service.cpp
     src/sha256.cpp
+    src/xlsx.cpp
+    "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
     "${CMAKE_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100/sqlite3.c"
 )
 
@@ -11,6 +13,8 @@ target_include_directories(devcard_core
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_SOURCE_DIR}/third_party"
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party/miniz"
 )
 
 target_compile_definitions(devcard_core PRIVATE
@@ -21,6 +25,7 @@ target_compile_definitions(devcard_core PRIVATE
 
 set_source_files_properties(
     "${CMAKE_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100/sqlite3.c"
+    "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
     PROPERTIES COMPILE_OPTIONS "-w"
 )
 
