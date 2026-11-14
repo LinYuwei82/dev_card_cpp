@@ -692,8 +692,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   const SeedResult seed = seed_default_users(*state.db, options.data_dir);
   state.seeded = seed.seeded;
   if (seed.seeded) {
-    std::cout << "首次启动：已生成初始账号，密码写入 " << seed.password_file
-              << "（首次登录必须修改）" << std::endl;
+    std::cout << "首次启动：已生成初始账号，密码写入 "
+              << path_to_utf8(seed.password_file) << "（首次登录必须修改）"
+              << std::endl;
     for (const auto& [name, password] : seed.accounts) {
       std::cout << "  用户名: " << name << "  初始密码: " << password << std::endl;
     }
