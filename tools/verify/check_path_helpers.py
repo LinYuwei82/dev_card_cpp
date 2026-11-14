@@ -61,12 +61,24 @@ def main() -> int:
     calls = {name: [] for name in HELPERS}
     string_uses = []
     name_re = re.compile(r"\b(" + "|".join(HELPERS) + r")\b")
+    # 宽命令行里把 UTF-8 字节直接拼进 wstring 的写法（Windows 上报过的那类错）。
+    narrow_into_wide = re.compile(
+        r"(?:\.append\([^;]*\.begin\(\),\s*[^;]*\.end\(\)\)"
+        r"|wstring\([^;]*\.begin\(\),\s*[^;]*\.end\(\)\))"
+    )
+    # 产品代码里出现即红；tests/ 属于 Windows 线在改的文件，只列待核。
+    WIDE_ARG_PRODUCT_DIRS = {"core", "server", "shell"}
+    wide_arg_offenders = {"product": [], "tests": []}
 
     for path in iter_sources(root):
         relative = path.relative_to(root)
+        top = relative.parts[0] if relative.parts else ""
         for number, line in enumerate(
             path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
         ):
+            if narrow_into_wide.search(line):
+                bucket = "product" if top in WIDE_ARG_PRODUCT_DIRS else "tests"
+                wide_arg_offenders[bucket].append((relative, number, line.strip()))
             match = DEF_PATTERN.match(line)
             if match:
                 # 以 `;` 结尾的是头文件声明，不是定义。
@@ -123,13 +135,26 @@ def main() -> int:
     else:
         print("  （无）")
 
+    print()
+    print("宽命令行：禁止把 UTF-8 字节直接拼进 wstring（须逐参数 MultiByteToWideChar）")
+    if wide_arg_offenders["product"]:
+        for relative, number, text in wide_arg_offenders["product"]:
+            print(f"  [失败] {relative}:{number}  {text}")
+            failures.append(
+                f"{relative}:{number} 把窄字节直接拼进宽命令行：应逐参数按 CP_UTF8 转换"
+            )
+    else:
+        print("  产品代码（core/server/shell）：无")
+    for relative, number, text in wide_arg_offenders["tests"]:
+        print(f"  [待核] {relative}:{number}  {text}")
+
     if failures:
         print()
         for item in failures:
             print(f"[失败] {item}")
         return 1
     print()
-    print("通过：路径 helper 各只有一份定义")
+    print("通过：路径 helper 各只有一份定义，产品代码无窄字节拼宽命令行")
     return 0
 
 
