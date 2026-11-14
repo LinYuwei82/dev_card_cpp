@@ -42,3 +42,16 @@ target_compile_definitions(devcard-server PRIVATE
     DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
 )
 target_link_libraries(devcard-server PRIVATE devcard_server)
+
+# 字体必须跟着每个可执行文件走：只管 DevCard 的话，server 单独分发到别的目录时
+# /fonts/ 会 404，导出在运行期才中止。两份字体是导出前门禁，缺一颗都不行。
+set(DEVCARD_SERVER_FONTS
+    "${PROJECT_SOURCE_DIR}/web/fonts/NotoSansSC-Regular.subset.ttf"
+    "${PROJECT_SOURCE_DIR}/web/fonts/NotoSansSC-Bold.subset.ttf")
+add_custom_command(TARGET devcard-server POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:devcard-server>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${DEVCARD_SERVER_FONTS}
+        "$<TARGET_FILE_DIR:devcard-server>/fonts"
+    COMMENT "复制子集字体到 devcard-server 输出目录 fonts/"
+)

@@ -814,6 +814,33 @@
     return out;
   }
 
+  // 字体口径（2026-11-14 统一）：
+  //   整份字体缺失 → 影响不可枚举（不知道多少字、多少行会变），导出直接中止；
+  //   单字不在子集 → 影响可枚举（就是列出来的这几个字），按真实字宽量：
+  //     量下来仍能放进公司名框 → 允许并明确告知；
+  //     量下来超出                 → 阻止导出，不能拿系统字体硬塞。
+  var COMPANY_BOX_MM = 49.12;   // 公司名可用区域宽（§8.7.2）
+  var COMPANY_SCALE_X = 0.88;   // styles.css 里 .company-name span 的横向压缩
+
+  function measurePrintText(text) {
+    // 用打印字体栈量：子集里没有的字由系统字体补，量到的就是回退后的真实宽度。
+    if (!measurePrintText.canvas) {
+      measurePrintText.canvas = document.createElement('canvas');
+    }
+    var ctx = measurePrintText.canvas.getContext('2d');
+    ctx.font = '11pt "DevCard Sans", sans-serif';
+    return ctx.measureText(text).width;
+  }
+
+  // 返回 { missing, overflow }：missing 是子集外的字，overflow 表示回退后超出公司名框。
+  function companyFontCheck(text) {
+    var missing = uncoveredChars(text || '');
+    if (!missing.length) return { missing: missing, overflow: false };
+    var boxPx = COMPANY_BOX_MM * 96 / 25.4;
+    var widthPx = measurePrintText(text) * COMPANY_SCALE_X;
+    return { missing: missing, overflow: widthPx > boxPx + 0.5 };
+  }
+
   function updateCompanyHint() {
     var value = el.companyName.value;
     var width = companyNameWidth(value);
@@ -826,14 +853,16 @@
       el.companyOver.textContent = '最多 ' + state.companyNameMaxWidth +
         ' 个汉字，超出部分不会印出（将打印：' + truncateCompanyName(value) + '）';
     }
-    // 字体覆盖是另一件事：字放得下，但打印字体里没有这个字，会回退系统字体。
-    // 不拦保存，只明确告知是哪几个字。
-    var missing = uncoveredChars(value);
-    el.companyFontWarning.hidden = missing.length === 0;
-    if (missing.length) {
-      el.companyFontWarning.textContent =
-        '这些字不在打印字体范围内：' + missing.join('、') +
-        '。保存不受影响，但它们会用系统字体渲染，macOS 与 Windows 字形不同、版式可能与预览有差异。';
+    // 字体覆盖是另一件事：字放得下（宽度上限），但打印子集里没有这个字。
+    // 口径见 companyFontCheck 上方：字少且塞得进就告知，塞不进就阻止导出。
+    var fontCheck = companyFontCheck(value);
+    el.companyFontWarning.hidden = fontCheck.missing.length === 0;
+    if (fontCheck.missing.length) {
+      el.companyFontWarning.textContent = fontCheck.overflow
+        ? '这些字不在打印字体范围内：' + fontCheck.missing.join('、') +
+          '。它们会由系统字体渲染且实测超出公司名框，导出会被阻止；请换字或扩展字体子集。'
+        : '这些字不在打印字体范围内：' + fontCheck.missing.join('、') +
+          '。它们会由系统字体渲染（已逐个列出），实测仍能放进公司名框，可以正常导出。';
     }
   }
 
@@ -1007,7 +1036,7 @@
         toast(editingId ? '已保存修改' : '已新增设备');
         if (missing.length) {
           toast('这些字不在打印字体范围内：' + missing.join('、') +
-                '，打印时会用系统字体渲染', 'error');
+                '，打印时会由系统字体渲染（已逐个列出，不阻断保存）', 'error');
         }
         return loadOptions().then(function () {
           if (!editingId) state.page = 0;
@@ -1406,8 +1435,8 @@
     }
     el.printFontWarning.textContent =
       '以下字符不在打印字体范围内：' + missing.join('、') + '（出现于：' + where.join('、') +
-      '）。它们会用系统字体渲染，macOS 与 Windows 字形不同、版式可能与预览有差异；' +
-      '需要两平台一致请避免这些字，或扩展字体子集后重出样张。';
+      '）。其中公司名会按回退后的真实字宽量一次：塞得进公司名框就允许导出，塞不进则导出被阻止；' +
+      '设备名称/位置/控制范围按固定列宽排版，不做此判定。要两平台完全一致，请避免这些字或扩展字体子集后重出样张。';
   }
 
   // 预览按容器宽度缩放；打印时 CSS 会还原成 1:1 的 A4。
@@ -1466,7 +1495,8 @@
       var ok = results[0] && results[1];
       printFonts.ready = ok;
       printFonts.error = ok ? '' :
-        '子集字体未加载或字节数不符（/fonts/ 不可用），已中止：不能用系统字体顶替，否则两张卡版式不一致';
+        '子集字体不可用（/fonts/ 取不到或字节数不符），导出已中止：整份字体缺失时影响不可枚举，' +
+        '无法判断哪些字、哪些行会变，不继续产出 PDF';
       return ok;
     });
   }
@@ -1509,6 +1539,13 @@
     // 字体没就绪就返回错误：壳层据此中止，不产出用系统字体顶替的 PDF。
     if (!printFonts.ready) {
       return { error: printFonts.error || '子集字体未就绪，已中止导出' };
+    }
+    // 单字回退是可枚举的：公司名按真实字宽量，塞不进公司名框就不许导出。
+    // 这里查 state.companyNamePrint（打印实际用的那份），不是输入框里的原文。
+    var fontCheck = companyFontCheck(state.companyNamePrint || '');
+    if (fontCheck.overflow) {
+      return { error: '公司名含打印字体不支持的字（' + fontCheck.missing.join('、') +
+                      '），回退渲染后超出公司名框，已中止导出' };
     }
     document.body.classList.add('is-export');
     window.scrollTo(0, 0);

@@ -1031,7 +1031,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      }
                      response.status = 200;
                      response.set_header("Content-Type", "font/ttf");
-                     response.set_header("Cache-Control", "public, max-age=86400");
+                     // 导出前的门禁资源：它必须在每次导出时被真正取到并校验，
+                     // 缓存一天等于把「取不到就中止」这条判据拆掉。本地回环传 4.56 MB 是几毫秒。
+                     response.set_header("Cache-Control", "no-store");
                      response.body = it->second;
                    });
   // 打印图标：优先数据目录下的自定义文件，缺失时回落内嵌默认 logo。
