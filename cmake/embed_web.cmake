@@ -10,21 +10,25 @@
 
 function(emit_text_literal out_var path)
   file(READ "${path}" content)
-  file(READ "${path}" content_hex HEX)   # 只用来判断分块边界是否落在 UTF-8 多字节中间
-  string(LENGTH "${content}" total)
+  file(READ "${path}" content_hex HEX)   # 长度单位与切分单位都以字节为准
   string(LENGTH "${content_hex}" total_hex)
+  # 注意：string(LENGTH "${content}") 数的是字符，string(SUBSTRING) 切的是字节，
+  # 两者混用会让循环提前结束（尾部被丢），或者在汉字中间切开（C4828）。
+  # 这里统一用字节数：HEX 串长度 / 2。
+  math(EXPR total_bytes "${total_hex} / 2")
   set(offset 0)
   set(parts "")
-  while(offset LESS total)
+  set(joined "")
+  set(max_chunk 0)
+  while(offset LESS total_bytes)
     math(EXPR take "4096")
     # 若切点后一个字节是 UTF-8 续字节（0x80–0xBF），说明切在了汉字中间：
-    # 一个字节一个字节往回退。按字节切开会生成非 UTF-8 源文件，MSVC /utf-8 会报错。
+    # 一个字节一个字节往回退。按字节切开生成的是非 UTF-8 源码，MSVC 直接报 C4828 丢内容。
     while(true)
       math(EXPR cut "${offset} + ${take}")
-      if(cut GREATER_EQUAL total)
+      if(cut GREATER_EQUAL total_bytes)
         break()
       endif()
-      # content_hex 每个字节占两个字符，索引要乘 2
       math(EXPR cut_hex "${cut} * 2")
       string(SUBSTRING "${content_hex}" ${cut_hex} 2 next_hex)
       math(EXPR next_byte "0x${next_hex}")
@@ -38,18 +42,42 @@ function(emit_text_literal out_var path)
       set(take 1)
     endif()
     string(SUBSTRING "${content}" ${offset} ${take} chunk)
+    string(LENGTH "${chunk}" chunk_len)
+    if(chunk_len GREATER max_chunk)
+      set(max_chunk ${chunk_len})
+    endif()
     string(APPEND parts "R\"DEVCARD(${chunk})DEVCARD\"\n")
+    string(APPEND joined "${chunk}")
     math(EXPR offset "${offset} + ${take}")
   endwhile()
+
+  # 构建期自检：生成器本身必须自洽，不能指望运行期测试兜底。
+  # 1) 拼回来的内容字节数与哈希要和源文件一致（抓截断/漏字节）；
+  # 2) 每块不超过 4 KB（远离 MSVC C2026 的 16 KB 上限）；
+  # 3) 切点不能落在 UTF-8 多字节中间，否则生成的是非法 UTF-8，MSVC 按 C4828 丢内容。
+  string(LENGTH "${joined}" joined_len)
+  if(NOT joined_len EQUAL total_bytes)
+    message(FATAL_ERROR "embed_web：${path} 拼接后 ${joined_len} 字节，源文件 ${total_bytes} 字节")
+  endif()
+  file(SHA256 "${path}" expected_hash)
+  string(SHA256 joined_hash "${joined}")
+  if(NOT joined_hash STREQUAL expected_hash)
+    message(FATAL_ERROR "embed_web：${path} 拼接结果 SHA256 ${joined_hash} 与源文件 ${expected_hash} 不一致")
+  endif()
+  if(max_chunk GREATER 4096)
+    message(FATAL_ERROR "embed_web：${path} 存在 ${max_chunk} 字节的分块，超过 4 KB 上限")
+  endif()
   set(${out_var} "${parts}" PARENT_SCOPE)
 endfunction()
 
 function(emit_hex_literal out_var path)
   file(READ "${path}" content HEX)
-  string(LENGTH "${content}" total)
+  string(LENGTH "${content}" total_hex)
+  # 十六进制串每字节两字符，按 4096 字符切不会切开字节；
+  # 偏移按十六进制字符算，与 SUBSTRING 同单位。
   set(offset 0)
   set(parts "")
-  while(offset LESS total)
+  while(offset LESS total_hex)
     string(SUBSTRING "${content}" ${offset} 4096 chunk)
     string(APPEND parts "R\"DEVCARD(${chunk})DEVCARD\"\n")
     math(EXPR offset "${offset} + 4096")
