@@ -102,6 +102,26 @@ int main() {
     CHECK(db.schema_version() == devcard::target_schema_version());
   }
 
+  {
+    const std::filesystem::path legacy_file = temp_db();
+    {
+      devcard::Db db(legacy_file);
+      db.write_raw([](sqlite3* conn) {
+        devcard::exec_sql(
+            conn,
+            "CREATE TABLE tb_device(dev_id INTEGER PRIMARY KEY, dev_name TEXT)");
+      });
+      bool rejected = false;
+      try {
+        devcard::migrate(db);
+      } catch (const devcard::AppError& error) {
+        rejected = std::string(error.code()) == "legacy_db";
+      }
+      CHECK(rejected);
+    }
+    std::filesystem::remove_all(legacy_file.parent_path());
+  }
+
   std::filesystem::remove_all(file.parent_path());
   if (failures) {
     std::cerr << failures << " 项失败\n";

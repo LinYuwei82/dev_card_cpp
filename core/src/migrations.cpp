@@ -52,6 +52,13 @@ const std::vector<Migration>& migrations() {
   return list;
 }
 
+bool table_exists(sqlite3* conn, const char* name) {
+  Stmt stmt(conn,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
+  stmt.bind(1, name);
+  return stmt.step();
+}
+
 }  // namespace
 
 const std::vector<Migration>& all_migrations() { return migrations(); }
@@ -62,6 +69,18 @@ int target_schema_version() {
 
 void migrate(Db& db) {
   db.write([&](sqlite3* conn) {
+    // 旧版 Qt 库没有 schema 版本号，只有 tb_device / tb_user。
+    // 在这里硬失败，避免把新表悄悄加到真实旧库、让用户误以为数据丢了；
+    // M3 的旧库导入器负责备份、建新库并搬数据。
+    const bool has_marker = table_exists(conn, "schema_migration");
+    const bool has_legacy = table_exists(conn, "tb_device") ||
+                            table_exists(conn, "tb_user");
+    if (has_legacy && !has_marker) {
+      throw AppError("legacy_db",
+                     "检测到旧版数据库（无 schema 版本号）。请先执行旧库导入，"
+                     "程序不会在原库上直接建新表。");
+    }
+
     exec_sql(conn,
              "CREATE TABLE IF NOT EXISTS schema_migration ("
              "version INTEGER PRIMARY KEY,"
