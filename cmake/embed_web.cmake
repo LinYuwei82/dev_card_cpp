@@ -8,23 +8,65 @@
 #    注意校验的是**源文件内容哈希**，不是整个 .cpp 的哈希——.cpp 里有生成路径等信息，
 #    跨机器必然不同，那种哈希只会逼人把自检关掉。
 
+# 说明：string(LENGTH) 返回字符还是字节，历史上换过说法（4.4.x 上实测按字节）。
+# 生成器不押这个语义：长度一律由 file(READ … HEX) 的十六进制串换算（长度 / 2 即字节数），
+# 切片偏移也按字节推进。HEX 串是纯 ASCII，两个单位不会分叉。
 function(emit_text_literal out_var path)
   file(READ "${path}" content)
-  file(READ "${path}" content_hex HEX)   # 长度单位与切分单位都以字节为准
+  file(READ "${path}" content_hex HEX)
   string(LENGTH "${content_hex}" total_hex)
-  # 注意：string(LENGTH "${content}") 数的是字符，string(SUBSTRING) 切的是字节，
-  # 两者混用会让循环提前结束（尾部被丢），或者在汉字中间切开（C4828）。
-  # 这里统一用字节数：HEX 串长度 / 2。
   math(EXPR total_bytes "${total_hex} / 2")
-  # 换行必须是 LF：仓库用 .gitattributes 的 `web/** -text` 定死，但检出配置或编辑器仍可能改坏。
-  # 用 HEX 串判断，不依赖 file(READ) 是否做换行转换：只有落在偶数位上的 0d 才是独立的 CR 字节。
-  string(REGEX MATCH "^([0-9a-f][0-9a-f])*0d" cr_hit "${content_hex}")
-  if(NOT cr_hit STREQUAL "")
-    message(FATAL_ERROR "embed_web：${path} 含 CR（0x0D）。web/ 源文件必须是 LF 换行，见 .gitattributes")
-  endif()
+  # 换行：CMake 的 file(READ) 会把 CRLF 折成 LF（HEX 读是原始字节，两者到这里就分叉），
+  # 所以生成器对含 CR 的源文件**做不到按字节保真**。与其静默改写，不如直接失败。
+  # 仓库里 web/ 另有 .gitattributes 定死 LF，两条结论一致：文本源必须是 LF。
+  #
+  # 这里不用正则：CMake 的正则引擎是回溯式的，`^([0-9a-f][0-9a-f])*0d` 这种带量词的写法
+  # 在长串上会栈溢出，失败形态是「cmake 进程直接消失」（Windows 上 0xC00000FD / MSB8066），
+  # 报错信息指不到现场。60,000 字符起就崩，app.js 的 hex 串是 112,402 字符。
+  #
+  # 做法：按 4096 个 hex 字符切片做线性扫描，窗口前移只在片内发生。
+  #   - 切片长度必须是偶数：片起点因此恒为偶数绝对偏移，一个字节的两个 hex 字符不会被切到两片里，
+  #     "0d" 也就不会跨片漏判。有人把下面的 cr_slice 改成奇数，这条保证就没了。
+  #   - 片内每命中一次就把前缀切掉继续找，最坏退化被限制在 4096 字符以内；
+  #     不对整串反复 SUBSTRING，避免对抗输入（如反复 20 d1）退化成平方级。
+  #   - 必须判奇偶：`0x?0 0xd?` 拼出的 hex 里也会出现 "0d"，落在奇数位，
+  #     那是两个字节各出一位，不是 CR。
+  set(cr_slice 4096)
+  string(LENGTH "${content_hex}" cr_hexlen)
+  set(cr_base 0)
+  while(cr_base LESS cr_hexlen)
+    math(EXPR cr_width "${cr_hexlen} - ${cr_base}")
+    if(cr_width GREATER cr_slice)
+      set(cr_width ${cr_slice})
+    endif()
+    string(SUBSTRING "${content_hex}" ${cr_base} ${cr_width} cr_work)
+    set(cr_drop 0)
+    while(TRUE)
+      string(FIND "${cr_work}" "0d" cr_rel)
+      if(cr_rel EQUAL -1)
+        break()
+      endif()
+      math(EXPR cr_abs "${cr_base} + ${cr_drop} + ${cr_rel}")
+      math(EXPR cr_parity "${cr_abs} % 2")
+      if(cr_parity EQUAL 0)
+        math(EXPR cr_byte "${cr_abs} / 2")
+        message(FATAL_ERROR "embed_web：${path} 含 CR（0x0D），首处位于第 ${cr_byte} 字节（0 起）。"
+                            "文本源必须是 LF：CMake 读文件会把 CRLF 折成 LF，生成器无法按字节保真，"
+                            "仓库里 web/ 由 .gitattributes 定死 LF")
+      endif()
+      # 奇数位命中：`0x?0 0xd?` 的两个 nibble 碰巧拼成 "0d"，跳过这一对继续。
+      # 跳过 2 个字符是安全的：下一个可能的 CR 起点是 cr_rel+2（偶数位）；cr_rel+1 已被 'd' 占住，
+      # 不可能再是 "0d" 的起点。
+      math(EXPR cr_skip "${cr_rel} + 2")
+      string(SUBSTRING "${cr_work}" ${cr_skip} -1 cr_work)
+      math(EXPR cr_drop "${cr_drop} + ${cr_skip}")
+    endwhile()
+    math(EXPR cr_base "${cr_base} + ${cr_slice}")
+  endwhile()
   set(offset 0)
   set(parts "")
   set(joined "")
+  set(blocks 0)
   set(max_chunk 0)
   while(offset LESS total_bytes)
     math(EXPR take "4096")
@@ -47,23 +89,39 @@ function(emit_text_literal out_var path)
     if(take LESS 1)
       set(take 1)
     endif()
-    string(SUBSTRING "${content}" ${offset} ${take} chunk)
-    string(LENGTH "${chunk}" chunk_len)
-    if(chunk_len GREATER max_chunk)
-      set(max_chunk ${chunk_len})
+    # 最后一块要按剩余字节数收口：SUBSTRING 越界会自动截短，但 take 不跟着改，
+    # 就会把 offset 加过头，后面的「写出字节数 == 源文件字节数」断言反而误报。
+    math(EXPR remain "${total_bytes} - ${offset}")
+    if(take GREATER remain)
+      set(take ${remain})
     endif()
+    # 块首不能是续字节：这是「产物是合法 UTF-8」的结构保证，不靠事后全量解码。
+    math(EXPR offset_hex "${offset} * 2")
+    string(SUBSTRING "${content_hex}" ${offset_hex} 2 first_hex)
+    math(EXPR first_byte "0x${first_hex}")
+    if(offset GREATER 0 AND first_byte GREATER_EQUAL 128 AND first_byte LESS 192)
+      message(FATAL_ERROR "embed_web：${path} 的块首 ${offset} 落在 UTF-8 续字节上")
+    endif()
+    if(take GREATER max_chunk)
+      set(max_chunk ${take})
+    endif()
+    string(SUBSTRING "${content}" ${offset} ${take} chunk)
     string(APPEND parts "R\"DEVCARD(${chunk})DEVCARD\"\n")
     string(APPEND joined "${chunk}")
     math(EXPR offset "${offset} + ${take}")
+    math(EXPR blocks "${blocks} + 1")
   endwhile()
+  if(total_bytes EQUAL 0)
+    set(parts "R\"DEVCARD()DEVCARD\"\n")
+  endif()
 
   # 构建期自检：生成器本身必须自洽，不能指望运行期测试兜底。
-  # 1) 拼回来的内容字节数与哈希要和源文件一致（抓截断/漏字节）；
-  # 2) 每块不超过 4 KB（远离 MSVC C2026 的 16 KB 上限）；
-  # 3) 切点不能落在 UTF-8 多字节中间，否则生成的是非法 UTF-8，MSVC 按 C4828 丢内容。
-  string(LENGTH "${joined}" joined_len)
-  if(NOT joined_len EQUAL total_bytes)
-    message(FATAL_ERROR "embed_web：${path} 拼接后 ${joined_len} 字节，源文件 ${total_bytes} 字节")
+  # 1) 写出的字节数（按 take 累加，不用 string(LENGTH)）等于源文件字节数；
+  # 2) 拼回来的 SHA256 等于源文件 SHA256；
+  # 3) 每块不超过 4 KB（远离 MSVC C2026 的 16 KB 上限）；
+  # 4) 块首不是续字节 → 每块都是合法 UTF-8 的片段，拼起来也合法。
+  if(NOT offset EQUAL total_bytes)
+    message(FATAL_ERROR "embed_web：${path} 写出 ${offset} 字节，源文件 ${total_bytes} 字节")
   endif()
   file(SHA256 "${path}" expected_hash)
   string(SHA256 joined_hash "${joined}")
