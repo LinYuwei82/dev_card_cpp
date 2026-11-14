@@ -423,7 +423,7 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
         ++report.users_imported;
         if (generated) {
           report.warnings.push_back("用户 " + name +
-                                    " 旧口令为空，已生成随机口令并强制改密");
+                                    " 旧密码为空，已生成随机密码并强制改密");
         }
       }
 

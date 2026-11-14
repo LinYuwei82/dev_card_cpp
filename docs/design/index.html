@@ -26,15 +26,15 @@
       </div>
     </div>
     <h1>登录</h1>
-    <p class="hint">使用你的物业账号进入台账。首次登录需要修改默认口令。</p>
+    <p class="hint">使用你的物业账号进入台账。首次登录需要修改默认密码。</p>
     <form id="loginForm">
       <div class="field">
         <label for="loginUser">用户名</label>
         <input class="input" id="loginUser" autocomplete="username" placeholder="请输入用户名">
       </div>
       <div class="field">
-        <label for="loginPass">口令</label>
-        <input class="input" id="loginPass" type="password" autocomplete="current-password" placeholder="请输入口令">
+        <label for="loginPass">密码</label>
+        <input class="input" id="loginPass" type="password" autocomplete="current-password" placeholder="请输入密码">
       </div>
       <button class="btn btn-primary" type="submit">登录</button>
     </form>
@@ -113,7 +113,7 @@
     <!-- 用户管理 -->
     <section class="page" data-page="users">
       <div class="page-head">
-        <div><h2>用户管理</h2><p>管理员可新增账号、重置口令；删除后不会自动复活。</p></div>
+        <div><h2>用户管理</h2><p>管理员可新增账号、重置密码；删除后不会自动复活。</p></div>
         <div class="page-actions"><button class="btn btn-primary" id="addUser"><span data-icon="plus"></span>新增用户</button></div>
       </div>
       <div class="panel">
@@ -123,7 +123,7 @@
             <tbody id="userRows"></tbody>
           </table>
         </div>
-        <div class="pager"><span class="count">共 4 个账号</span><span class="spacer"></span><span>口令策略：8–128 位，连续失败 5 次锁定 15 分钟</span></div>
+        <div class="pager"><span class="count">共 4 个账号</span><span class="spacer"></span><span>密码策略：8–128 位，连续失败 5 次锁定 15 分钟</span></div>
       </div>
     </section>
 
@@ -259,7 +259,7 @@
     <div class="modal-head"><h3>新增用户</h3><button class="icon-btn" id="userClose"><span data-icon="x"></span></button></div>
     <div class="modal-body">
       <div class="field"><label for="uName">用户名</label><input class="input" id="uName" maxlength="20" placeholder="例如：王强"></div>
-      <div class="field"><label for="uPass">初始口令</label><input class="input" id="uPass" type="password" placeholder="至少 8 位，首次登录强制修改"></div>
+      <div class="field"><label for="uPass">初始密码</label><input class="input" id="uPass" type="password" placeholder="至少 8 位，首次登录强制修改"></div>
       <div class="help">角色默认「普通用户」，可在保存后调整。</div>
     </div>
     <div class="modal-foot">

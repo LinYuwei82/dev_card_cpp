@@ -460,10 +460,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   const SeedResult seed = seed_default_users(*state.db, options.data_dir);
   state.seeded = seed.seeded;
   if (seed.seeded) {
-    std::cout << "首次启动：已生成初始账号，口令写入 " << seed.password_file
+    std::cout << "首次启动：已生成初始账号，密码写入 " << seed.password_file
               << "（首次登录必须修改）" << std::endl;
     for (const auto& [name, password] : seed.accounts) {
-      std::cout << "  用户名: " << name << "  初始口令: " << password << std::endl;
+      std::cout << "  用户名: " << name << "  初始密码: " << password << std::endl;
     }
   }
 
@@ -870,13 +870,20 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         throw AppError("bad_json", "new_password 不能为空");
                       }
                       if (target == actor.user_name) {
-                        const std::string old_password =
-                            body.value("old_password", "");
-                        if (old_password.empty()) {
-                          throw AppError("old_password_required", "请输入原口令");
+                        // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
+                        // 重置后的强制改密时，用户本来就不掌握旧密码。
+                        if (actor.must_change_password) {
+                          state.users->complete_forced_change(actor.user_name,
+                                                              new_password);
+                        } else {
+                          const std::string old_password =
+                              body.value("old_password", "");
+                          if (old_password.empty()) {
+                            throw AppError("old_password_required", "请输入原密码");
+                          }
+                          state.users->change_password(actor.user_name, old_password,
+                                                       new_password);
                         }
-                        state.users->change_password(actor.user_name, old_password,
-                                                     new_password);
                       } else {
                         if (actor.role != "admin") {
                           throw AppError("forbidden", "需要管理员权限");
@@ -901,8 +908,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      const std::string value =
                          trim_copy(body.value("company_name", std::string{}));
                      if (utf8_length(value) > kCompanyNameInputMaxLength) {
-                       throw AppError("bad_company_name",
-                                      "公司名称过长（最多 60 个字符）");                     }
+                       throw AppError(
+                           "bad_company_name",
+                           "公司名称最多 16 个字符（卡面按 13 字宽打印）");
+                     }
                      state.db->write([&](sqlite3* conn) {
                        set_setting(conn, "print_company_name", value);
                      });
@@ -1162,7 +1171,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
         if (user.must_change_password && !password_paths) {
           set_json(response,
                    json{{"error", "must_change_password"},
-                        {"message", "首次登录必须修改口令"}},
+                        {"message", "首次登录必须修改密码"}},
                    403);
           return httplib::Server::HandlerResponse::Handled;
         }

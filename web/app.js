@@ -102,6 +102,7 @@
     passwordForm: document.getElementById('password-form'),
     passwordTitle: document.getElementById('password-title'),
     passwordHint: document.getElementById('password-hint'),
+    oldPasswordRow: document.getElementById('old-password-row'),
     oldPassword: document.getElementById('old-password'),
     newPassword: document.getElementById('new-password'),
     newPassword2: document.getElementById('new-password-2'),
@@ -137,6 +138,7 @@
     gotoPrint: document.getElementById('goto-print'),
     saveCompany: document.getElementById('save-company'),
     companyName: document.getElementById('company-name'),
+    companyPreview: document.getElementById('company-preview'),
     companyHint: document.getElementById('company-hint'),
     companyOver: document.getElementById('company-over'),
     companyFontWarning: document.getElementById('company-font-warning'),
@@ -669,17 +671,21 @@
 
   function openPasswordModal(forced) {
     state.forcedPassword = forced;
-    el.passwordTitle.textContent = forced ? '首次登录必须修改口令' : '修改口令';
+    el.passwordTitle.textContent = forced ? '首次登录必须修改密码' : '修改密码';
     el.passwordHint.textContent = forced
-      ? '当前账号仍使用初始或重置口令，修改后才能进入业务页。'
-      : '修改当前账号的口令。';
+      ? '当前账号仍使用初始或重置密码，直接设置新密码即可进入业务页，不需要原密码。'
+      : '修改当前账号的密码，需要先输入原密码。';
     el.passwordCancel.hidden = forced;
+    // 是否要求原密码由服务端按 must_change_password 判定；这里只同步界面，
+    // 隐藏时必须同时解除 required，否则空的原密码框会拦住表单提交。
+    el.oldPasswordRow.hidden = forced;
+    el.oldPassword.required = !forced;
     el.oldPassword.value = '';
     el.newPassword.value = '';
     el.newPassword2.value = '';
     el.passwordError.hidden = true;
     el.passwordModal.hidden = false;
-    el.oldPassword.focus();
+    (forced ? el.newPassword : el.oldPassword).focus();
   }
 
   el.changeMyPassword.addEventListener('click', function () {
@@ -695,20 +701,19 @@
     event.preventDefault();
     el.passwordError.hidden = true;
     if (el.newPassword.value !== el.newPassword2.value) {
-      el.passwordError.textContent = '两次输入的新口令不一致';
+      el.passwordError.textContent = '两次输入的新密码不一致';
       el.passwordError.hidden = false;
       return;
     }
-    api('POST', '/api/users/password', {
-      old_password: el.oldPassword.value,
-      new_password: el.newPassword.value
-    })
+    api('POST', '/api/users/password', state.forcedPassword
+      ? { new_password: el.newPassword.value }
+      : { old_password: el.oldPassword.value, new_password: el.newPassword.value })
       .then(function () {
         var forced = state.forcedPassword;
         state.forcedPassword = false;
         state.user.must_change_password = false;
         el.passwordModal.hidden = true;
-        toast('口令已更新');
+        toast('密码已更新');
         if (forced) enterApp();
       })
       .catch(function (error) {
@@ -1082,14 +1087,17 @@
     var value = el.companyName.value;
     var width = companyNameWidth(value);
     var over = width > state.companyNameMaxWidth + 1e-9;
+    // 录入放宽到 16 个字符，卡面仍按 13 字宽打印：把截断提前展示成用户看得见的
+    // 结果，而不是保存后再解释。
+    el.companyPreview.textContent = value.trim()
+      ? '将打印为：「' + truncateCompanyName(value) + '」' +
+        (over ? '（卡面按 ' + state.companyNameMaxWidth + ' 字宽打印，只保留前 ' +
+                state.companyNameMaxWidth + ' 字宽）' : '')
+      : '将打印为：默认公司名「深圳市安业物业管理有限公司」';
     el.companyHint.textContent = '已用 ' + width + ' / ' + state.companyNameMaxWidth +
-      '（汉字算 1，字母数字算 0.5）';
+      '（汉字算 1，字母数字算 0.5），最多录入 16 个字符';
     el.companyHint.classList.toggle('is-over', over);
     el.companyOver.hidden = !over;
-    if (over) {
-      el.companyOver.textContent = '最多 ' + state.companyNameMaxWidth +
-        ' 个汉字，超出部分不会印出（将打印：' + truncateCompanyName(value) + '）';
-    }
     // 字体覆盖是另一件事：字放得下（宽度上限），但打印子集里没有这个字。
     // 口径见 companyFontCheck 上方：字少且塞得进就告知，塞不进就阻止导出。
     var fontCheck = companyFontCheck(value);
@@ -1121,7 +1129,7 @@
         updateCompanyHint();
         if (state.view === 'print') renderPrint();
         toast(data.company_name_width > state.companyNameMaxWidth
-          ? '已保存；超出 ' + state.companyNameMaxWidth + ' 个字宽度的部分不会印出'
+          ? '已保存；卡面只打印前 ' + state.companyNameMaxWidth + ' 字宽，实际内容见预览'
           : '公司名已保存');
       })
       .catch(function (error) {
@@ -1333,7 +1341,7 @@
           '<td class="muted">' + escapeHtml(statusText) + '</td>' +
           '<td class="col-actions">' +
           '<button class="row-btn" type="button" data-user-action="edit" data-name="' + escapeHtml(user.user_name) + '">编辑</button>' +
-          '<button class="row-btn" type="button" data-user-action="reset" data-name="' + escapeHtml(user.user_name) + '">重置口令</button>' +
+          '<button class="row-btn" type="button" data-user-action="reset" data-name="' + escapeHtml(user.user_name) + '">重置密码</button>' +
           (state.user && state.user.user_name === user.user_name
             ? ''
             : '<button class="row-btn danger" type="button" data-user-action="delete" data-name="' + escapeHtml(user.user_name) + '">删除</button>') +
@@ -1426,7 +1434,7 @@
       openUserModal(user);
     } else if (action === 'reset') {
       state.resetUser = name;
-      el.resetHint.textContent = '为「' + name + '」设置新口令，重置后下次登录必须修改。';
+      el.resetHint.textContent = '为「' + name + '」设置新密码，重置后下次登录必须修改。';
       el.resetPassword.value = '';
       el.resetError.hidden = true;
       el.resetModal.hidden = false;
@@ -1461,7 +1469,7 @@
       .then(function () {
         el.resetModal.hidden = true;
         state.resetUser = null;
-        toast('口令已重置');
+        toast('密码已重置');
         return loadUsers();
       })
       .catch(function (error) {
@@ -2100,6 +2108,35 @@
     });
     return 'started';
   };
+
+  // ---------- 密码可见性切换 ----------
+  // 只改变本地输入框的显示方式，不动提交内容。
+  var EYE_ICON =
+    '<svg class="eye-open" viewBox="0 0 16 16" aria-hidden="true">' +
+    '<path d="M1.2 8S3.8 3.8 8 3.8 14.8 8 14.8 8 12.2 12.2 8 12.2 1.2 8 1.2 8z"/>' +
+    '<circle cx="8" cy="8" r="2.2"/></svg>' +
+    '<svg class="eye-off" viewBox="0 0 16 16" aria-hidden="true">' +
+    '<path d="M2 2l12 12"/>' +
+    '<path d="M6.6 3.9A7.7 7.7 0 0 1 8 3.8C12.2 3.8 14.8 8 14.8 8a13.5 13.5 0 0 1-2.3 2.8"/>' +
+    '<path d="M4.4 5.2A13.3 13.3 0 0 0 1.2 8S3.8 12.2 8 12.2c.7 0 1.4-.1 2-.4"/>' +
+    '<path d="M6.6 6.6a2.2 2.2 0 0 0 3.1 3.1"/></svg>';
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll('.password-eye[data-password-toggle]'),
+    function (button) {
+      button.innerHTML = EYE_ICON;
+      button.addEventListener('click', function () {
+        var input = document.getElementById(
+          button.getAttribute('data-password-toggle'));
+        if (!input) return;
+        var visible = input.type === 'password';
+        input.type = visible ? 'text' : 'password';
+        button.classList.toggle('is-visible', visible);
+        button.setAttribute('aria-pressed', visible ? 'true' : 'false');
+        button.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+        input.focus();
+      });
+    });
 
   // ---------- 启动 ----------
 

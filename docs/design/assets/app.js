@@ -258,7 +258,7 @@
         '<td><span class="chip ' + (u[2] === "启用" ? "ok" : "warn") + '">' + u[2] + "</span></td>" +
         '<td class="num">' + u[3] + "</td>" +
         '<td class="actions"><span class="row-actions">' +
-        '<button class="icon-btn" data-user="reset" title="重置口令">' + icon("edit") + "</button>" +
+        '<button class="icon-btn" data-user="reset" title="重置密码">' + icon("edit") + "</button>" +
         '<button class="icon-btn danger" data-user="del" title="删除">' + icon("trash") + "</button>" +
         "</span></td></tr>";
     }).join("");
@@ -277,7 +277,7 @@
   userBody.addEventListener("click", function (e) {
     var b = e.target.closest("button[data-user]");
     if (!b) return;
-    if (b.dataset.user === "reset") toast("样张：打开重置口令（命令行 --set-password）");
+    if (b.dataset.user === "reset") toast("样张：打开重置密码（命令行 --set-password）");
     else toast("样张：删除用户需二次确认", "warn");
   });
 

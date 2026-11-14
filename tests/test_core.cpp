@@ -111,6 +111,20 @@ void run_user_service_case(const std::filesystem::path& dir) {
   CHECK(old_rejected);
   CHECK(users.authenticate("root", "ChangedPassw0rd").user_name == "root");
 
+  // 首次登录 / 重置后的强制改密不要求旧密码；但只有服务端标记
+  // must_change_password 时才放行，普通状态仍必须走 change_password。
+  users.reset_password("root", "ResetPassw0rd2");
+  users.complete_forced_change("root", "ForcedPassw0rd");
+  CHECK(!users.get("root").must_change_password);
+  CHECK(users.authenticate("root", "ForcedPassw0rd").user_name == "root");
+  bool forced_guard = false;
+  try {
+    users.complete_forced_change("root", "SneakyPassw0rd");
+  } catch (const devcard::AppError& error) {
+    forced_guard = std::string(error.code()) == "old_password_required";
+  }
+  CHECK(forced_guard);
+
   bool weak = false;
   try {
     users.create("short", "123", "", "user");
@@ -135,7 +149,7 @@ void run_user_service_case(const std::filesystem::path& dir) {
   users.remove("tester", "root");
   CHECK(users.count() == 2);
 
-  // 两个默认账号都改密后，一次性口令文件可删除。
+  // 两个默认账号都改密后，一次性密码文件可删除。
   users.change_password("安业物业", seed.accounts[1].second, "AnyePassw0rd");
   CHECK(!users.any_must_change());
   devcard::remove_seed_password_file(dir);
@@ -267,6 +281,15 @@ void run_company_name_case(const std::filesystem::path& dir) {
                          "深圳市安业物业管理有限公司南山分公司");
   });
   CHECK(devcard::company_name_width(devcard::company_name(db)) == 18.0);
+  CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
+
+  // 录入上限 16 个字符：存得下，卡面仍按 13 字宽截断。
+  CHECK(devcard::kCompanyNameInputMaxLength == 16);
+  db.write([](sqlite3* conn) {
+    devcard::set_setting(conn, "print_company_name",
+                         "深圳市安业物业管理有限公司南山分");
+  });
+  CHECK(devcard::company_name_width(devcard::company_name(db)) == 16.0);
   CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
 
   db.write([](sqlite3* conn) {
@@ -558,7 +581,7 @@ int main() {
   }
 
   {
-    // Argon2id：编码串、正确/错误口令。
+    // Argon2id：编码串、正确/错误密码。
     const std::string hash = devcard::hash_password("Passw0rd!");
     CHECK(hash.rfind("$argon2id$", 0) == 0);
     CHECK(devcard::verify_password(hash, "Passw0rd!"));

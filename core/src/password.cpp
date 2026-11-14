@@ -31,7 +31,7 @@ std::string random_bytes(std::size_t size) {
 }  // namespace
 
 std::string hash_password(std::string_view plain) {
-  if (plain.empty()) throw AppError("weak_password", "口令不能为空");
+  if (plain.empty()) throw AppError("weak_password", "密码不能为空");
   const std::string salt = random_bytes(kSaltBytes);
   const std::size_t capacity =
       argon2_encodedlen(kTimeCost, kMemoryKib, kParallelism, kSaltBytes,

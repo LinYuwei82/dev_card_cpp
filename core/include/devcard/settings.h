@@ -11,8 +11,9 @@ namespace devcard {
 inline constexpr std::string_view kDefaultCompanyName = "深圳市安业物业管理有限公司";
 // 名称显示宽度上限：汉字 1，字母/数字 0.5。默认值 13 个字，同样受限。
 inline constexpr double kCompanyNameMaxWidth = 13.0;
-// 输入框与接口的原始长度上限（按 Unicode 字符计），避免异常长文本。
-inline constexpr std::size_t kCompanyNameInputMaxLength = 60;
+// 录入上限（按 Unicode 字符计）：卡面仍按 13 字宽打印，录入放宽到 16 个字符，
+// 超出 13 字宽的部分由界面预览明确告知后再截断。
+inline constexpr std::size_t kCompanyNameInputMaxLength = 16;
 
 // app_setting 键值对。读接口返回空串表示不存在。
 std::string get_setting(const Db& db, std::string_view key);

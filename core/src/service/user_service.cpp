@@ -65,7 +65,7 @@ void require_role(std::string_view role) {
 void validate_password(std::string_view password) {
   const std::size_t length = utf8_length(std::string(password));
   if (length < 8 || length > 128) {
-    throw AppError("weak_password", "口令长度需为 8–128 个字符");
+    throw AppError("weak_password", "密码长度需为 8–128 个字符");
   }
 }
 
@@ -98,7 +98,7 @@ User UserService::get(std::string_view name) const {
 User UserService::authenticate(std::string_view name, std::string_view password) {
   User user;
   if (!dao_.find(db_, name, user)) {
-    throw AppError("invalid_credentials", "用户名或口令错误");
+    throw AppError("invalid_credentials", "用户名或密码错误");
   }
   if (!user.locked_until.empty() && user.locked_until > now_text()) {
     throw AppError("locked", "登录失败次数过多，账号已锁定，请稍后再试");
@@ -113,7 +113,7 @@ User UserService::authenticate(std::string_view name, std::string_view password)
     db_.write([&](sqlite3* conn) {
       dao_.record_failed_login(conn, user.user_name, failed, locked_until);
     });
-    throw AppError("invalid_credentials", "用户名或口令错误");
+    throw AppError("invalid_credentials", "用户名或密码错误");
   }
   if (user.failed_count != 0 || !user.locked_until.empty()) {
     db_.write([&](sqlite3* conn) { dao_.clear_failed_login(conn, user.user_name); });
@@ -190,7 +190,19 @@ void UserService::change_password(std::string_view name,
                                   std::string_view new_password) {
   User user = get(name);
   if (!verify_password(user.password_hash, old_password)) {
-    throw AppError("invalid_credentials", "原口令错误");
+    throw AppError("invalid_credentials", "原密码错误");
+  }
+  validate_password(new_password);
+  const std::string hash = hash_password(new_password);
+  db_.write([&](sqlite3* conn) { dao_.set_password(conn, name, hash, false); });
+}
+
+void UserService::complete_forced_change(std::string_view name,
+                                         std::string_view new_password) {
+  const User user = get(name);
+  if (!user.must_change_password) {
+    // 非强制改密场景必须走 change_password 校验旧密码。
+    throw AppError("old_password_required", "请输入原密码");
   }
   validate_password(new_password);
   const std::string hash = hash_password(new_password);
@@ -261,11 +273,11 @@ SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
     set_setting(conn, "local_user", "root");
   });
 
-  const std::filesystem::path file = data_dir / "初始账号口令.txt";
+  const std::filesystem::path file = data_dir / "初始账号密码.txt";
   {
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (out) {
-      out << "DevCard 初始账号（首次登录必须修改口令）\n";
+      out << "DevCard 初始账号（首次登录必须修改密码）\n";
       for (const auto& [name, password] : accounts) {
         out << name << "：" << password << "\n";
       }
@@ -284,7 +296,7 @@ SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
 
 void remove_seed_password_file(const std::filesystem::path& data_dir) {
   std::error_code ec;
-  std::filesystem::remove(data_dir / "初始账号口令.txt", ec);
+  std::filesystem::remove(data_dir / "初始账号密码.txt", ec);
 }
 
 }  // namespace devcard

@@ -95,7 +95,7 @@ void print_usage() {
       << "  --port N               监听端口（默认 18080）\n"
       << "  --data-dir PATH        数据目录（默认为系统应用数据目录）\n"
       << "  --import-legacy PATH   导入旧版 devicedb.db 后退出\n"
-      << "  --set-password USER    重置本机账号口令后退出（口令从标准输入读取）\n"
+      << "  --set-password USER    重置本机账号密码后退出（密码从标准输入读取）\n"
       << "  --backup               立即备份后退出\n"
       << "  --restore NAME         从 backups/ 下的备份恢复后退出\n"
       << "  --version              输出版本\n"
@@ -162,8 +162,8 @@ int main(int argc, char** argv) {
     if (!set_password_user.empty()) {
       OpenedDatabase opened = open_database(options.data_dir);
       devcard::UserService users(*opened.db);
-      const std::string first = prompt_password("新口令（8–128 个字符）: ");
-      const std::string second = prompt_password("再次输入新口令: ");
+      const std::string first = prompt_password("新密码（8–128 个字符）: ");
+      const std::string second = prompt_password("再次输入新密码: ");
       if (first != second) {
         std::cerr << "两次输入不一致，未修改" << std::endl;
         return 1;
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
         std::cout << "账号不存在，已创建管理员账号 " << set_password_user << std::endl;
       }
       std::cout << "已重置 " << set_password_user
-                << " 的口令，下次登录必须修改" << std::endl;
+                << " 的密码，下次登录必须修改" << std::endl;
       return 0;
     }
 

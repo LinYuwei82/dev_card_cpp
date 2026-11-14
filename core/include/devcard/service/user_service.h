@@ -15,11 +15,11 @@ namespace devcard {
 
 struct SeedResult {
   bool seeded = false;
-  std::filesystem::path password_file;  // 首次生成的一次性口令文件
-  std::vector<std::pair<std::string, std::string>> accounts;  // 用户名 + 一次性口令
+  std::filesystem::path password_file;  // 首次生成的一次性密码文件
+  std::vector<std::pair<std::string, std::string>> accounts;  // 用户名 + 一次性密码
 };
 
-// 口令策略：8–128 个字符。
+// 密码策略：8–128 个字符。
 void validate_password(std::string_view password);
 std::string validate_user_name(std::string_view name);
 
@@ -42,10 +42,14 @@ class UserService {
                       std::string role);
   void remove(std::string_view name, std::string_view actor);
 
-  // 自助改密：校验旧口令，成功后清除强制改密标记。
+  // 自助改密：校验旧密码，成功后清除强制改密标记。
   void change_password(std::string_view name, std::string_view old_password,
                        std::string_view new_password);
-  // 管理员/命令行重置：不校验旧口令，强制下次登录改密。
+  // 首次登录/重置后的强制改密：不校验旧密码（调用方必须先用服务端的
+  // must_change_password 判定），成功后清除强制改密标记。
+  void complete_forced_change(std::string_view name,
+                              std::string_view new_password);
+  // 管理员/命令行重置：不校验旧密码，强制下次登录改密。
   void reset_password(std::string_view name, std::string_view new_password);
 
   bool any_must_change() const;
@@ -57,11 +61,11 @@ class UserService {
   UserDao dao_;
 };
 
-// 全新数据库首次启动时生成两个强制改密的账号，口令随机并写入
-// <data_dir>/初始账号口令.txt（权限 0600）。已有用户时不做任何事。
+// 全新数据库首次启动时生成两个强制改密的账号，密码随机并写入
+// <data_dir>/初始账号密码.txt（权限 0600）。已有用户时不做任何事。
 SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir);
 
-// 所有账号都已完成首次改密后，删除一次性口令文件。
+// 所有账号都已完成首次改密后，删除一次性密码文件。
 void remove_seed_password_file(const std::filesystem::path& data_dir);
 
 }  // namespace devcard

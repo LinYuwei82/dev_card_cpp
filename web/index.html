@@ -97,7 +97,7 @@
           <p>首次登录的账号必须改密；删除账号后不会再被自动重建。</p>
         </div>
         <button class="btn btn-primary" id="add-user" type="button">新增账号</button>
-        <button class="btn btn-ghost" id="change-my-password" type="button">修改我的口令</button>
+        <button class="btn btn-ghost" id="change-my-password" type="button">修改我的密码</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -124,11 +124,12 @@
       </div>
       <div class="settings-box">
         <label>公司名称
-          <input id="company-name" type="text" autocomplete="off" maxlength="60"
+          <input id="company-name" type="text" autocomplete="off" maxlength="16"
                  placeholder="深圳市安业物业管理有限公司">
         </label>
-        <p class="hint" id="company-hint">已用 0 / 13（汉字算 1，字母数字算 0.5）</p>
-        <p class="hint is-over" id="company-over" hidden>最多 13 个汉字，超出部分不会印出</p>
+        <p class="hint" id="company-preview">将打印为：「—」</p>
+        <p class="hint" id="company-hint">已用 0 / 13（汉字算 1，字母数字算 0.5），最多录入 16 个字符</p>
+        <p class="hint is-over" id="company-over" hidden>超出 13 字宽的部分不会打印，请看上方预览</p>
         <p class="hint is-over" id="company-font-warning" hidden></p>
         <div class="logo-row">
           <img id="company-logo-preview" src="/company-logo" alt="当前图标">
@@ -213,11 +214,16 @@
       <span class="brand-mark">DC</span>
       <div>
         <h2>设备管理卡</h2>
-        <p>请输入账号和口令</p>
+        <p>请输入账号和密码</p>
       </div>
     </div>
     <label>用户名<input id="login-user" autocomplete="username" required></label>
-    <label>口令<input id="login-password" type="password" autocomplete="current-password" required></label>
+    <label>密码
+      <span class="password-field">
+        <input id="login-password" type="password" autocomplete="current-password" required>
+        <button class="password-eye" type="button" data-password-toggle="login-password" aria-label="显示密码"></button>
+      </span>
+    </label>
     <p class="form-error" id="login-error" hidden></p>
     <button class="btn btn-primary login-submit" type="submit">登录</button>
   </form>
@@ -260,12 +266,27 @@
 
 <div class="modal" id="password-modal" hidden>
   <form class="modal-card" id="password-form" role="dialog" aria-modal="true">
-    <h2 id="password-title">修改口令</h2>
-    <p id="password-hint">首次登录必须把初始口令改掉，修改后才能进入业务页。</p>
+    <h2 id="password-title">修改密码</h2>
+    <p id="password-hint">首次登录必须把初始密码改掉，修改后才能进入业务页。</p>
     <div class="modal-form">
-      <label>原口令<input id="old-password" type="password" autocomplete="current-password" required></label>
-      <label>新口令（8–128 个字符）<input id="new-password" type="password" minlength="8" autocomplete="new-password" required></label>
-      <label>再次输入新口令<input id="new-password-2" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label id="old-password-row">原密码
+        <span class="password-field">
+          <input id="old-password" type="password" autocomplete="current-password" required>
+          <button class="password-eye" type="button" data-password-toggle="old-password" aria-label="显示密码"></button>
+        </span>
+      </label>
+      <label>新密码（8–128 个字符）
+        <span class="password-field">
+          <input id="new-password" type="password" minlength="8" autocomplete="new-password" required>
+          <button class="password-eye" type="button" data-password-toggle="new-password" aria-label="显示密码"></button>
+        </span>
+      </label>
+      <label>再次输入新密码
+        <span class="password-field">
+          <input id="new-password-2" type="password" minlength="8" autocomplete="new-password" required>
+          <button class="password-eye" type="button" data-password-toggle="new-password-2" aria-label="显示密码"></button>
+        </span>
+      </label>
       <p class="form-error" id="password-error" hidden></p>
     </div>
     <div class="modal-actions">
@@ -287,8 +308,11 @@
           <option value="admin">管理员</option>
         </select>
       </label>
-      <label id="user-password-label">初始口令（8–128 个字符）
-        <input id="user-password" type="password" minlength="8" autocomplete="new-password">
+      <label id="user-password-label">初始密码（8–128 个字符）
+        <span class="password-field">
+          <input id="user-password" type="password" minlength="8" autocomplete="new-password">
+          <button class="password-eye" type="button" data-password-toggle="user-password" aria-label="显示密码"></button>
+        </span>
       </label>
       <p class="form-error" id="user-error" hidden></p>
     </div>
@@ -301,10 +325,15 @@
 
 <div class="modal" id="reset-modal" hidden>
   <form class="modal-card" id="reset-form" role="dialog" aria-modal="true">
-    <h2>重置口令</h2>
-    <p id="reset-hint">重置后该账号下次登录必须修改口令。</p>
+    <h2>重置密码</h2>
+    <p id="reset-hint">重置后该账号下次登录必须修改密码。</p>
     <div class="modal-form">
-      <label>新口令（8–128 个字符）<input id="reset-password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label>新密码（8–128 个字符）
+        <span class="password-field">
+          <input id="reset-password" type="password" minlength="8" autocomplete="new-password" required>
+          <button class="password-eye" type="button" data-password-toggle="reset-password" aria-label="显示密码"></button>
+        </span>
+      </label>
       <p class="form-error" id="reset-error" hidden></p>
     </div>
     <div class="modal-actions">

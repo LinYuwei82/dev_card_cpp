@@ -107,7 +107,7 @@ cmake --build build-cmake
   - Windows：`%LOCALAPPDATA%\Anye\DevCard\devicedb.db`
   - macOS：`~/Library/Application Support/Anye/DevCard/devicedb.db`
 - 首次启动时，如果程序目录或 `…\DevCard\legacy\` 下存在旧的 `devicedb.db`，会先复制并校验，成功后才切换为正式库；**原文件保留作为备份**。迁移失败会弹窗说明并退出，不会静默创建空库。
-- 现状内置两个默认账号，口令为弱口令且明文存储（具体值不在文档中重复），属待改造项。
+- 现状内置两个默认账号，密码为弱密码且明文存储（具体值不在文档中重复），属待改造项。
 - macOS 版已可构建与运行（Apple Silicon，最低 macOS 15）；Intel Mac 未验证，Windows 构建链未受影响。
 
 ### 2.6 macOS 构建与 DMG（v1.1.3 实际做法）
@@ -213,7 +213,7 @@ dev_card_cpp/
 以下均为**现状**，不是目标形态：
 
 - Windows 与 macOS（Apple Silicon，macOS 15+）可运行；界面用固定像素坐标，缩放/字体缺失时排版会变。macOS 版未公证，首次打开需手动放行。
-- 口令明文存储，默认账号每次启动自动补回。
+- 密码明文存储，默认账号每次启动自动补回。
 - v1.1.3 的 Windows 绿色版 zip 尚未产出，安装版没有 `.iss`；macOS 已按 D7 定为 15+，按 D13 不公证（ad-hoc 签名，首次需 Gatekeeper 放行）。
 - 无测试、无 CI、无许可证声明。（新架构 `tests/` 已有核心单测，可 `ctest`；CI 仍属 M5。）
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
