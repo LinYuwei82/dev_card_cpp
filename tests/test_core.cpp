@@ -230,6 +230,6 @@ int main() {
     std::cerr << failures << " 项失败\n";
     return 1;
   }
-  std::cout << "M0 core tests passed\n";
+  std::cout << "core tests passed\n";
   return 0;
 }

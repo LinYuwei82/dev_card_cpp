@@ -34,4 +34,5 @@ if(WIN32)
 endif()
 
 add_executable(devcard-server src/main.cpp)
+devcard_add_version_rc(devcard-server)
 target_link_libraries(devcard-server PRIVATE devcard_server)
