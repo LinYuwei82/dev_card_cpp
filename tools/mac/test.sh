@@ -10,24 +10,30 @@
 #   1 有失败（ctest 有失败用例，或某个 verify 入口返回 1 / 未知退出码）
 #   2 无失败，但有「已占位待确认」项（verify 入口返回 2）
 #   3 环境不具备（非 macOS、缺 cmake/ctest/python3、build-new 还没 configure）
-# 聚合优先级：3 > 1 > 2 > 0。环境不具备时一律报 3、绝不报 0——跑不动不等于通过。
+# 聚合优先级：1 > 3 > 2 > 0。3 是「这条没测成」，1 是「测成了而且坏了」；已知的坏不该被
+#   未知盖住，否则环境缺一半时真失败会被藏起来。环境真缺的检查各自返回 3，不会伪装成 1。
+#   环境不具备时绝不报 0——跑不动不等于通过。
 #
 # 兼容性：macOS 自带 /bin/bash 是 3.2。本脚本不用 mapfile/readarray、关联数组、declare -A、
 #   ${var,,}、readlink -f、stat -c、grep -P、date -d、sed -i 一类 bash4/GNU 专有写法；
 #   所有路径引用都加引号，可在含中文与空格的目录下运行。
 #
+# 【未跑 shellcheck】编写本脚本的机器（Windows）没有安装 shellcheck，因此本脚本没有任何
+#   shellcheck 结论，不要当成已通过。mac 上首次运行前请自行执行：shellcheck tools/mac/test.sh
+#
 # 【以下是「假设」，尚未在 macOS 上真实执行过】mac 上第一次运行请以实际输出为准修正：
 #   1. 假设构建目录是 preset macos-release 产出的 build-new（与 tools/mac/build.sh、
 #      tools/package/make_dmg.sh 同一目录）；缺 CMakeCache.txt 时按「环境不具备」报 3，
 #      而不是当成 0 通过。
-#   2. 假设 tools/verify 下每个 .sh 都是 POSIX sh 入口（现有三个都是 #!/bin/sh 后转派
+#   2. 假设 tools/verify 下每个 .sh 都是 POSIX sh 入口（现有 check_bom / check_bootstrap /
+#      check_migrations / check_path_helpers / check_version 五个都是 #!/bin/sh 后转派
 #      python3），因此统一用 /bin/sh 执行——不依赖 git 里的可执行位，Windows 侧 checkout
 #      丢掉 +x 也不会假失败。若将来出现 bash 专用入口，需要改这里。
 #   3. 假设 check_bootstrap.sh 的默认构建目录仍是 build-new/server/devcard-server（见该
 #      脚本注释），所以这里不额外传 --build-dir；若用了其它构建目录，它会返回 3 而不是
 #      给出假通过。
-#   4. 假设目前只有 check_migrations.sh 返回 2（「出现 v4+ 待与 Windows 确认」），
-#      其它入口不会用 2。
+#   4. 假设目前只有 check_migrations.sh 返回 2（「出现 v4+ 待与 Windows 确认」），其它入口
+#      不用 2；返回 3 的是 check_bootstrap.sh（服务没构建/起不来）。
 #   5. 假设 ctest 用例清单由 tests/CMakeLists.txt 决定；本脚本不挑选用例、不跳过用例，
 #      也不重复实现用例里的判据。
 
@@ -163,14 +169,14 @@ fi
 say ""
 say "汇总：ctest ${CTEST_STATE}；verify ${TOTAL_VERIFY} 个（通过 ${TOTAL_PASS} / 失败 ${TOTAL_FAIL} / 待确认 ${TOTAL_PENDING} / 环境不具备 ${TOTAL_ENV}）"
 
-# 优先级 3 > 1 > 2 > 0：环境不具备会让结果不可信，先报 3。
-if [ "$TOTAL_ENV" -gt 0 ]; then
-  say "结果：环境不具备（退出码 3）——有入口因环境缺失没跑成，不能算通过。"
-  exit 3
-fi
+# 优先级 1 > 3 > 2 > 0：已知的坏（1）不该被未知（3）盖住，先报失败。
 if [ "$CTEST_RC" -ne 0 ] || [ "$TOTAL_FAIL" -gt 0 ]; then
-  say "结果：失败（退出码 1）"
+  say "结果：失败（退出码 1）——已知失败优先于环境缺失，不被未知掩盖。"
   exit 1
+fi
+if [ "$TOTAL_ENV" -gt 0 ]; then
+  say "结果：环境不具备（退出码 3）——没有已知失败，但有入口因环境缺失没跑成，不算通过。"
+  exit 3
 fi
 if [ "$TOTAL_PENDING" -gt 0 ]; then
   say "结果：通过但有待确认项（退出码 2）"

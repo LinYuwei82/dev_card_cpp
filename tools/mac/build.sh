@@ -23,6 +23,9 @@
 #   ${var,,}、readlink -f、stat -c、grep -P、date -d、sed -i 一类 bash4/GNU 专有写法；
 #   所有路径引用都加引号，可在含中文与空格的目录下运行。
 #
+# 【未跑 shellcheck】编写本脚本的机器（Windows）没有安装 shellcheck，因此本脚本没有任何
+#   shellcheck 结论，不要当成已通过。mac 上首次运行前请自行执行：shellcheck tools/mac/build.sh
+#
 # 【以下是「假设」，尚未在 macOS 上真实执行过】mac 上第一次运行请以实际输出为准修正，
 # 不要把这里当成已验结论：
 #   1. 假设产物布局是 build-new/shell/DevCard.app（目标名来自 shell/CMakeLists.txt 的
