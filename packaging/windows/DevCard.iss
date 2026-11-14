@@ -2,20 +2,25 @@
 ;
 ; 编译（Windows，需先构建好两个 exe 与字体）：
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
-;     /DAppVersion=1.1.3 ^
 ;     /DSourceRoot=..\..\dist\Mote-Windows ^
 ;     packaging\windows\DevCard.iss
 ;
-; 说明：以下内容未在本机实际编译（本机未安装 Inno Setup），
-; 语法按 Inno Setup 6 编写；首次编译请重点核对 SourceRoot 下的文件布局。
+; 版本号只有一个真值：仓库根目录 VERSION.txt。这里不再写第二处字面量，
+; 也不再接受外部 /DAppVersion 覆盖（覆盖等于又造一处真值）。
 ;
 ; 安装位置与数据位置刻意分开：
 ;   程序: %LOCALAPPDATA%\Programs\DevCard
 ;   数据: %LOCALAPPDATA%\DevCard\data（由 devcard-server.exe 首次启动创建）
 ; 卸载只删程序目录，数据目录保留并在结束时提示路径。
 
-#ifndef AppVersion
-  #define AppVersion "1.1.3"
+#define VersionFile FileOpen(AddBackslash(SourcePath) + "..\..\VERSION.txt")
+#if !FileExists(AddBackslash(SourcePath) + "..\..\VERSION.txt")
+  #error 找不到 VERSION.txt（安装包版本必须从它取，不许写第二处真值）
+#endif
+#define AppVersion Trim(FileRead(VersionFile))
+#expr FileClose(VersionFile)
+#if Len(AppVersion) == 0
+  #error VERSION.txt 为空
 #endif
 #ifndef SourceRoot
   #define SourceRoot "..\..\dist\Mote-Windows"
