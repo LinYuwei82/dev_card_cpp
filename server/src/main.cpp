@@ -72,7 +72,11 @@ OpenedDatabase open_database(const std::filesystem::path& data_dir) {
 // 所以不用 Db（读写连接），直接 SQLITE_OPEN_READONLY。
 std::int64_t count_devices_readonly(const std::filesystem::path& file) {
   sqlite3* conn = nullptr;
-  if (sqlite3_open_v2(file.string().c_str(), &conn, SQLITE_OPEN_READONLY,
+  // SQLite 的路径参数必须是 UTF-8；path::string() 在 Windows 是 ACP（GBK），
+  // 中文目录会被解释成错误路径，这里显式转 UTF-8。
+  const auto u8 = file.u8string();
+  const std::string native(reinterpret_cast<const char*>(u8.data()), u8.size());
+  if (sqlite3_open_v2(native.c_str(), &conn, SQLITE_OPEN_READONLY,
                       nullptr) != SQLITE_OK) {
     if (conn) sqlite3_close(conn);
     return -1;
