@@ -160,7 +160,7 @@ tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 - 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
-- 本机实测（0.1.0）：`dist/DevCard-0.1.0-macos-arm64.dmg`，**4,587,847 B（4.4M）**，SHA256 `4de23e8614c304a12bf4abec0e8ffb09905d48e883da68426a06e731056524f6`。构成为主程序 2,949,728 B + `Resources/fonts` 下两个子集字体 4,560,472 B；上一版不含字体时为 1,651,241 B（`24bdae6c…cd13e`）。
+- 本机实测（0.1.0）：`dist/DevCard-0.1.0-macos-arm64.dmg`，**4,593,677 B（4.4M）**，SHA256 `531f9fc42593e77e31c0362e907da04ec5c6527027e8ddff23381191cdc5ec23`。构成为主程序 2,967,552 B + `Resources/fonts` 下两个子集字体 4,560,472 B；上一版不含字体时为 1,651,241 B（`24bdae6c…cd13e`）。
 
 ---
 
