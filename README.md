@@ -145,7 +145,8 @@ ctest --test-dir build-new --output-on-failure
 - **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
 - **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
-- 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构尚未真机跑过。
+- 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构壳**代码已写，未编译、未实跑**（§10.9）。
+- **Windows（代码已写，未在 Windows 上验证）**：先跑 `powershell -ExecutionPolicy Bypass -File shell/win/fetch-webview2.ps1` 取 WebView2 SDK（固定版本 + SHA256，不入库），再 `cmake -S . -B build-win -DDEVCARD_NEW_ARCH=ON` + 构建；要求 VS2022 Build Tools 与 WebView2 Runtime。这条路径本机无法执行，按 [§10.9](docs/改造技术方案.md) 逐条验证后再宣称可用。
 
 ### 2.8 新架构 macOS 打包（一条命令）
 
@@ -175,7 +176,7 @@ dev_card_cpp/
 ├── src/                      # 旧 Qt 线源码（冻结，不再改动）
 ├── core/                     # 新架构：业务 / DAO / 迁移 / xlsx / 设置 / 图片元数据
 ├── server/                   # 新架构：HTTP 路由与入口 devcard-server
-├── shell/                    # 新架构：macOS 壳（WKWebView + 打印/导出桥）
+├── shell/                    # 新架构：macOS 壳（WKWebView + 打印桥，已实测）/ Windows 壳（WebView2，代码已写未编译）
 ├── web/                      # 新架构：原生 JS/CSS 前端（构建期内嵌进二进制）
 ├── tests/                    # 新架构：核心单测（ctest）
 ├── resources/                # 旧线运行期资源：字体、图标、qrc（示例 xlsx 不入库）
@@ -189,7 +190,7 @@ dev_card_cpp/
 
 ### 3.2 新架构目标结构（已实现部分）
 
-`core`（纯 C++20 业务 / DAO / 迁移）+ `server`（HTTP 与入口）+ `shell`（macOS 壳；Windows 壳属 M5）+ `web`（原生 JS 前端，构建期内嵌）+ `tests`，详见 [改造技术方案 §4.1](docs/改造技术方案.md)。
+`core`（纯 C++20 业务 / DAO / 迁移）+ `server`（HTTP 与入口）+ `shell`（macOS 壳已实测；Windows 壳代码已写，待 Windows 编译与实跑）+ `web`（原生 JS 前端，构建期内嵌）+ `tests`，详见 [改造技术方案 §4.1](docs/改造技术方案.md)。
 
 ---
 
@@ -220,7 +221,7 @@ dev_card_cpp/
 - **M0–M4.2 完成、M5 第一段完成（仅 macOS）**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**，旧 Qt 线仍是可用的发版路径。
 - **版本检查只读本地清单**：`/api/version` 读数据目录里的 `update.json`，不会联网拉远端清单；远端清单与自动下载/替换属 M6，且 M6 阻塞于签名决策。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- **Windows 侧未真机跑**：Windows 壳（WebView2）尚未开始，打包脚本与 SmartScreen 表现也都还没在 Windows 机器上执行过。
+- **Windows 侧未真机跑**：Windows 壳（WebView2）**代码已写但从未编译**——本机是 macOS，没有 MSVC，也没有 Windows 机器；编译、CRT、`/utf-8`、generator、中文路径、打印对话框、SmartScreen、WebView2 Runtime、交互回归九项全部待做，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。打包脚本与 SmartScreen 表现同样还没在 Windows 上执行过。
 - **旧库迁移夹具无设备行**：用于 M3 验收的脱敏旧库样本里没有设备记录，设备行迁移只做了逻辑与单测，未做真实数据抽样比对。
 
 v1.1.3 已修复：数据库迁出程序目录（构建不再删库、只读安装目录可写用户数据）、`build.bat` 构建后自动复制 `resources/` 到 `bin/`。详见 [v1.1.3 变更说明](docs/变更说明-v1.1.3.md)。

@@ -59,6 +59,9 @@ resources/tb_device.xlsx
 /dist/
 /build-new/
 
+# ===== 构建时下载的第三方 SDK（脚本取，不入库）=====
+/third_party/webview2/
+
 # ===== 操作系统文件 =====
 .DS_Store
 ._*
