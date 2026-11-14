@@ -276,15 +276,25 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
   const std::string curl =
       (override_path && *override_path) ? std::string(override_path)
                                         : std::string("curl");
-  // 命令行里只出现 ASCII：工作目录承载中文路径，`-o` / `--stderr` 用固定名。
-  // 这样即使 curl.exe 的 CRT 再按 ACP 解释一次 argv，也没有非 ASCII 字节可坏。
+  // 命令行里只出现 ASCII：工作目录承载中文路径，`-o` / `--stderr` 只给文件名。
+  // 文件名取 part 的 ASCII 名（`sanitize_update_file_name` 已保证 ASCII），这样
+  // 服务端按 part 路径轮询进度仍然读得到真实字节；万一不是 ASCII（理论上不会），
+  // 才退回固定临时名 + 下载完改名。
   const std::filesystem::path work_dir = target.parent_path();
-  const std::string temp_name = ".devcard-download.tmp";
-  const std::string log_name = ".devcard-download.log";
-  const std::filesystem::path temp_path = work_dir / temp_name;
+  std::string output_name = path_to_utf8(target.filename());
+  const bool ascii_name =
+      !output_name.empty() &&
+      std::all_of(output_name.begin(), output_name.end(), [](unsigned char c) {
+        return c > 0x20 && c < 0x7F && c != '"' && c != '\\';
+      });
+  const std::string fetch_name =
+      ascii_name ? output_name : std::string(".devcard-download.tmp");
+  const std::string log_name =
+      ascii_name ? output_name + ".log" : std::string(".devcard-download.log");
+  const std::filesystem::path fetch_path = work_dir / fetch_name;
   const std::filesystem::path log_path = work_dir / log_name;
   std::error_code ec;
-  std::filesystem::remove(temp_path, ec);
+  std::filesystem::remove(fetch_path, ec);
   std::filesystem::remove(log_path, ec);
 
   const std::vector<std::string> args = {
@@ -304,21 +314,23 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
       "--max-filesize",
       std::to_string(kUpdateMaxBytes),
       "--output",
-      temp_name,
+      fetch_name,
       "--stderr",
       log_name,
       url,
   };
   const int code = run_process(args, work_dir);
   if (code == 0) {
-    std::filesystem::rename(temp_path, target, ec);
-    if (ec) {
-      std::filesystem::remove(temp_path, ec);
-      std::filesystem::remove(log_path, ec);
-      // 与校验失败区分：字节已经完整落到临时名，只是改名这一步失败。
-      if (error) *error = "下载完成但落盘改名失败：" + ec.message();
-      if (error_code) *error_code = "rename_failed";
-      return false;
+    if (!ascii_name) {
+      std::filesystem::rename(fetch_path, target, ec);
+      if (ec) {
+        std::filesystem::remove(fetch_path, ec);
+        std::filesystem::remove(log_path, ec);
+        // 与校验失败区分：字节已经完整落到临时名，只是改名这一步失败。
+        if (error) *error = "下载完成但落盘改名失败：" + ec.message();
+        if (error_code) *error_code = "rename_failed";
+        return false;
+      }
     }
     std::filesystem::remove(log_path, ec);
     return true;
@@ -331,7 +343,7 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
   }
   const std::string tail = read_tail(log_path, 400);
   if (!tail.empty()) detail += "：" + tail;
-  std::filesystem::remove(temp_path, ec);
+  std::filesystem::remove(fetch_path, ec);
   std::filesystem::remove(log_path, ec);
   if (error) *error = detail;
   if (error_code) *error_code = "download_failed";
