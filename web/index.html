@@ -7,32 +7,35 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<div class="app">
+<div class="app" id="app" hidden>
   <aside class="sidebar">
     <div class="brand">
       <span class="brand-mark">DC</span>
       <span class="brand-text"><strong>设备管理卡</strong><small>DevCard</small></span>
     </div>
     <nav class="nav">
-      <a class="nav-item is-active" href="/">设备台账</a>
-      <a class="nav-item is-disabled" href="#" aria-disabled="true">用户管理</a>
-      <a class="nav-item is-disabled" href="#" aria-disabled="true">卡片打印</a>
+      <button class="nav-item is-active" type="button" data-view="devices">设备台账</button>
+      <button class="nav-item" type="button" data-view="users" id="nav-users">用户管理</button>
+      <button class="nav-item is-disabled" type="button" disabled>卡片打印</button>
     </nav>
-    <div class="sidebar-foot">M1 · 台账闭环<br><span id="health">连接中…</span></div>
+    <div class="sidebar-foot">M3 · 迁移与用户<br><span id="health">连接中…</span></div>
   </aside>
 
   <main class="main">
     <header class="topbar">
       <div>
-        <h1>设备台账</h1>
-        <p>维护设备名称、位置、控制范围与维护电话</p>
+        <h1 id="page-title">设备台账</h1>
+        <p id="page-sub">维护设备名称、位置、控制范围与维护电话</p>
       </div>
       <div class="topbar-actions">
         <span class="pill" id="version-pill">—</span>
+        <span class="user-chip" id="user-chip" hidden></span>
+        <button class="btn btn-ghost" id="logout" type="button" hidden>退出</button>
       </div>
     </header>
 
-    <section class="page">
+    <section class="page" id="view-devices">
+      <div class="notice" id="legacy-notice" hidden></div>
       <div class="toolbar">
         <form class="filters" id="filters">
           <label class="search">
@@ -83,7 +86,71 @@
         </div>
       </footer>
     </section>
+
+    <section class="page" id="view-users" hidden>
+      <div class="section-head">
+        <div>
+          <h2>账号</h2>
+          <p>首次登录的账号必须改密；删除账号后不会再被自动重建。</p>
+        </div>
+        <button class="btn btn-primary" id="add-user" type="button">新增账号</button>
+        <button class="btn btn-ghost" id="change-my-password" type="button">修改我的口令</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>用户名</th>
+            <th>显示名</th>
+            <th>角色</th>
+            <th>状态</th>
+            <th class="col-actions">操作</th>
+          </tr>
+          </thead>
+          <tbody id="user-rows"></tbody>
+        </table>
+        <div class="empty" id="user-empty" hidden>还没有账号。</div>
+      </div>
+
+      <div class="section-head">
+        <div>
+          <h2>数据维护</h2>
+          <p>备份使用 SQLite 一致性快照；恢复前会自动再备份一次当前库。</p>
+        </div>
+        <button class="btn btn-primary" id="backup-now" type="button">立即备份</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+          <tr>
+            <th>备份文件</th>
+            <th>时间</th>
+            <th>大小</th>
+            <th class="col-actions">操作</th>
+          </tr>
+          </thead>
+          <tbody id="backup-rows"></tbody>
+        </table>
+        <div class="empty" id="backup-empty" hidden>还没有备份。</div>
+      </div>
+    </section>
   </main>
+</div>
+
+<div class="login" id="login" hidden>
+  <form class="login-card" id="login-form">
+    <div class="login-brand">
+      <span class="brand-mark">DC</span>
+      <div>
+        <h2>设备管理卡</h2>
+        <p>请输入账号和口令</p>
+      </div>
+    </div>
+    <label>用户名<input id="login-user" autocomplete="username" required></label>
+    <label>口令<input id="login-password" type="password" autocomplete="current-password" required></label>
+    <p class="form-error" id="login-error" hidden></p>
+    <button class="btn btn-primary login-submit" type="submit">登录</button>
+  </form>
 </div>
 
 <div class="scrim" id="scrim" hidden></div>
@@ -119,6 +186,62 @@
       <button class="btn btn-danger" id="confirm-delete" type="button">删除</button>
     </div>
   </div>
+</div>
+
+<div class="modal" id="password-modal" hidden>
+  <form class="modal-card" id="password-form" role="dialog" aria-modal="true">
+    <h2 id="password-title">修改口令</h2>
+    <p id="password-hint">首次登录必须把初始口令改掉，修改后才能进入业务页。</p>
+    <div class="modal-form">
+      <label>原口令<input id="old-password" type="password" autocomplete="current-password" required></label>
+      <label>新口令（8–128 个字符）<input id="new-password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label>再次输入新口令<input id="new-password-2" type="password" minlength="8" autocomplete="new-password" required></label>
+      <p class="form-error" id="password-error" hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="password-cancel" type="button">稍后</button>
+      <button class="btn btn-primary" type="submit">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="modal" id="user-modal" hidden>
+  <form class="modal-card" id="user-form" role="dialog" aria-modal="true">
+    <h2 id="user-modal-title">新增账号</h2>
+    <div class="modal-form">
+      <label>用户名<input id="user-name" maxlength="20" required></label>
+      <label>显示名<input id="user-display" maxlength="20"></label>
+      <label>角色
+        <select id="user-role">
+          <option value="user">普通用户</option>
+          <option value="admin">管理员</option>
+        </select>
+      </label>
+      <label id="user-password-label">初始口令（8–128 个字符）
+        <input id="user-password" type="password" minlength="8" autocomplete="new-password">
+      </label>
+      <p class="form-error" id="user-error" hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="user-cancel" type="button">取消</button>
+      <button class="btn btn-primary" type="submit">保存</button>
+    </div>
+  </form>
+</div>
+
+<div class="modal" id="reset-modal" hidden>
+  <form class="modal-card" id="reset-form" role="dialog" aria-modal="true">
+    <h2>重置口令</h2>
+    <p id="reset-hint">重置后该账号下次登录必须修改口令。</p>
+    <div class="modal-form">
+      <label>新口令（8–128 个字符）<input id="reset-password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <p class="form-error" id="reset-error" hidden></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="reset-cancel" type="button">取消</button>
+      <button class="btn btn-primary" type="submit">重置</button>
+    </div>
+  </form>
 </div>
 
 <div class="toast" id="toast" hidden></div>

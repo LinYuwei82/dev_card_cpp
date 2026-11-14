@@ -2,9 +2,13 @@
 
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <vector>
+
+#include "devcard/error.h"
 
 namespace devcard {
 namespace {
@@ -85,6 +89,16 @@ std::string sha256_hex(std::string_view input) {
   out << std::hex << std::setfill('0');
   for (std::uint32_t v : h) out << std::setw(8) << v;
   return out.str();
+}
+
+std::string sha256_file(const std::filesystem::path& file) {
+  std::ifstream input(file, std::ios::binary);
+  if (!input) {
+    throw AppError("io_error", "无法读取文件: " + file.string());
+  }
+  std::string bytes((std::istreambuf_iterator<char>(input)),
+                    std::istreambuf_iterator<char>());
+  return sha256_hex(bytes);
 }
 
 }  // namespace devcard

@@ -9,12 +9,29 @@
     items: [],
     filters: { keyword: '', field: '', name: '', location: '' },
     editingId: null,
-    pendingDeleteId: null
+    pendingDeleteId: null,
+    user: null,
+    view: 'devices',
+    users: [],
+    backups: [],
+    editingUser: null,
+    resetUser: null,
+    forcedPassword: false
   };
 
   var el = {
+    app: document.getElementById('app'),
     health: document.getElementById('health'),
     version: document.getElementById('version-pill'),
+    userChip: document.getElementById('user-chip'),
+    logout: document.getElementById('logout'),
+    navUsers: document.getElementById('nav-users'),
+    pageTitle: document.getElementById('page-title'),
+    pageSub: document.getElementById('page-sub'),
+    viewDevices: document.getElementById('view-devices'),
+    viewUsers: document.getElementById('view-users'),
+    legacyNotice: document.getElementById('legacy-notice'),
+
     filters: document.getElementById('filters'),
     keyword: document.getElementById('keyword'),
     field: document.getElementById('field'),
@@ -31,6 +48,7 @@
     importBtn: document.getElementById('import-btn'),
     exportBtn: document.getElementById('export-btn'),
     importFile: document.getElementById('import-file'),
+
     scrim: document.getElementById('scrim'),
     drawer: document.getElementById('drawer'),
     drawerTitle: document.getElementById('drawer-title'),
@@ -47,6 +65,49 @@
     modalText: document.getElementById('modal-text'),
     cancelDelete: document.getElementById('cancel-delete'),
     confirmDelete: document.getElementById('confirm-delete'),
+
+    login: document.getElementById('login'),
+    loginForm: document.getElementById('login-form'),
+    loginUser: document.getElementById('login-user'),
+    loginPassword: document.getElementById('login-password'),
+    loginError: document.getElementById('login-error'),
+
+    passwordModal: document.getElementById('password-modal'),
+    passwordForm: document.getElementById('password-form'),
+    passwordTitle: document.getElementById('password-title'),
+    passwordHint: document.getElementById('password-hint'),
+    oldPassword: document.getElementById('old-password'),
+    newPassword: document.getElementById('new-password'),
+    newPassword2: document.getElementById('new-password-2'),
+    passwordError: document.getElementById('password-error'),
+    passwordCancel: document.getElementById('password-cancel'),
+
+    userRows: document.getElementById('user-rows'),
+    userEmpty: document.getElementById('user-empty'),
+    addUser: document.getElementById('add-user'),
+    changeMyPassword: document.getElementById('change-my-password'),
+    userModal: document.getElementById('user-modal'),
+    userForm: document.getElementById('user-form'),
+    userModalTitle: document.getElementById('user-modal-title'),
+    userName: document.getElementById('user-name'),
+    userDisplay: document.getElementById('user-display'),
+    userRole: document.getElementById('user-role'),
+    userPasswordLabel: document.getElementById('user-password-label'),
+    userPassword: document.getElementById('user-password'),
+    userError: document.getElementById('user-error'),
+    userCancel: document.getElementById('user-cancel'),
+
+    resetModal: document.getElementById('reset-modal'),
+    resetForm: document.getElementById('reset-form'),
+    resetHint: document.getElementById('reset-hint'),
+    resetPassword: document.getElementById('reset-password'),
+    resetError: document.getElementById('reset-error'),
+    resetCancel: document.getElementById('reset-cancel'),
+
+    backupRows: document.getElementById('backup-rows'),
+    backupEmpty: document.getElementById('backup-empty'),
+    backupNow: document.getElementById('backup-now'),
+
     toast: document.getElementById('toast')
   };
 
@@ -60,7 +121,10 @@
   }
 
   function api(method, url, body) {
-    var options = { method: method, headers: { Accept: 'application/json' } };
+    var options = {
+      method: method,
+      headers: { Accept: 'application/json', 'X-Requested-With': 'DevCard' }
+    };
     if (body !== undefined) {
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(body);
@@ -86,6 +150,19 @@
     });
   }
 
+  function handleAuthFailure(error) {
+    if (!error) return false;
+    if (error.status === 401) {
+      showLogin();
+      return true;
+    }
+    if (error.status === 403 && error.code === 'must_change_password') {
+      openPasswordModal(true);
+      return true;
+    }
+    return false;
+  }
+
   var toastTimer = null;
   function toast(message, kind) {
     el.toast.textContent = message;
@@ -96,6 +173,194 @@
       el.toast.hidden = true;
     }, 2600);
   }
+
+  // ---------- 会话 ----------
+
+  function showLogin(message) {
+    el.app.hidden = true;
+    el.login.hidden = false;
+    el.userChip.hidden = true;
+    el.logout.hidden = true;
+    if (message) {
+      el.loginError.textContent = message;
+      el.loginError.hidden = false;
+    } else {
+      el.loginError.hidden = true;
+    }
+    el.loginUser.focus();
+  }
+
+  function applyBootstrap(data) {
+    state.user = data.user;
+    el.app.hidden = false;
+    el.login.hidden = true;
+    el.userChip.hidden = false;
+    el.logout.hidden = false;
+    el.userChip.textContent =
+      data.user.user_name + (data.user.role === 'admin' ? ' · 管理员' : ' · 用户');
+    el.navUsers.hidden = data.user.role !== 'admin';
+    el.version.textContent = 'v' + data.version;
+    el.health.textContent = '服务正常 · schema ' + data.schema_version;
+    renderLegacyNotice(data.legacy);
+    if (data.user.must_change_password) {
+      openPasswordModal(true);
+    } else {
+      enterApp();
+    }
+  }
+
+  function loadBootstrap() {
+    return api('GET', '/api/bootstrap').then(applyBootstrap);
+  }
+
+  function tryLocalSession() {
+    var meta = document.querySelector('meta[name="devcard-local-token"]');
+    var token = meta ? meta.getAttribute('content') : '';
+    if (!token) {
+      showLogin();
+      return Promise.resolve();
+    }
+    return api('POST', '/api/session/local', { token: token })
+      .then(loadBootstrap)
+      .catch(function () {
+        showLogin();
+      });
+  }
+
+  function enterApp() {
+    loadOptions();
+    load();
+    if (state.view === 'users') {
+      loadUsers();
+      loadBackups();
+    }
+  }
+
+  el.loginForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    el.loginError.hidden = true;
+    api('POST', '/api/session/login', {
+      username: el.loginUser.value.trim(),
+      password: el.loginPassword.value
+    })
+      .then(function () {
+        el.loginPassword.value = '';
+        return loadBootstrap();
+      })
+      .catch(function (error) {
+        el.loginError.textContent = error.message;
+        el.loginError.hidden = false;
+      });
+  });
+
+  el.logout.addEventListener('click', function () {
+    api('POST', '/api/session/logout')
+      .then(function () {
+        state.user = null;
+        showLogin();
+      })
+      .catch(function (error) {
+        toast(error.message, 'error');
+      });
+  });
+
+  // ---------- 强制改密 ----------
+
+  function openPasswordModal(forced) {
+    state.forcedPassword = forced;
+    el.passwordTitle.textContent = forced ? '首次登录必须修改口令' : '修改口令';
+    el.passwordHint.textContent = forced
+      ? '当前账号仍使用初始或重置口令，修改后才能进入业务页。'
+      : '修改当前账号的口令。';
+    el.passwordCancel.hidden = forced;
+    el.oldPassword.value = '';
+    el.newPassword.value = '';
+    el.newPassword2.value = '';
+    el.passwordError.hidden = true;
+    el.passwordModal.hidden = false;
+    el.oldPassword.focus();
+  }
+
+  el.changeMyPassword.addEventListener('click', function () {
+    openPasswordModal(false);
+  });
+
+  el.passwordCancel.addEventListener('click', function () {
+    if (state.forcedPassword) return;
+    el.passwordModal.hidden = true;
+  });
+
+  el.passwordForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    el.passwordError.hidden = true;
+    if (el.newPassword.value !== el.newPassword2.value) {
+      el.passwordError.textContent = '两次输入的新口令不一致';
+      el.passwordError.hidden = false;
+      return;
+    }
+    api('POST', '/api/users/password', {
+      old_password: el.oldPassword.value,
+      new_password: el.newPassword.value
+    })
+      .then(function () {
+        var forced = state.forcedPassword;
+        state.forcedPassword = false;
+        state.user.must_change_password = false;
+        el.passwordModal.hidden = true;
+        toast('口令已更新');
+        if (forced) enterApp();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        el.passwordError.textContent = error.message;
+        el.passwordError.hidden = false;
+      });
+  });
+
+  // ---------- 视图切换 ----------
+
+  function setView(view) {
+    state.view = view;
+    Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (button) {
+      button.classList.toggle('is-active', button.getAttribute('data-view') === view);
+    });
+    el.viewDevices.hidden = view !== 'devices';
+    el.viewUsers.hidden = view !== 'users';
+    el.pageTitle.textContent = view === 'devices' ? '设备台账' : '用户管理';
+    el.pageSub.textContent = view === 'devices'
+      ? '维护设备名称、位置、控制范围与维护电话'
+      : '账号维护与数据备份恢复';
+    if (view === 'users') {
+      loadUsers();
+      loadBackups();
+    }
+  }
+
+  document.querySelector('.nav').addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-view]');
+    if (!button || button.disabled) return;
+    setView(button.getAttribute('data-view'));
+  });
+
+  function renderLegacyNotice(legacy) {
+    if (!legacy) {
+      el.legacyNotice.hidden = true;
+      return;
+    }
+    var parts = [
+      '已从旧库导入 ' + legacy.devices_imported + ' 条设备、' +
+        legacy.users_imported + ' 个账号。',
+      '原库备份：' + legacy.backup + '。'
+    ];
+    if (legacy.archived_as) parts.push('旧库已归档为 ' + legacy.archived_as + '。');
+    if (legacy.warnings && legacy.warnings.length) {
+      parts.push('共 ' + legacy.warnings.length + ' 条告警（超长截断、空字段跳过等）。');
+    }
+    el.legacyNotice.textContent = parts.join(' ');
+    el.legacyNotice.hidden = false;
+  }
+
+  // ---------- 设备台账 ----------
 
   function totalPages() {
     return Math.max(1, Math.ceil(state.total / PAGE_SIZE));
@@ -156,6 +421,7 @@
         renderPager();
       })
       .catch(function (error) {
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       });
   }
@@ -180,6 +446,7 @@
         fillSelect(el.location, data.locations || []);
       })
       .catch(function (error) {
+        if (handleAuthFailure(error)) return;
         toast('筛选项加载失败：' + error.message, 'error');
       });
   }
@@ -270,7 +537,10 @@
     el.importBtn.disabled = true;
     fetch('/api/devices/import', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Requested-With': 'DevCard'
+      },
       body: file
     })
       .then(function (response) {
@@ -281,7 +551,12 @@
           } catch (error) {
             data = { message: text };
           }
-          if (!response.ok) throw new Error(data.message || '导入失败');
+          if (!response.ok) {
+            var failure = new Error(data.message || '导入失败');
+            failure.status = response.status;
+            failure.code = data.error;
+            throw failure;
+          }
           return data;
         });
       })
@@ -294,6 +569,7 @@
         return loadOptions().then(load);
       })
       .catch(function (error) {
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       })
       .then(function () {
@@ -358,17 +634,19 @@
       : api('POST', '/api/devices', payload);
 
     request
-      .then(function (saved) {
+      .then(function () {
         closeDrawer();
         toast(editingId ? '已保存修改' : '已新增设备');
         return loadOptions().then(function () {
           if (!editingId) state.page = 0;
           return load();
-        }).then(function () {
-          return saved;
         });
       })
       .catch(function (error) {
+        if (handleAuthFailure(error)) {
+          closeDrawer();
+          return;
+        }
         el.formError.textContent = error.message;
         el.formError.hidden = false;
       });
@@ -388,6 +666,7 @@
       })
       .catch(function (error) {
         closeDelete();
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       })
       .then(function () {
@@ -395,21 +674,256 @@
       });
   });
 
+  // ---------- 用户 ----------
+
+  function roleLabel(role) {
+    return role === 'admin' ? '管理员' : '普通用户';
+  }
+
+  function renderUsers() {
+    el.userRows.innerHTML = state.users
+      .map(function (user) {
+        var status = [];
+        if (user.must_change_password) status.push('需改密');
+        if (user.locked_until) status.push('锁定至 ' + user.locked_until);
+        var statusText = status.length ? status.join(' / ') : '正常';
+        return (
+          '<tr>' +
+          '<td>' + escapeHtml(user.user_name) + '</td>' +
+          '<td>' + escapeHtml(user.display_name) + '</td>' +
+          '<td>' + roleLabel(user.role) + '</td>' +
+          '<td class="muted">' + escapeHtml(statusText) + '</td>' +
+          '<td class="col-actions">' +
+          '<button class="row-btn" type="button" data-user-action="edit" data-name="' + escapeHtml(user.user_name) + '">编辑</button>' +
+          '<button class="row-btn" type="button" data-user-action="reset" data-name="' + escapeHtml(user.user_name) + '">重置口令</button>' +
+          (state.user && state.user.user_name === user.user_name
+            ? ''
+            : '<button class="row-btn danger" type="button" data-user-action="delete" data-name="' + escapeHtml(user.user_name) + '">删除</button>') +
+          '</td>' +
+          '</tr>'
+        );
+      })
+      .join('');
+    el.userEmpty.hidden = state.users.length > 0;
+  }
+
+  function loadUsers() {
+    return api('GET', '/api/users')
+      .then(function (data) {
+        state.users = data.items || [];
+        renderUsers();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      });
+  }
+
+  function openUserModal(user) {
+    state.editingUser = user;
+    el.userModalTitle.textContent = user ? '编辑账号' : '新增账号';
+    el.userName.value = user ? user.user_name : '';
+    el.userName.disabled = !!user;
+    el.userDisplay.value = user ? user.display_name : '';
+    el.userRole.value = user ? user.role : 'user';
+    el.userPasswordLabel.hidden = !!user;
+    el.userPassword.required = !user;
+    el.userPassword.value = '';
+    el.userError.hidden = true;
+    el.userModal.hidden = false;
+    if (user) el.userDisplay.focus();
+    else el.userName.focus();
+  }
+
+  el.addUser.addEventListener('click', function () {
+    openUserModal(null);
+  });
+
+  el.userCancel.addEventListener('click', function () {
+    el.userModal.hidden = true;
+    state.editingUser = null;
+  });
+
+  el.userForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    el.userError.hidden = true;
+    var editing = state.editingUser;
+    var request = editing
+      ? api('PUT', '/api/users', {
+          user_name: editing.user_name,
+          display_name: el.userDisplay.value.trim(),
+          role: el.userRole.value
+        })
+      : api('POST', '/api/users', {
+          user_name: el.userName.value.trim(),
+          display_name: el.userDisplay.value.trim(),
+          role: el.userRole.value,
+          password: el.userPassword.value
+        });
+    request
+      .then(function () {
+        el.userModal.hidden = true;
+        state.editingUser = null;
+        toast(editing ? '账号已更新' : '账号已创建');
+        return loadUsers();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) {
+          el.userModal.hidden = true;
+          return;
+        }
+        el.userError.textContent = error.message;
+        el.userError.hidden = false;
+      });
+  });
+
+  el.userRows.addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-user-action]');
+    if (!button) return;
+    var name = button.getAttribute('data-name');
+    var action = button.getAttribute('data-user-action');
+    var user = state.users.filter(function (item) { return item.user_name === name; })[0];
+    if (!user) return;
+    if (action === 'edit') {
+      openUserModal(user);
+    } else if (action === 'reset') {
+      state.resetUser = name;
+      el.resetHint.textContent = '为「' + name + '」设置新口令，重置后下次登录必须修改。';
+      el.resetPassword.value = '';
+      el.resetError.hidden = true;
+      el.resetModal.hidden = false;
+      el.resetPassword.focus();
+    } else if (action === 'delete') {
+      if (!window.confirm('确定删除账号「' + name + '」？删除后不可恢复，也不会自动重建。')) return;
+      api('DELETE', '/api/users?name=' + encodeURIComponent(name))
+        .then(function () {
+          toast('账号已删除');
+          return loadUsers();
+        })
+        .catch(function (error) {
+          if (handleAuthFailure(error)) return;
+          toast(error.message, 'error');
+        });
+    }
+  });
+
+  el.resetCancel.addEventListener('click', function () {
+    el.resetModal.hidden = true;
+    state.resetUser = null;
+  });
+
+  el.resetForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    el.resetError.hidden = true;
+    if (!state.resetUser) return;
+    api('POST', '/api/users/password', {
+      user_name: state.resetUser,
+      new_password: el.resetPassword.value
+    })
+      .then(function () {
+        el.resetModal.hidden = true;
+        state.resetUser = null;
+        toast('口令已重置');
+        return loadUsers();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) {
+          el.resetModal.hidden = true;
+          return;
+        }
+        el.resetError.textContent = error.message;
+        el.resetError.hidden = false;
+      });
+  });
+
+  // ---------- 备份与恢复 ----------
+
+  function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+    return (bytes / 1024 / 1024).toFixed(2) + ' MiB';
+  }
+
+  function renderBackups() {
+    el.backupRows.innerHTML = state.backups
+      .map(function (item) {
+        return (
+          '<tr>' +
+          '<td>' + escapeHtml(item.name) + '</td>' +
+          '<td class="muted">' + escapeHtml(item.created_at) + '</td>' +
+          '<td class="muted">' + formatBytes(item.bytes) + '</td>' +
+          '<td class="col-actions">' +
+          '<button class="row-btn danger" type="button" data-backup="' + escapeHtml(item.name) + '">恢复</button>' +
+          '</td>' +
+          '</tr>'
+        );
+      })
+      .join('');
+    el.backupEmpty.hidden = state.backups.length > 0;
+  }
+
+  function loadBackups() {
+    return api('GET', '/api/system/backups')
+      .then(function (data) {
+        state.backups = data.items || [];
+        renderBackups();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      });
+  }
+
+  el.backupNow.addEventListener('click', function () {
+    el.backupNow.disabled = true;
+    api('POST', '/api/system/backup', {})
+      .then(function (entry) {
+        toast('备份完成：' + entry.name);
+        return loadBackups();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.backupNow.disabled = false;
+      });
+  });
+
+  el.backupRows.addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-backup]');
+    if (!button) return;
+    var name = button.getAttribute('data-backup');
+    if (!window.confirm('确定用「' + name + '」覆盖当前数据库？恢复前会自动备份当前库。')) return;
+    api('POST', '/api/system/restore', { name: name, confirm: 'RESTORE' })
+      .then(function () {
+        window.alert('恢复完成，页面将重新加载。');
+        window.location.reload();
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      });
+  });
+
   document.addEventListener('keydown', function (event) {
     if (event.key !== 'Escape') return;
     if (!el.modal.hidden) closeDelete();
     else if (el.drawer.classList.contains('is-open')) closeDrawer();
+    else if (!el.userModal.hidden) el.userModal.hidden = true;
+    else if (!el.resetModal.hidden) el.resetModal.hidden = true;
   });
 
-  api('GET', '/api/health')
-    .then(function (data) {
-      el.health.textContent = '服务正常 · schema ' + data.schema_version;
-      el.version.textContent = 'v' + data.version;
-    })
-    .catch(function () {
-      el.health.textContent = '服务未连接';
-    });
+  // ---------- 启动 ----------
 
-  loadOptions();
-  load();
+  api('GET', '/api/bootstrap')
+    .then(applyBootstrap)
+    .catch(function (error) {
+      if (error.status === 401) {
+        tryLocalSession();
+        return;
+      }
+      showLogin('无法连接本地服务：' + error.message);
+    });
 })();

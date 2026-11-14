@@ -1,13 +1,20 @@
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
 
+#include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
+#include "devcard/legacy.h"
 #include "devcard/migrations.h"
+#include "devcard/password.h"
 #include "devcard/service/device_service.h"
+#include "devcard/service/user_service.h"
+#include "devcard/settings.h"
 #include "devcard/xlsx.h"
 
 namespace {
@@ -24,8 +31,12 @@ int failures = 0;
   } while (0)
 
 std::filesystem::path temp_db() {
+  static std::uint64_t counter = 0;
+  const auto stamp =
+      std::chrono::steady_clock::now().time_since_epoch().count();
   const auto dir = std::filesystem::temp_directory_path() /
-                   ("devcard-test-" + std::to_string(std::rand()));
+                   ("devcard-test-" + std::to_string(stamp) + "-" +
+                    std::to_string(counter++));
   std::filesystem::create_directories(dir);
   return dir / "devicedb.db";
 }
@@ -280,6 +291,215 @@ int main() {
       CHECK(rejected);
     }
     std::filesystem::remove_all(legacy_file.parent_path());
+  }
+
+  {
+    // Argon2id：编码串、正确/错误口令。
+    const std::string hash = devcard::hash_password("Passw0rd!");
+    CHECK(hash.rfind("$argon2id$", 0) == 0);
+    CHECK(devcard::verify_password(hash, "Passw0rd!"));
+    CHECK(!devcard::verify_password(hash, "passw0rd!"));
+    CHECK(!devcard::verify_password("", "Passw0rd!"));
+  }
+
+  {
+    const std::filesystem::path dir = temp_db().parent_path();
+    const std::filesystem::path file = dir / "devicedb.db";
+    devcard::Db db(file);
+    devcard::migrate(db);
+
+    const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
+    CHECK(seed.seeded);
+    CHECK(seed.accounts.size() == 2);
+    CHECK(std::filesystem::exists(seed.password_file));
+    CHECK(!devcard::seed_default_users(db, dir).seeded);  // 幂等：已有账号不再重建
+
+    devcard::UserService users(db);
+    CHECK(users.count() == 2);
+
+    const std::string root_password = seed.accounts[0].second;
+    const devcard::User root = users.authenticate("root", root_password);
+    CHECK(root.must_change_password);
+    CHECK(users.local_user() == "root");
+
+    bool bad_login = false;
+    try {
+      users.authenticate("root", "definitely-wrong");
+    } catch (const devcard::AppError& error) {
+      bad_login = std::string(error.code()) == "invalid_credentials";
+    }
+    CHECK(bad_login);
+
+    for (int i = 0; i < 4; ++i) {
+      try {
+        users.authenticate("root", "definitely-wrong");
+      } catch (const devcard::AppError&) {
+      }
+    }
+    bool locked = false;
+    try {
+      users.authenticate("root", root_password);
+    } catch (const devcard::AppError& error) {
+      locked = std::string(error.code()) == "locked";
+    }
+    CHECK(locked);
+
+    // 命令行恢复通道：重置后清锁、强制改密。
+    users.reset_password("root", "ResetPassw0rd");
+    const devcard::User reset = users.authenticate("root", "ResetPassw0rd");
+    CHECK(reset.must_change_password);
+
+    users.change_password("root", "ResetPassw0rd", "ChangedPassw0rd");
+    CHECK(!users.get("root").must_change_password);
+    bool old_rejected = false;
+    try {
+      users.authenticate("root", "ResetPassw0rd");
+    } catch (const devcard::AppError&) {
+      old_rejected = true;
+    }
+    CHECK(old_rejected);
+    CHECK(users.authenticate("root", "ChangedPassw0rd").user_name == "root");
+
+    bool weak = false;
+    try {
+      users.create("short", "123", "", "user");
+    } catch (const devcard::AppError& error) {
+      weak = std::string(error.code()) == "weak_password";
+    }
+    CHECK(weak);
+
+    const devcard::User normal =
+        users.create("tester", "TesterPassw0rd", "测试员", "user");
+    CHECK(normal.role == "user");
+    CHECK(normal.must_change_password);
+
+    bool last_admin = false;
+    try {
+      users.remove("root", "tester");
+    } catch (const devcard::AppError& error) {
+      last_admin = std::string(error.code()) == "last_admin";
+    }
+    CHECK(last_admin);
+
+    users.remove("tester", "root");
+    CHECK(users.count() == 2);
+
+    // 两个默认账号都改密后，一次性口令文件可删除。
+    users.change_password("安业物业", seed.accounts[1].second, "AnyePassw0rd");
+    CHECK(!users.any_must_change());
+    devcard::remove_seed_password_file(dir);
+    CHECK(!std::filesystem::exists(seed.password_file));
+
+    std::filesystem::remove_all(dir);
+  }
+
+  {
+    // 旧库：13 条设备 + 3 个用户（含默认账号与超长字段）。
+    const std::filesystem::path dir = temp_db().parent_path();
+    const std::filesystem::path legacy_dir = dir / "legacy";
+    std::filesystem::create_directories(legacy_dir);
+    const std::filesystem::path legacy_file = legacy_dir / "devicedb.db";
+    {
+      sqlite3* conn = nullptr;
+      sqlite3_open(legacy_file.string().c_str(), &conn);
+      devcard::exec_sql(
+          conn,
+          "CREATE TABLE tb_device(dev_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+          " dev_name VARCHAR(20), location VARCHAR(20), control_range VARCHAR(20),"
+          " phone VARCHAR(20));"
+          "CREATE TABLE tb_user(userName VARCHAR(20) PRIMARY KEY,"
+          " userPwd VARCHAR(20));");
+      devcard::exec_sql(conn, "BEGIN");
+      for (int i = 1; i <= 12; ++i) {
+        const std::string sql =
+            "INSERT INTO tb_device(dev_name,location,control_range,phone)"
+            " VALUES('设备" + std::to_string(i) + "','B" + std::to_string(i % 3) +
+            "栋','1-" + std::to_string(i % 5) + "层','138000000" +
+            (i < 10 ? "0" : "") + std::to_string(i) + "')";
+        devcard::exec_sql(conn, sql);
+      }
+      devcard::exec_sql(conn,
+                        "INSERT INTO tb_device(dev_name,location,control_range,phone)"
+                        " VALUES('这是一个超过二十个字符的设备名称用来验证截断行为',"
+                        "'A2栋','屋顶',NULL)");
+      devcard::exec_sql(conn,
+                        "INSERT INTO tb_user(userName,userPwd) VALUES"
+                        "('root','123456'),('安业物业','123456'),('operator','pass123')");
+      devcard::exec_sql(conn, "COMMIT");
+      sqlite3_close(conn);
+    }
+
+    const devcard::LegacyInfo info = devcard::inspect_legacy(legacy_file);
+    CHECK(info.is_legacy);
+    CHECK(info.devices == 13);
+    CHECK(info.users == 3);
+
+    const devcard::LegacyImportReport report =
+        devcard::import_legacy(legacy_file, dir);
+    CHECK(report.performed);
+    CHECK(report.devices_total == 13);
+    CHECK(report.devices_imported == 13);
+    CHECK(report.devices_skipped == 0);
+    CHECK(report.users_imported == 3);
+    CHECK(!report.backup.empty());
+    CHECK(std::filesystem::exists(report.backup));
+    CHECK(report.source_sha256.size() == 64);
+    CHECK(!report.warnings.empty());  // 超长字段截断告警
+
+    devcard::Db db(dir / "devicedb.db");
+    devcard::migrate(db);
+    devcard::DeviceDao devices;
+    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+    devcard::Device sample;
+    CHECK(devices.find(db, 1, sample));
+    CHECK(sample.dev_name == "设备1");
+    CHECK(sample.location == "B1栋");
+    CHECK(devices.find(db, 13, sample));
+    CHECK(sample.phone.empty());  // NULL → ''
+    CHECK(sample.dev_name.size() <= 60);  // 已按 20 个字符截断
+
+    devcard::UserService users(db);
+    CHECK(users.count() == 3);
+    const devcard::User root = users.get("root");
+    CHECK(root.role == "admin");
+    CHECK(root.must_change_password);
+    CHECK(root.password_hash.rfind("$argon2id$", 0) == 0);
+    CHECK(root.password_hash.find("123456") == std::string::npos);
+    CHECK(users.get("安业物业").must_change_password);
+    CHECK(!users.get("operator").must_change_password);
+    CHECK(devcard::get_setting(db, "legacy_imported_from") == report.source);
+    CHECK(users.authenticate("root", "123456").must_change_password);
+
+    // 重复导入：按 dev_id / user_name 幂等跳过，不追加。
+    const devcard::LegacyImportReport again =
+        devcard::import_legacy(legacy_file, dir);
+    CHECK(again.performed);
+    CHECK(again.devices_imported == 0);
+    CHECK(again.devices_skipped == 13);
+    CHECK(again.users_imported == 0);
+    CHECK(again.users_skipped == 3);
+    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+
+    // 备份与恢复：删除一条后可从备份恢复。
+    const devcard::BackupEntry backup =
+        devcard::create_backup(db, dir, "test");
+    CHECK(std::filesystem::exists(backup.path));
+    CHECK(backup.bytes > 0);
+    devcard::DeviceService service(db);
+    service.remove(1);
+    CHECK(devices.count(db, devcard::DeviceQuery{}) == 12);
+    devcard::restore_backup(db, dir, backup.name);
+    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+
+    bool bad_name = false;
+    try {
+      devcard::restore_backup(db, dir, "../devicedb.db");
+    } catch (const devcard::AppError& error) {
+      bad_name = std::string(error.code()) == "bad_backup";
+    }
+    CHECK(bad_name);
+
+    std::filesystem::remove_all(dir);
   }
 
   std::filesystem::remove_all(file.parent_path());

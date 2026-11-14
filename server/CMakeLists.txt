@@ -35,4 +35,7 @@ endif()
 
 add_executable(devcard-server src/main.cpp)
 devcard_add_version_rc(devcard-server)
+target_compile_definitions(devcard-server PRIVATE
+    DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
+)
 target_link_libraries(devcard-server PRIVATE devcard_server)

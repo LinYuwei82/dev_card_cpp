@@ -24,6 +24,9 @@ class ServerHandle {
 
   int port() const { return port_; }
 
+  // 进程级一次性本地会话令牌：壳通过页面注入的 meta 换取会话。
+  const std::string& local_token() const;
+
  private:
   friend std::unique_ptr<ServerHandle> start_server(const ServerOptions&);
 
