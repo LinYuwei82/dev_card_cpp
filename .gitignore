@@ -57,6 +57,7 @@ resources/tb_device.xlsx
 
 # ===== 本地打包产物 =====
 /dist/
+/build-new/
 
 # ===== 操作系统文件 =====
 .DS_Store

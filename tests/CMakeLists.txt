@@ -1,0 +1,3 @@
+add_executable(devcard_core_tests test_core.cpp)
+target_link_libraries(devcard_core_tests PRIVATE devcard_core)
+add_test(NAME devcard_core_tests COMMAND devcard_core_tests)

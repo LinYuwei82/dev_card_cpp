@@ -1,6 +1,37 @@
 cmake_minimum_required(VERSION 3.16)
 project(DevCard VERSION 1.1.3 LANGUAGES CXX)
 
+# 新架构（core/server/shell）与现有 Qt 架构并行存在。
+# 默认 OFF，保持 build.bat / Qt 的现有构建完全不变；新架构用
+#   cmake -S . -B build-new -DDEVCARD_NEW_ARCH=ON
+# 单独构建。M0 阶段不替换 Qt 构建入口。
+option(DEVCARD_NEW_ARCH "构建新架构（core/server/shell），不编译 Qt 代码" OFF)
+
+if(DEVCARD_NEW_ARCH)
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    set(CMAKE_CXX_EXTENSIONS OFF)
+    if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+        set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "构建类型" FORCE)
+    endif()
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" DEVCARD_VERSION_STRING)
+    string(STRIP "${DEVCARD_VERSION_STRING}" DEVCARD_VERSION_STRING)
+    message(STATUS "DevCard 新架构版本：${DEVCARD_VERSION_STRING}")
+    if(APPLE)
+        enable_language(OBJCXX)
+    endif()
+    enable_language(C)
+    add_subdirectory(core)
+    add_subdirectory(server)
+    if(APPLE)
+        add_subdirectory(shell)
+    endif()
+    enable_testing()
+    add_subdirectory(tests)
+    return()
+endif()
+
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
