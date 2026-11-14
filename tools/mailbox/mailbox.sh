@@ -55,7 +55,7 @@ fail() {
 require_mailbox() {
   [ -d "$MAILBOX_DIR" ] || fail "目录不存在 ${MAILBOX_DIR}（共享盘没挂上？）"
   [ -d "$INBOX" ] || fail "缺少 $INBOX"
-  [ -d "$READING" ] || fail "缺少 $READING（v2 协议新增：已读待回）"
+  [ -d "$READING" ] || fail "缺少 ${READING}（v2 协议新增：已读待回）"
   [ -d "$ARCHIVE" ] || fail "缺少 $ARCHIVE"
   [ -d "$PRESENCE" ] || fail "缺少 $PRESENCE"
   [ -w "$INBOX" ] || fail "$INBOX 不可写（挂载只读或权限不足）"
@@ -199,7 +199,7 @@ cmd_ack() {
   done
   [ -n "$name" ] || { echo "缺少 --file <文件名>" >&2; exit 2; }
   require_mailbox
-  [ -f "$READING/$name" ] || { echo "reading/ 里没有 $name（先 poll 读过才能 ack）" >&2; exit 2; }
+  [ -f "$READING/$name" ] || { echo "reading/ 里没有 ${name}（先 poll 读过才能 ack）" >&2; exit 2; }
   move_file "$READING/$name" "$ARCHIVE/$name" || exit 1
   echo "已归档：$name"
 }
@@ -237,9 +237,9 @@ cmd_status() {
     local self_epoch
     self_epoch="$(to_epoch "$self_ts")"
     if [ -n "$self_epoch" ]; then
-      echo "本机心跳：$self_ts（$(((now - self_epoch) / 60)) 分钟前）"
+      echo "本机心跳：${self_ts}（$(((now - self_epoch) / 60)) 分钟前）"
     else
-      echo "本机心跳：$self_ts（无法解析）"
+      echo "本机心跳：${self_ts}（无法解析）"
     fi
   fi
 
