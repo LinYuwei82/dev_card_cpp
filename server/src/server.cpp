@@ -125,7 +125,23 @@ json device_json(const Device& device) {
           {"control_range", device.control_range},
           {"phone", device.phone},
           {"created_at", device.created_at},
-          {"updated_at", device.updated_at}};
+          {"updated_at", device.updated_at},
+          {"version", device.version},
+          {"updated_by", device.updated_by}};
+}
+
+// 409 响应体：最新快照 + 冲突字段 + 版本号。
+// 前端据此提示「刷新后重填」；P3 若以后开放管理员强制覆盖，
+// 直接复用这里的 current/version 即可，不需要再改接口形状。
+json conflict_json(const ConflictError& error) {
+  const ConflictSnapshot& snapshot = error.snapshot();
+  return {{"error", "conflict"},
+          {"message", error.what()},
+          {"fields", snapshot.fields},
+          {"current", device_json(snapshot.current)},
+          {"current_version", snapshot.current.version},
+          {"updated_by", snapshot.current.updated_by},
+          {"updated_at", snapshot.current.updated_at}};
 }
 
 json user_json(const User& user) {
@@ -144,6 +160,7 @@ Device device_from_json(const json& body) {
   device.location = body.value("location", "");
   device.control_range = body.value("control_range", "");
   device.phone = body.value("phone", "");
+  device.version = body.value("version", static_cast<std::int64_t>(0));
   return device;
 }
 
@@ -354,6 +371,8 @@ const StatusTable& error_status_table() {
       {"locked", 423},
       {"forbidden", 403},
       {"must_change_password", 403},
+      {"conflict", 409},
+      {"bad_version", 400},
       {"invalid_device", 400},
       {"invalid_user", 400},
       {"weak_password", 400},
@@ -1116,18 +1135,42 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                             httplib::Response& response) {
                      const auto id = std::stoll(request.matches[1].str());
                      Device device = device_from_json(parse_body(request.body));
-                     set_json(response,
-                              device_json(state.devices->update(
-                                  id, std::move(device),
-                                  audit_context(state, request))));
+                     try {
+                       set_json(response,
+                                device_json(state.devices->update(
+                                    id, std::move(device),
+                                    audit_context(state, request))));
+                     } catch (const ConflictError& error) {
+                       set_json(response, conflict_json(error), 409);
+                     }
                    });
 
   state.server.Delete(R"(/api/devices/(\d+))",
                       [&state](const httplib::Request& request,
                                httplib::Response& response) {
-                        state.devices->remove(std::stoll(request.matches[1].str()),
-                                              audit_context(state, request));
-                        set_json(response, json{{"ok", true}});
+                        const std::string version_text =
+                            request.get_param_value("version");
+                        if (version_text.empty()) {
+                          throw AppError(
+                              "bad_version",
+                              "删除需要带 ?version=N：请先刷新列表，"
+                              "避免用过期页面删掉别人刚改过的记录");
+                        }
+                        std::int64_t version = 0;
+                        try {
+                          version = std::stoll(version_text);
+                        } catch (...) {
+                          throw AppError("bad_version",
+                                         "version 必须是整数：" + version_text);
+                        }
+                        try {
+                          state.devices->remove(
+                              std::stoll(request.matches[1].str()), version,
+                              audit_context(state, request));
+                          set_json(response, json{{"ok", true}});
+                        } catch (const ConflictError& error) {
+                          set_json(response, conflict_json(error), 409);
+                        }
                       });
 
   state.server.Get("/api/users", [&state](const httplib::Request& request,

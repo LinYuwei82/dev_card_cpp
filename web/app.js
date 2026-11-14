@@ -10,7 +10,10 @@
     items: [],
     filters: { keyword: '', field: '', name: '', location: '' },
     editingId: null,
+    // 编辑/删除时带回的乐观锁版本号：服务端用它判断页面是不是过期了。
+    editingVersion: 0,
     pendingDeleteId: null,
+    pendingDeleteVersion: 0,
     user: null,
     version: '',
     schemaVersion: '',
@@ -999,6 +1002,7 @@
 
   function openDrawer(device) {
     state.editingId = device ? device.id : null;
+    state.editingVersion = device ? device.version : 0;
     el.drawerTitle.textContent = device ? '编辑设备' : '新增设备';
     el.deviceId.value = device ? String(device.id) : '';
     el.devName.value = device ? device.dev_name : '';
@@ -1018,10 +1022,12 @@
     el.drawer.setAttribute('aria-hidden', 'true');
     el.scrim.hidden = true;
     state.editingId = null;
+    state.editingVersion = 0;
   }
 
   function openDelete(device) {
     state.pendingDeleteId = device.id;
+    state.pendingDeleteVersion = device.version;
     el.modalText.textContent =
       '确定删除「' + device.dev_name + '」·' + device.location + '？删除后不可恢复。';
     el.modal.hidden = false;
@@ -1029,6 +1035,7 @@
 
   function closeDelete() {
     state.pendingDeleteId = null;
+    state.pendingDeleteVersion = 0;
     el.modal.hidden = true;
   }
 
@@ -1400,6 +1407,8 @@
       phone: el.devPhone.value.trim()
     };
     var editingId = state.editingId;
+    // 乐观锁：编辑必须带回打开抽屉时的版本号，服务端版本不一致会返回 409。
+    if (editingId) payload.version = state.editingVersion;
     // 生僻字只提示、不拦截：设备名是真实的，拒绝保存只会让用户回去删字。
     var missing = uncoveredChars(payload.dev_name + payload.location + payload.control_range);
     var request = editingId
@@ -1424,6 +1433,12 @@
           closeDrawer();
           return;
         }
+        if (error.status === 409) {
+          // 冲突口径（P3 未拍板，不提供强制覆盖）：提示刷新后重填，绝不静默覆盖。
+          closeDrawer();
+          toast('数据已被他人修改，请刷新后重试', 'error');
+          return loadOptions().then(load);
+        }
         el.formError.textContent = error.message;
         el.formError.hidden = false;
       });
@@ -1433,9 +1448,10 @@
 
   el.confirmDelete.addEventListener('click', function () {
     var id = state.pendingDeleteId;
+    var version = state.pendingDeleteVersion;
     if (!id) return;
     el.confirmDelete.disabled = true;
-    api('DELETE', '/api/devices/' + id)
+    api('DELETE', '/api/devices/' + id + '?version=' + version)
       .then(function () {
         closeDelete();
         toast('已删除设备');
@@ -1444,6 +1460,10 @@
       .catch(function (error) {
         closeDelete();
         if (handleAuthFailure(error)) return;
+        if (error.status === 409) {
+          toast('数据已被他人修改，请刷新后重试', 'error');
+          return load();
+        }
         toast(error.message, 'error');
       })
       .then(function () {

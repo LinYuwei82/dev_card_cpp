@@ -3,8 +3,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
@@ -461,7 +464,7 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   CHECK(std::filesystem::exists(backup.path));
   CHECK(backup.bytes > 0);
   devcard::DeviceService service(db);
-  service.remove(1);
+  service.remove(1, service.get(1).version);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 12);
   devcard::restore_backup(db, dir, backup.name);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
@@ -590,7 +593,7 @@ int main() {
     CHECK(dao.find(db, fan.id, updated));
     CHECK(updated.location == "A2栋");
 
-    db.write([&](sqlite3* conn) { dao.erase(conn, pump.id); });
+    db.write([&](sqlite3* conn) { dao.erase(conn, pump.id, pump.version); });
     CHECK(dao.count(db, devcard::DeviceQuery{}) == 1);
 
     query.name.clear();
@@ -697,17 +700,66 @@ int main() {
 
       bool missing_update = false;
       try {
-        service.update(99999, make("不存在", "B1栋", "1层", "138"));
+        devcard::Device absent =
+            make("不存在", "B1栋", "1层", "138");
+        absent.version = 1;  // 有版本才谈得上「记录不存在」，否则先被 bad_version 拦住
+        service.update(99999, absent);
       } catch (const devcard::AppError& error) {
         missing_update = std::string(error.code()) == "not_found";
       }
       CHECK(missing_update);
 
-      service.remove(first.id);
+      // 真并发：两个线程拿同一个版本同时改同一条，只能一个成功。
+      {
+        const devcard::Device base = service.get(first.id);
+        struct Outcome {
+          bool ok = false;
+          bool conflict = false;
+          devcard::Device current;
+          std::vector<std::string> fields;
+          std::string phone;
+        };
+        Outcome left;
+        Outcome right;
+        auto attempt = [&](Outcome& out, const char* phone) {
+          devcard::Device edit = base;
+          edit.phone = phone;
+          out.phone = phone;
+          try {
+            service.update(base.id, edit);
+            out.ok = true;
+          } catch (const devcard::ConflictError& error) {
+            out.conflict = true;
+            out.current = error.snapshot().current;
+            out.fields = error.snapshot().fields;
+          }
+        };
+        std::thread one(attempt, std::ref(left), "13911112222");
+        std::thread two(attempt, std::ref(right), "13933334444");
+        one.join();
+        two.join();
+
+        CHECK(left.ok != right.ok);
+        CHECK(left.conflict != right.conflict);
+        const Outcome& loser = left.conflict ? left : right;
+        const Outcome& winner = left.ok ? left : right;
+        CHECK(loser.conflict);
+        CHECK(loser.current.version == base.version + 1);
+        CHECK(loser.current.phone == winner.phone);
+        CHECK(loser.fields.size() == 1);
+        CHECK(!loser.fields.empty() && loser.fields.front() == "phone");
+
+        const devcard::Device merged = service.get(base.id);
+        CHECK(merged.version == base.version + 1);
+        CHECK(merged.phone == winner.phone);
+      }
+
+      const std::int64_t remove_version = service.get(first.id).version;
+      service.remove(first.id, remove_version);
       CHECK(service.list(devcard::DeviceQuery{}).total == 4);
       bool missing_remove = false;
       try {
-        service.remove(first.id);
+        service.remove(first.id, remove_version);
       } catch (const devcard::AppError& error) {
         missing_remove = std::string(error.code()) == "not_found";
       }

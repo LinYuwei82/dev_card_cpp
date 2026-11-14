@@ -47,6 +47,10 @@ class Db {
   Db(const Db&) = delete;
   Db& operator=(const Db&) = delete;
 
+  // 写事务边界：单写连接 + 进程内互斥，BEGIN IMMEDIATE … COMMIT。
+  // 同一个 fn 里的所有语句同属一次提交；fn 抛异常即整体 ROLLBACK，
+  // 出事务前不会留下半成品（例如数据已改但审计没写）。
+  // 争用等待上限见 db.cpp 的 kBusyTimeoutMs；超时抛 locked。
   void write(const std::function<void(sqlite3*)>& fn);
   void write_raw(const std::function<void(sqlite3*)>& fn);
   void read(const std::function<void(sqlite3*)>& fn) const;

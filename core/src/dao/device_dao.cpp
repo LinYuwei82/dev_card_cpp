@@ -9,7 +9,8 @@ namespace devcard {
 namespace {
 
 const char* kColumns =
-    "id, dev_name, location, control_range, phone, created_at, updated_at";
+    "id, dev_name, location, control_range, phone, created_at, updated_at,"
+    " version, updated_by";
 
 bool is_sortable(const std::string& column) {
   static const char* allowed[] = {"id", "dev_name", "location",
@@ -27,6 +28,8 @@ void read_row(Stmt& stmt, Device& device) {
   device.phone = stmt.text(4);
   device.created_at = stmt.text(5);
   device.updated_at = stmt.text(6);
+  device.version = stmt.i64(7);
+  device.updated_by = stmt.text(8);
 }
 
 }  // namespace
@@ -145,7 +148,8 @@ std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
 
   Stmt stmt(conn,
             "INSERT INTO device(dev_name,location,control_range,phone,"
-            "created_at,updated_at) VALUES(?,?,?,?,?,?)");
+            "created_at,updated_at,version,updated_by)"
+            " VALUES(?,?,?,?,?,?,1,'')");
   stmt.bind(1, device.dev_name)
       .bind(2, device.location)
       .bind(3, device.control_range)
@@ -154,41 +158,39 @@ std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
       .bind(6, device.updated_at);
   stmt.run();
   device.id = sqlite3_last_insert_rowid(conn);
+  device.version = 1;
+  device.updated_by.clear();
   return device.id;
 }
 
-void DeviceDao::update(sqlite3* conn, const Device& device,
+// 乐观锁：版本条件写在 SQL 里，和「version+1」同一条语句。
+// 不能先读后比再写——两个请求之间仍可能插入一次提交。
+bool DeviceDao::update(sqlite3* conn, const Device& device,
                        std::string_view updated_by) const {
-  if (updated_by.empty()) {
-    Stmt stmt(conn,
-              "UPDATE device SET dev_name=?, location=?, control_range=?, phone=?,"
-              " updated_at=? WHERE id=?");
-    stmt.bind(1, device.dev_name)
-        .bind(2, device.location)
-        .bind(3, device.control_range)
-        .bind(4, device.phone)
-        .bind(5, now_text())
-        .bind(6, device.id);
-    stmt.run();
-    return;
-  }
+  const std::string actor(updated_by);
   Stmt stmt(conn,
             "UPDATE device SET dev_name=?, location=?, control_range=?, phone=?,"
-            " updated_at=?, updated_by=? WHERE id=?");
+            " updated_at=?, updated_by=CASE WHEN ?='' THEN updated_by ELSE ? END,"
+            " version=version+1 WHERE id=? AND version=?");
   stmt.bind(1, device.dev_name)
       .bind(2, device.location)
       .bind(3, device.control_range)
       .bind(4, device.phone)
       .bind(5, now_text())
-      .bind(6, updated_by)
-      .bind(7, device.id);
+      .bind(6, actor)
+      .bind(7, actor)
+      .bind(8, device.id)
+      .bind(9, device.version);
   stmt.run();
+  return sqlite3_changes(conn) > 0;
 }
 
-void DeviceDao::erase(sqlite3* conn, std::int64_t id) const {
-  Stmt stmt(conn, "DELETE FROM device WHERE id = ?");
-  stmt.bind(1, id);
+bool DeviceDao::erase(sqlite3* conn, std::int64_t id,
+                      std::int64_t version) const {
+  Stmt stmt(conn, "DELETE FROM device WHERE id = ? AND version = ?");
+  stmt.bind(1, id).bind(2, version);
   stmt.run();
+  return sqlite3_changes(conn) > 0;
 }
 
 void DeviceDao::erase_all(sqlite3* conn) const { exec_sql(conn, "DELETE FROM device"); }

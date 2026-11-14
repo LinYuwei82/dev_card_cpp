@@ -57,7 +57,9 @@ std::string device_json_text(const Device& device) {
          json_escape(device.location) + "\",\"control_range\":\"" +
          json_escape(device.control_range) + "\",\"phone\":\"" +
          json_escape(device.phone) + "\",\"updated_at\":\"" +
-         json_escape(device.updated_at) + "\"}";
+         json_escape(device.updated_at) + "\",\"version\":" +
+         std::to_string(device.version) + ",\"updated_by\":\"" +
+         json_escape(device.updated_by) + "\"}";
 }
 
 AuditEntry device_audit(const AuditContext& context, const char* action,
@@ -70,6 +72,34 @@ AuditEntry device_audit(const AuditContext& context, const char* action,
   entry.entity_id = id > 0 ? std::to_string(id) : std::string();
   entry.summary = summary;
   return entry;
+}
+
+// 冲突时给调用方看的字段差异：只报「你提交的」与「库里最新」不同的列，
+// 前端可以据此只高亮需要重填的字段。
+std::vector<std::string> changed_fields(const Device& input,
+                                        const Device& current) {
+  std::vector<std::string> fields;
+  if (input.dev_name != current.dev_name) fields.push_back("dev_name");
+  if (input.location != current.location) fields.push_back("location");
+  if (input.control_range != current.control_range) {
+    fields.push_back("control_range");
+  }
+  if (input.phone != current.phone) fields.push_back("phone");
+  return fields;
+}
+
+std::string conflict_message(const Device& current) {
+  const std::string who = current.updated_by.empty() ? "他人" : current.updated_by;
+  return "这条记录已被 " + who + " 于 " + current.updated_at +
+         " 修改，你的修改未保存；请刷新后重填。";
+}
+
+void require_version(std::int64_t version) {
+  if (version <= 0) {
+    throw AppError("bad_version",
+                   "缺少 version（记录版本号）。请刷新列表后重新编辑，"
+                   "不要用过期页面覆盖别人的修改。");
+  }
 }
 
 }  // namespace
@@ -136,42 +166,55 @@ Device DeviceService::update(std::int64_t id, Device device) {
   return update(id, std::move(device), AuditContext{});
 }
 
+// 事务边界：读旧值 → 条件 UPDATE（version 匹配才写、写完 +1）→ 写审计，
+// 三步在同一个 BEGIN IMMEDIATE 里；任何一步失败整体 ROLLBACK，
+// 不会出现「数据已改但版本没加」或「数据改了但审计没写」的半成品。
 Device DeviceService::update(std::int64_t id, Device device,
                              const AuditContext& audit) {
   validate(device);
+  require_version(device.version);
   device.id = id;
-  Device before;
+  Device saved;
   db_.write([&](sqlite3* conn) {
     // 先在同一事务里取旧值：审计的 before 与「行是否存在」都基于同一次快照。
+    Device before;
     if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
-    dao_.update(conn, device, audit.actor);
-    if (sqlite3_changes(conn) == 0)
-      throw AppError("not_found", "设备不存在");
+    if (!dao_.update(conn, device, audit.actor)) {
+      // 版本不匹配时再取一次当前值：区分「刚被删除」与「被别人改过」。
+      Device current;
+      if (!dao_.find(conn, id, current)) {
+        throw AppError("not_found", "设备不存在");
+      }
+      throw ConflictError(conflict_message(current),
+                          ConflictSnapshot{current,
+                                           changed_fields(device, current)});
+    }
+    if (!dao_.find(conn, id, saved)) throw AppError("not_found", "设备不存在");
     if (audit.enabled()) {
-      Device after;
-      if (!dao_.find(conn, id, after)) after = device;
       AuditEntry entry = device_audit(audit, "update", id, "修改设备");
       entry.before_json = device_json_text(before);
-      entry.after_json = device_json_text(after);
+      entry.after_json = device_json_text(saved);
       record_audit(conn, entry);
     }
   });
-  Device saved;
-  if (!dao_.find(db_, id, saved)) throw AppError("not_found", "设备不存在");
   return saved;
 }
 
-void DeviceService::remove(std::int64_t id) {
-  remove(id, AuditContext{});
+void DeviceService::remove(std::int64_t id, std::int64_t version) {
+  remove(id, version, AuditContext{});
 }
 
-void DeviceService::remove(std::int64_t id, const AuditContext& audit) {
-  Device before;
+void DeviceService::remove(std::int64_t id, std::int64_t version,
+                           const AuditContext& audit) {
+  require_version(version);
   db_.write([&](sqlite3* conn) {
-    const bool existed = dao_.find(conn, id, before);
-    dao_.erase(conn, id);
-    if (!existed || sqlite3_changes(conn) == 0)
-      throw AppError("not_found", "设备不存在");
+    Device before;
+    if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
+    // 删除同样带版本：别人刚改过时拒绝，避免旧页面把新数据删掉。
+    if (!dao_.erase(conn, id, version)) {
+      throw ConflictError(conflict_message(before),
+                          ConflictSnapshot{before, {}});
+    }
     if (audit.enabled()) {
       AuditEntry entry = device_audit(audit, "delete", id, "删除设备");
       entry.before_json = device_json_text(before);

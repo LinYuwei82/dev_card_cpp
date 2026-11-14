@@ -20,9 +20,12 @@ class DeviceDao {
 
   // 写方法要求调用方已处于 Db::write() 事务内。
   std::int64_t insert(sqlite3* conn, Device& device) const;
-  void update(sqlite3* conn, const Device& device,
+  // 乐观锁：仅当 device.version 与库里一致时才更新，成功把 version 加一。
+  // 返回 false 表示版本不匹配（或被删除），调用方负责区分 409/404。
+  bool update(sqlite3* conn, const Device& device,
               std::string_view updated_by = {}) const;
-  void erase(sqlite3* conn, std::int64_t id) const;
+  // 删除同样校验版本，避免「别人刚改过就被旧页面删掉」。
+  bool erase(sqlite3* conn, std::int64_t id, std::int64_t version) const;
   void erase_all(sqlite3* conn) const;
   bool exists_triplet(sqlite3* conn, std::string_view name,
                       std::string_view location,

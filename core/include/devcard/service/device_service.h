@@ -7,6 +7,7 @@
 #include "devcard/audit.h"
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
+#include "devcard/error.h"
 #include "devcard/models.h"
 
 namespace devcard {
@@ -31,6 +32,26 @@ struct ImportReport {
   int truncated = 0;      // 有字段被截断的行
 };
 
+// 乐观锁冲突时的现场：库里最新一行 + 与提交值不同的字段名。
+struct ConflictSnapshot {
+  Device current;
+  std::vector<std::string> fields;
+};
+
+// 409 冲突：调用方带着过期 version 提交，库里已经被别人改过。
+// 响应体将带上 current/version/fields，足以让前端提示「刷新后重填」；
+// 是否再给管理员一个强制覆盖入口属于 P3 未拍板项，这里先把数据备齐但不提供接口。
+class ConflictError : public AppError {
+ public:
+  ConflictError(std::string message, ConflictSnapshot snapshot)
+      : AppError("conflict", std::move(message)), snapshot_(std::move(snapshot)) {}
+
+  const ConflictSnapshot& snapshot() const { return snapshot_; }
+
+ private:
+  ConflictSnapshot snapshot_;
+};
+
 // 台账业务规则：校验、手工新增三字段查重、分页边界、导入导出。
 class DeviceService {
  public:
@@ -42,8 +63,8 @@ class DeviceService {
   Device create(Device device, const AuditContext& audit);
   Device update(std::int64_t id, Device device);
   Device update(std::int64_t id, Device device, const AuditContext& audit);
-  void remove(std::int64_t id);
-  void remove(std::int64_t id, const AuditContext& audit);
+  void remove(std::int64_t id, std::int64_t version);
+  void remove(std::int64_t id, std::int64_t version, const AuditContext& audit);
   DeviceOptions options() const;
 
   // 导入：表头必须与预期四列一致，否则整批拒绝（不允许错位）。
