@@ -63,11 +63,27 @@ std::string read_bytes(const fs::path& path);
 const std::string kNewlineToken = " \"\\n\" ";
 
 // 起一个外部进程并连 stderr 一起收回来；返回退出码。
-// 两条路径共用同一份「参数数组」，只有最后的落地方式不同：
-//   Windows 走 CreateProcessW，不经过 cmd.exe —— 整行以引号开头时 cmd 会按另一套规则剥引号，
-//   把命令行拆坏（实测报 The filename, directory name, or volume label syntax is incorrect.，
-//   而且 cmake 一次都没跑起来，看上去却像「用例全红」）。
+// 参数数组一律用 UTF-8 表达（路径也先 path_to_utf8），落地方式按平台不同：
+//   Windows 走 CreateProcessW，先把每个参数 UTF-8 → UTF-16 再拼宽命令行。
+//     不能退回窄 argv：cmake 的窄 argv 按 ACP 解，UTF-8 字节会被解成 `娑擃厽鏋僜`；
+//     改传 ACP 又表达不了 emoji。实测同一中文目录（D:\work\中文\tmp\三向）：
+//       ACP 窄命令行 → exit 0、有产物；UTF-8 窄命令行 → exit 1、file() 打不开；
+//       宽命令行 → exit 0、有产物。emoji 目录（D:\work\😀\三向）下 ACP 连编码都失败，
+//       宽命令行仍 exit 0。所以正确解是「不产生窄 argv」，不是选一种窄编码。
 //   POSIX 走 popen，参数逐个加单引号，不依赖字符串拼接的正确性。
+#ifdef _WIN32
+std::wstring widen_utf8(const std::string& text) {
+  if (text.empty()) return std::wstring();
+  const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                       static_cast<int>(text.size()), nullptr, 0);
+  if (size <= 0) return std::wstring();
+  std::wstring wide(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                      wide.data(), size);
+  return wide;
+}
+#endif
+
 std::string quote_arg(const std::string& arg) {
 #ifdef _WIN32
   return "\"" + arg + "\"";
@@ -100,8 +116,10 @@ int run_process(const std::vector<std::string>& args, std::string* output) {
     if (!command.empty()) {
       command += L' ';
     }
-    const std::string quoted = quote_arg(arg);
-    command.append(quoted.begin(), quoted.end());
+    const std::wstring wide_arg = widen_utf8(arg);
+    command += L'"';
+    command += wide_arg;
+    command += L'"';
   }
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);

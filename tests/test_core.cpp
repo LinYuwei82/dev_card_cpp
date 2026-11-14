@@ -417,7 +417,7 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   CHECK(report.devices_skipped == 0);
   CHECK(report.users_imported == 3);
   CHECK(!report.backup.empty());
-  CHECK(std::filesystem::exists(report.backup));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(report.backup)));
   CHECK(report.source_sha256.size() == 64);
   CHECK(!report.warnings.empty());  // 超长字段截断告警
 
@@ -458,7 +458,7 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   // 备份与恢复：删除一条后可从备份恢复。
   const devcard::BackupEntry backup =
       devcard::create_backup(db, dir, "test");
-  CHECK(std::filesystem::exists(backup.path));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(backup.path)));
   CHECK(backup.bytes > 0);
   devcard::DeviceService service(db);
   service.remove(1);
