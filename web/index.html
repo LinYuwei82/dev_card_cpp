@@ -14,11 +14,11 @@
       <span class="brand-text"><strong>设备管理卡</strong><small>DevCard</small></span>
     </div>
     <nav class="nav">
-      <button class="nav-item is-active" type="button" data-view="devices">设备台账</button>
+      <button class="nav-item" type="button" data-view="devices">设备台账</button>
+      <button class="nav-item" type="button" data-view="print">卡片打印</button>
       <button class="nav-item" type="button" data-view="users" id="nav-users">用户管理</button>
-      <button class="nav-item is-disabled" type="button" disabled>卡片打印</button>
     </nav>
-    <div class="sidebar-foot">M3 · 迁移与用户<br><span id="health">连接中…</span></div>
+    <div class="sidebar-foot">M4 · 卡片打印<br><span id="health">连接中…</span></div>
   </aside>
 
   <main class="main">
@@ -56,6 +56,7 @@
         </form>
         <button class="btn btn-ghost" type="button" id="import-btn">导入</button>
         <button class="btn btn-ghost" type="button" id="export-btn">导出</button>
+        <button class="btn btn-ghost" type="button" id="goto-print">打印</button>
         <input type="file" id="import-file" accept=".xlsx" hidden />
         <button class="btn btn-primary" id="add">新增设备</button>
       </div>
@@ -133,6 +134,30 @@
         </table>
         <div class="empty" id="backup-empty" hidden>还没有备份。</div>
       </div>
+    </section>
+
+    <section class="page print-page" id="view-print" hidden>
+      <div class="print-toolbar">
+        <div class="print-head">
+          <h2>卡片打印</h2>
+          <p id="print-scope">—</p>
+        </div>
+        <div class="print-controls">
+          <label class="inline">版式
+            <select id="print-layout">
+              <option value="12">一页 12 张（3 × 4）</option>
+              <option value="6">一页 6 张（3 × 2）</option>
+              <option value="1">一页 1 张</option>
+            </select>
+          </label>
+          <button class="btn btn-ghost" id="print-back" type="button">返回台账</button>
+          <button class="btn btn-ghost" id="print-export" type="button" disabled>导出 PDF</button>
+          <button class="btn btn-primary" id="print-print" type="button" disabled>直接打印</button>
+        </div>
+      </div>
+      <p class="print-hint" id="print-hint"></p>
+      <div class="print-stage" id="print-stage"></div>
+      <div class="empty" id="print-empty" hidden>当前筛选没有可打印的设备，请返回台账调整筛选条件。</div>
     </section>
   </main>
 </div>

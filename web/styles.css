@@ -240,3 +240,125 @@ td.col-actions { text-align: right; white-space: nowrap; }
   .search input { width: 180px; }
   .drawer { width: min(400px, 92vw); }
 }
+
+/* M4：卡片打印 */
+
+/* 打印视图独立全屏：隐藏侧栏与顶部栏 */
+.app.is-print { grid-template-columns: 1fr; }
+.app.is-print .sidebar,
+.app.is-print .topbar { display: none; }
+
+.print-page { padding: 20px 28px 40px; gap: 12px; }
+.print-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.print-head h2 { margin: 0; font-size: 18px; }
+.print-head p { margin: 3px 0 0; color: var(--text-3); font-size: 12px; }
+.print-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.print-controls .inline {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-2);
+}
+.print-controls select { height: 32px; }
+.print-hint { margin: 0; color: var(--text-3); font-size: 12px; }
+
+.print-stage {
+  --sheet-scale: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+  padding: 4px 0 8px;
+}
+.sheet-wrap {
+  width: calc(210mm * var(--sheet-scale));
+  height: calc(297mm * var(--sheet-scale));
+}
+.sheet {
+  width: 210mm; height: 297mm; background: #fff;
+  padding: 9.5mm 6.5mm 8mm;
+  display: grid;
+  grid-template-columns: repeat(3, 62mm);
+  grid-auto-rows: 65mm;
+  column-gap: 5.5mm;
+  row-gap: 6.5mm;
+  transform: scale(var(--sheet-scale));
+  transform-origin: top left;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(20, 35, 35, .10);
+}
+/* 一页 6 张：3 列 × 2 行；一页 1 张：单列居中 */
+.sheet[data-layout="6"] { grid-template-rows: repeat(2, 65mm); align-content: start; }
+.sheet[data-layout="1"] { grid-template-columns: 62mm; justify-content: center; }
+
+.card {
+  position: relative; width: 62mm; height: 65mm; overflow: hidden;
+  background: #fff; border: .8pt solid #000; color: #000;
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.card-logo { position: absolute; left: 3.5mm; top: 5.7mm; width: 8.8mm; height: 8.8mm; }
+.card-company {
+  position: absolute; left: 13.5mm; top: 7.9mm;
+  font-size: 11pt; line-height: 1; white-space: nowrap;
+  transform: scaleX(.88); transform-origin: left top;
+}
+.card-title {
+  position: absolute; left: 16.5mm; top: 16.8mm;
+  font-size: 15pt; font-weight: 700; line-height: 1; letter-spacing: 2pt;
+  transform: scaleX(1.05); transform-origin: left top;
+}
+.card-field {
+  position: absolute; left: 3.5mm; right: 2mm;
+  display: flex; align-items: flex-start;
+  font-size: 11pt; line-height: 1;
+}
+.card-field.r1 { top: 31.4mm; }
+.card-field.r2 { top: 38.9mm; }
+.card-field.r3 { top: 46.4mm; }
+.card-field.r4 { top: 53.9mm; }
+.card-label {
+  flex: none; width: 18.5mm; white-space: nowrap;
+  letter-spacing: .75pt; transform: scaleX(.75); transform-origin: left top;
+}
+.card-value {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+  font-weight: 700; letter-spacing: .9pt;
+  transform: scaleX(.9); transform-origin: left top;
+}
+.card-sep {
+  position: absolute; left: 21.5mm; width: 35.5mm;
+  border-top: .5pt solid #000;
+}
+.card-sep.s1 { top: 35.5mm; }
+.card-sep.s2 { top: 43mm; }
+.card-sep.s3 { top: 50.5mm; }
+.card-sep.s4 { top: 58mm; }
+
+@page { size: A4; margin: 0; }
+
+/* 壳层 createPDF 导出前的 1:1 布局：与打印时一致，但不走 @media print */
+body.is-export .print-toolbar,
+body.is-export .print-hint { display: none; }
+body.is-export .print-page { padding: 0; }
+body.is-export .print-stage { display: block; padding: 0; gap: 0; }
+body.is-export .sheet-wrap { width: 210mm; height: 297mm; margin: 0; }
+body.is-export .sheet { transform: none; border: 0; box-shadow: none; }
+
+@media print {
+  html, body { background: #fff; margin: 0; }
+  .app, .main { display: block !important; min-height: 0; }
+  .sidebar, .topbar, .print-toolbar, .print-hint,
+  .login, .toast, .drawer, .scrim, .modal { display: none !important; }
+  #view-print { display: block !important; padding: 0; }
+  .print-stage { display: block; padding: 0; }
+  .sheet-wrap {
+    width: 210mm; height: 297mm; margin: 0;
+    page-break-after: always; break-after: page;
+  }
+  .sheet-wrap:last-child { page-break-after: auto; break-after: auto; }
+  .sheet {
+    border: 0; box-shadow: none; transform: none;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .print-empty { display: none !important; }
+}

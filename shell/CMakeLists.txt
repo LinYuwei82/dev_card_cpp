@@ -1,5 +1,6 @@
 add_executable(DevCard MACOSX_BUNDLE mac/main.mm)
-target_link_libraries(DevCard PRIVATE devcard_server "-framework Cocoa" "-framework WebKit")
+target_link_libraries(DevCard PRIVATE devcard_server "-framework Cocoa" "-framework WebKit"
+    "-framework PDFKit" "-framework UniformTypeIdentifiers")
 
 set_target_properties(DevCard PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "DevCard"

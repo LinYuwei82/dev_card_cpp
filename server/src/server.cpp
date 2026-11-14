@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -132,6 +133,26 @@ DeviceQuery query_from(const httplib::Request& request) {
   if (query.sort.empty()) query.sort = "id";
   query.desc = request.get_param_value("desc") == "1";
   return query;
+}
+
+int hex_digit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
+}
+
+const std::string& logo_jpeg() {
+  static const std::string bytes = [] {
+    const std::string hex = embedded_logo_jpg_hex();
+    std::string out;
+    out.reserve(hex.size() / 2);
+    for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+      out.push_back(static_cast<char>((hex_digit(hex[i]) << 4) | hex_digit(hex[i + 1])));
+    }
+    return out;
+  }();
+  return bytes;
 }
 
 int status_for(const AppError& error) {
@@ -414,6 +435,71 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      response.body = body;
                    });
 
+  // 打印数据快照：与台账共用筛选条件，一次取全量（不分页），供前端排版。
+  // 前端导出 PDF 与直接打印复用同一份返回，不再二次请求。
+  state.server.Get("/api/print/cards",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     DeviceQuery query = query_from(request);
+                     query.page = 0;
+                     query.page_size = 1000;
+                     query.sort = "id";
+                     query.desc = false;
+
+                     std::vector<Device> items;
+                     std::int64_t total = 0;
+                     bool truncated = false;
+                     while (true) {
+                       const DevicePage page = state.devices->list(query);
+                       if (query.page == 0) total = page.total;
+                       items.insert(items.end(), page.items.begin(), page.items.end());
+                       if (page.items.empty() ||
+                           static_cast<std::int64_t>(items.size()) >= total) {
+                         break;
+                       }
+                       if (items.size() >= 10000) {
+                         truncated = true;
+                         break;
+                       }
+                       ++query.page;
+                     }
+
+                     const std::string ids_text = request.get_param_value("ids");
+                     if (!ids_text.empty()) {
+                       std::set<std::int64_t> wanted;
+                       std::size_t start = 0;
+                       while (start <= ids_text.size()) {
+                         const std::size_t comma = ids_text.find(',', start);
+                         const std::string part = ids_text.substr(
+                             start, comma == std::string::npos
+                                        ? std::string::npos
+                                        : comma - start);
+                         try {
+                           if (!part.empty()) wanted.insert(std::stoll(part));
+                         } catch (...) {
+                           throw AppError("bad_json", "ids 必须是逗号分隔的数字");
+                         }
+                         if (comma == std::string::npos) break;
+                         start = comma + 1;
+                       }
+                       items.erase(
+                           std::remove_if(items.begin(), items.end(),
+                                          [&](const Device& device) {
+                                            return wanted.count(device.id) == 0;
+                                          }),
+                           items.end());
+                       total = static_cast<std::int64_t>(items.size());
+                     }
+
+                     json array = json::array();
+                     for (const Device& device : items) {
+                       array.push_back(device_json(device));
+                     }
+                     set_json(response, json{{"items", array},
+                                             {"total", total},
+                                             {"truncated", truncated}});
+                   });
+
   state.server.Get(R"(/api/devices/(\d+))",
                    [&state](const httplib::Request& request,
                             httplib::Response& response) {
@@ -565,6 +651,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   });
   state.server.Get("/app.js", [](const httplib::Request&, httplib::Response& response) {
     set_asset(response, embedded_app_js(), "application/javascript; charset=utf-8");
+  });
+  state.server.Get("/logo.jpg", [](const httplib::Request&, httplib::Response& response) {
+    response.status = 200;
+    response.set_header("Content-Type", "image/jpeg");
+    response.set_header("Cache-Control", "public, max-age=86400");
+    response.body = logo_jpeg();
   });
 
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。

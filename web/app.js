@@ -16,7 +16,10 @@
     backups: [],
     editingUser: null,
     resetUser: null,
-    forcedPassword: false
+    forcedPassword: false,
+    printItems: [],
+    printTruncated: false,
+    printBusy: false
   };
 
   var el = {
@@ -107,6 +110,17 @@
     backupRows: document.getElementById('backup-rows'),
     backupEmpty: document.getElementById('backup-empty'),
     backupNow: document.getElementById('backup-now'),
+
+    gotoPrint: document.getElementById('goto-print'),
+    viewPrint: document.getElementById('view-print'),
+    printScope: document.getElementById('print-scope'),
+    printHint: document.getElementById('print-hint'),
+    printLayout: document.getElementById('print-layout'),
+    printBack: document.getElementById('print-back'),
+    printExport: document.getElementById('print-export'),
+    printPrint: document.getElementById('print-print'),
+    printStage: document.getElementById('print-stage'),
+    printEmpty: document.getElementById('print-empty'),
 
     toast: document.getElementById('toast')
   };
@@ -234,6 +248,8 @@
       loadUsers();
       loadBackups();
     }
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'print') setView('print');
   }
 
   el.loginForm.addEventListener('submit', function (event) {
@@ -324,15 +340,22 @@
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (button) {
       button.classList.toggle('is-active', button.getAttribute('data-view') === view);
     });
+    el.app.classList.toggle('is-print', view === 'print');
     el.viewDevices.hidden = view !== 'devices';
     el.viewUsers.hidden = view !== 'users';
-    el.pageTitle.textContent = view === 'devices' ? '设备台账' : '用户管理';
-    el.pageSub.textContent = view === 'devices'
-      ? '维护设备名称、位置、控制范围与维护电话'
-      : '账号维护与数据备份恢复';
-    if (view === 'users') {
+    el.viewPrint.hidden = view !== 'print';
+    if (view === 'devices') {
+      el.pageTitle.textContent = '设备台账';
+      el.pageSub.textContent = '维护设备名称、位置、控制范围与维护电话';
+    } else if (view === 'users') {
+      el.pageTitle.textContent = '用户管理';
+      el.pageSub.textContent = '账号维护与数据备份恢复';
       loadUsers();
       loadBackups();
+    } else {
+      el.pageTitle.textContent = '卡片打印';
+      el.pageSub.textContent = 'A4 版式预览、导出 PDF 与直接打印';
+      loadPrint();
     }
   }
 
@@ -913,6 +936,180 @@
     else if (el.drawer.classList.contains('is-open')) closeDrawer();
     else if (!el.userModal.hidden) el.userModal.hidden = true;
     else if (!el.resetModal.hidden) el.resetModal.hidden = true;
+  });
+
+  // ---------- 卡片打印 ----------
+
+  function hasNativeBridge() {
+    return !!(window.webkit && window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.devcard);
+  }
+
+  // 壳层的两条输出通道共用同一份打印 DOM，只改变输出目标。
+  function sendToShell(action, payload) {
+    if (!hasNativeBridge()) return false;
+    var message = payload || {};
+    message.action = action;
+    window.webkit.messageHandlers.devcard.postMessage(message);
+    return true;
+  }
+
+  // 壳层回传导出/打印结果（见 shell/mac/main.mm）。
+  window.__devcardNotify = function (kind, message) {
+    toast(message, kind === 'error' ? 'error' : undefined);
+  };
+
+  // 与旧 PDF 一致：前 3 + 空格 + 中 4 + 空格 + 后 4。
+  function formatPhone(value) {
+    var phone = String(value == null ? '' : value);
+    if (phone.length <= 3) return phone;
+    if (phone.length <= 7) return phone.slice(0, 3) + ' ' + phone.slice(3);
+    return phone.slice(0, 3) + ' ' + phone.slice(3, 7) + ' ' + phone.slice(7);
+  }
+
+  function fieldHtml(row, label, value) {
+    return (
+      '<div class="card-field r' + row + '">' +
+      '<span class="card-label">' + label + '</span>' +
+      '<span class="card-value">' + escapeHtml(value) + '</span>' +
+      '</div>'
+    );
+  }
+
+  function cardHtml(device) {
+    return (
+      '<article class="card">' +
+      '<img class="card-logo" src="/logo.jpg" alt="">' +
+      '<div class="card-company">深圳市安业物业管理有限公司</div>' +
+      '<div class="card-title">设备管理卡</div>' +
+      fieldHtml(1, '设备名称：', device.dev_name) +
+      fieldHtml(2, '位　　置：', device.location) +
+      fieldHtml(3, '控制范围：', device.control_range) +
+      fieldHtml(4, '维护电话：', formatPhone(device.phone)) +
+      '<span class="card-sep s1"></span><span class="card-sep s2"></span>' +
+      '<span class="card-sep s3"></span><span class="card-sep s4"></span>' +
+      '</article>'
+    );
+  }
+
+  function printQuery() {
+    var params = new URLSearchParams();
+    var f = state.filters;
+    if (f.keyword) params.set('keyword', f.keyword);
+    if (f.field) params.set('field', f.field);
+    if (f.name) params.set('name', f.name);
+    if (f.location) params.set('location', f.location);
+    return params.toString();
+  }
+
+  function printLayoutSize() {
+    return Number(el.printLayout.value) || 12;
+  }
+
+  function updatePrintControls() {
+    var empty = state.printItems.length === 0;
+    el.printExport.disabled = state.printBusy || empty;
+    el.printPrint.disabled = state.printBusy || empty;
+    el.printEmpty.hidden = !empty || state.printBusy;
+    var layout = printLayoutSize();
+    var pages = empty ? 0 : Math.ceil(state.printItems.length / layout);
+    el.printScope.textContent = '当前筛选结果 ' + state.printItems.length + ' 条 · 每页 ' +
+      layout + ' 张 · 共 ' + pages + ' 页' +
+      (state.printTruncated ? '（超过 10000 条，已截断）' : '');
+  }
+
+  function renderPrint() {
+    var layout = printLayoutSize();
+    var items = state.printItems;
+    var html = '';
+    for (var start = 0; start < items.length; start += layout) {
+      html += '<div class="sheet-wrap"><div class="sheet" data-layout="' + layout + '">' +
+        items.slice(start, start + layout).map(cardHtml).join('') + '</div></div>';
+    }
+    el.printStage.innerHTML = html;
+    updatePrintControls();
+    updatePrintScale();
+  }
+
+  // 预览按容器宽度缩放；打印时 CSS 会还原成 1:1 的 A4。
+  function updatePrintScale() {
+    if (el.viewPrint.hidden) return;
+    var width = el.printStage.clientWidth;
+    if (!width) return;
+    var pageWidth = 210 * 96 / 25.4;
+    var scale = Math.min(1, (width - 8) / pageWidth);
+    el.printStage.style.setProperty('--sheet-scale',
+      String(Math.max(0.2, Math.round(scale * 1000) / 1000)));
+  }
+
+  function loadPrint() {
+    state.printBusy = true;
+    updatePrintControls();
+    return api('GET', '/api/print/cards?' + printQuery())
+      .then(function (data) {
+        state.printItems = data.items || [];
+        state.printTruncated = !!data.truncated;
+        state.printBusy = false;
+        renderPrint();
+        el.printHint.textContent = hasNativeBridge()
+          ? '导出 PDF 会打开保存对话框；直接打印会打开系统打印面板。两条通道共用同一份版式与数据快照。'
+          : '浏览器模式：两个按钮都会打开打印对话框，选「另存为 PDF」即可导出。';
+      })
+      .catch(function (error) {
+        state.printBusy = false;
+        state.printItems = [];
+        state.printTruncated = false;
+        renderPrint();
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      });
+  }
+
+  // 壳层导出 PDF 前切换到 1:1 布局，并返回每页的截取区域（CSS px，页面坐标）。
+  window.__devcardExportLayout = function () {
+    document.body.classList.add('is-export');
+    window.scrollTo(0, 0);
+    var sheets = document.querySelectorAll('#print-stage .sheet');
+    if (!sheets.length) {
+      document.body.classList.remove('is-export');
+      return null;
+    }
+    var rects = Array.prototype.map.call(sheets, function (sheet) {
+      var rect = sheet.getBoundingClientRect();
+      return {
+        x: rect.left + window.pageXOffset,
+        y: rect.top + window.pageYOffset,
+        width: rect.width,
+        height: rect.height
+      };
+    });
+    return { pages: rects.length, rects: rects };
+  };
+
+  window.__devcardExportDone = function () {
+    document.body.classList.remove('is-export');
+    updatePrintScale();
+  };
+
+  el.gotoPrint.addEventListener('click', function () {
+    setView('print');
+  });
+  el.printBack.addEventListener('click', function () {
+    setView('devices');
+  });
+  el.printLayout.addEventListener('change', renderPrint);
+  window.addEventListener('resize', updatePrintScale);
+
+  el.printExport.addEventListener('click', function () {
+    if (!state.printItems.length) return;
+    if (sendToShell('exportPdf', { filename: '设备管理卡.pdf' })) return;
+    window.print();
+  });
+
+  el.printPrint.addEventListener('click', function () {
+    if (!state.printItems.length) return;
+    if (sendToShell('print')) return;
+    window.print();
   });
 
   // ---------- 启动 ----------

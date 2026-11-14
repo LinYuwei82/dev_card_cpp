@@ -11,6 +11,7 @@ add_custom_command(
     DEPENDS "${WEB_DIR}/index.html"
             "${WEB_DIR}/styles.css"
             "${WEB_DIR}/app.js"
+            "${WEB_DIR}/logo.jpg"
             "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
     VERBATIM
 )
