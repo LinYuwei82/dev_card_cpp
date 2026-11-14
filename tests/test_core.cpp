@@ -283,6 +283,9 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
 
   // 1) 内存里来回一趟不能变形（Windows 上这里就会暴露 ACP 解释）。
   CHECK(devcard::path_to_utf8(devcard::path_from_utf8(expected)) == expected);
+  // ACP（GBK）表达不了 emoji：这条能区分「按 UTF-8 转」和「按 ACP 转」。
+  const std::string emoji = "样张-📇.pdf";
+  CHECK(devcard::path_to_utf8(devcard::path_from_utf8(emoji)) == emoji);
 
   {
     devcard::Db db(dir / "devicedb.db");
