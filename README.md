@@ -18,7 +18,7 @@
 
 - Release：<https://github.com/LinYuwei82/dev_card_cpp/releases/tag/v1.1.3>、<https://gitee.com/lin-yuwei168/dev_card_cpp/releases/tag/v1.1.3>
 - macOS 版为 ad-hoc 签名、未公证；首次打开需在 Gatekeeper 中手动放行，详见 [Release 正文](docs/release-v1.1.3.md)。
-- 最低 macOS 15 是当前 Qt 版产物的实测结果，与改造方案 D7 的 macOS 13 不一致，处置待定（见 [改造技术方案 §13.5](docs/改造技术方案.md)）。
+- 最低 macOS 15，对应 D7 已定口径：Homebrew 的 libharu/libzip/libxlsxwriter 均按 15.0 构建；13/14 不在支持范围（此前未发布过 macOS 版，存量客户均为 Windows）。
 - tag `v1.1.3` 当前指向 `bf3e2b4`；曾从 `8b61937` 强制移动一次，原因见改造方案 §0.1。
 
 <a id="已发布产物校验"></a>
@@ -36,7 +36,7 @@ a4aac2045131bc43aa68c78d2f8856b095f4493a52a06515c175651f28446946
 | 核心流程 | 台账维护 → 按名称/位置筛选或按字段查询 → 生成卡片 PDF → 打印塑封上墙 |
 | 数据规模 | 数十到数千条设备记录；单文件 SQLite |
 | 部署形态 | Windows 绿色目录：程序 + `resources/` + `data/devicedb.db`；macOS：`.app` / DMG，数据在 `~/Library/Application Support/Anye/DevCard/` |
-| 平台 | v1.1.3 实际：Windows 10 1809+ / 11、macOS 15+（Apple Silicon）；改造目标：macOS 13+（D7）、Windows 10 1809+ |
+| 平台 | v1.1.3 实际：Windows 10 1809+ / 11、macOS 15+（Apple Silicon）；改造目标：macOS 15+（D7）、Windows 10 1809+ |
 
 功能范围（现状）：
 
@@ -130,7 +130,7 @@ hdiutil create -volname "DevCard 1.1.3" -srcfolder <stage> -ov -format UDZO dist
 ```
 
 - 资源定位由 `src/app_paths.h` 的 `appResourcePath()` 完成：Windows 取 `<exe>/resources`，macOS 取 `Contents/Resources/resources`。
-- 当前 Homebrew 三方库按 macOS 15.0 构建，所以 DMG 的 `LSMinimumSystemVersion` 写的是 15.0；这与 D7 的 13 不一致，处置待定。
+- 当前 Homebrew 三方库按 macOS 15.0 构建，所以 DMG 的 `LSMinimumSystemVersion` 写的是 15.0，与 D7 已定的 macOS 15 一致。
 - DMG 内不含 `devicedb.db`、`tb_device.xlsx`；`dist/` 已 gitignore。
 
 ---
@@ -176,7 +176,7 @@ dev_card_cpp/
 | [docs/现状技术方案.md](docs/现状技术方案.md) | 当前 Qt 版的实际架构、模块职责、数据流、数据库、构建部署方式，以及通读发现的问题清单 | 描述现状 |
 | [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 方案，未实施 |
 
-改造决策：D1–D12 **已定**，D13（macOS 是否公证）待定 —— 不支持 Win7/8（存量客户保留旧版冻结）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 才删 libharu）；原生 JS/CSS + 两个通用件；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 13+（v1.1.3 产物实测 15，处置待定）；DAO 集中 SQL + 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG，Windows 出安装版 + 绿色版（v1.1.3 实际只有绿色版脚本，安装版无 `.iss`）；字体改用思源黑体 / Noto Sans SC 子集。详见 [改造技术方案 §14](docs/改造技术方案.md)。
+改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（存量客户保留旧版冻结）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 才删 libharu）；原生 JS/CSS + 两个通用件；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；DAO 集中 SQL + 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（v1.1.3 实际只有绿色版脚本，安装版无 `.iss`）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。详见 [改造技术方案 §14](docs/改造技术方案.md)。
 
 ---
 
@@ -186,7 +186,7 @@ dev_card_cpp/
 
 - Windows 与 macOS（Apple Silicon，macOS 15+）可运行；界面用固定像素坐标，缩放/字体缺失时排版会变。macOS 版未公证，首次打开需手动放行。
 - 口令明文存储，默认账号每次启动自动补回。
-- v1.1.3 的 Windows 绿色版 zip 尚未产出，安装版没有 `.iss`；macOS DMG 最低 15 与 D7 的 13 不一致，待定。
+- v1.1.3 的 Windows 绿色版 zip 尚未产出，安装版没有 `.iss`；macOS 已按 D7 定为 15+，按 D13 不公证（ad-hoc 签名，首次需 Gatekeeper 放行）。
 - 无测试、无 CI、无许可证声明。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
