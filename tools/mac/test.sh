@@ -36,6 +36,9 @@
 #      不用 2；返回 3 的是 check_bootstrap.sh（服务没构建/起不来）。
 #   5. 假设 ctest 用例清单由 tests/CMakeLists.txt 决定；本脚本不挑选用例、不跳过用例，
 #      也不重复实现用例里的判据。
+#   6. 查分支状态一律用 origin/<branch>，不要用本地同名分支——本地分支不保证与远端同步。
+#      踩过的坑：2026-11-15 用本地 win/m7-server（停在 cee94fe）判定「tools/verify 不存在」，
+#      而远端此时早已有；git ls-tree <本地分支>:path 还会直接报 Not a valid object name。
 
 set -euo pipefail
 

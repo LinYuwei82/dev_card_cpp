@@ -37,6 +37,9 @@
 #      cmakeMinimumRequired）；只在低于该版本时阻断。
 #   5. 假设支持口径仍是 Apple Silicon + macOS 15+（README §2）：Intel 只提示、不阻断，
 #      因为「Intel 未验证」是文档事实，不是本脚本能判定的环境缺陷。
+#   6. 查分支状态一律用 origin/<branch>，不要用本地同名分支——本地分支不保证与远端同步。
+#      踩过的坑：2026-11-15 用本地 win/m7-server（停在 cee94fe）判定「tools/verify 不存在」，
+#      而远端此时早已有；git ls-tree <本地分支>:path 还会直接报 Not a valid object name。
 
 set -euo pipefail
 
