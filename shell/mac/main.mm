@@ -119,6 +119,19 @@ API_AVAILABLE(macos(11.0))
       [[NSWorkspace sharedWorkspace]
           openURL:[NSURL fileURLWithPath:path isDirectory:YES]];
     }
+  } else if ([action isEqualToString:@"openExternal"]) {
+    // 版本检查的「下载页」跳转：只放行 http/https，不做任何下载动作。
+    NSString* value = body[@"url"];
+    NSURL* target = [value isKindOfClass:[NSString class]]
+                        ? [NSURL URLWithString:value]
+                        : nil;
+    NSString* scheme = target.scheme.lowercaseString;
+    if (target && ([scheme isEqualToString:@"https"] ||
+                   [scheme isEqualToString:@"http"])) {
+      [[NSWorkspace sharedWorkspace] openURL:target];
+    } else {
+      [self notify:@"下载页地址无效" kind:@"error"];
+    }
   }
 }
 

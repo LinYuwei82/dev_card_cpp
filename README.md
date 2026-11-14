@@ -5,7 +5,7 @@
 > **当前状态（重要）**
 > 仓库里有两条线并行：
 > 1. **旧 Qt 6 / C++17 线（v1.1.3，冻结）**：Windows + macOS（Apple Silicon，最低 macOS 15）。v1.1.3 的 macOS DMG 已挂到 Gitee / GitHub Release；Windows 绿色版 zip 尚未产出（打包脚本已就绪但未在 Windows 实跑），安装版没有 `.iss`。**旧线仍可编译、可发版，不在本轮改动范围内**（`src/`、`dev_card.pro`、`build.bat` 一行不动）。
-> 2. **新架构线（分支 `macmini/new-arch`，C++20 + SQLite + 系统 WebView）**：**当前状态：M0–M4 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M4.1 公司名/图标、M4.2 底部状态栏已落地，M5 未开始**；M6 自动更新阻塞于签名决策，见 [改造技术方案 §11](docs/改造技术方案.md)。
+> 2. **新架构线（分支 `macmini/new-arch`，C++20 + SQLite + 系统 WebView）**：**当前状态：M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 的 Windows 壳未开始**（只写代码，不在本机编译）。M6 自动更新阻塞于签名决策，见 [改造技术方案 §11](docs/改造技术方案.md)。
 >
 > 新架构开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 > 下文凡标注「目标形态」的内容都是计划；判断旧线现状看 [现状技术方案](docs/现状技术方案.md)。
@@ -120,16 +120,9 @@ mkdir -p /tmp/devcard_mac_build && cd /tmp/devcard_mac_build
 make -j8
 ```
 
-`.pro` 的 `macx` 分支会把 `packaging/mac/Info.plist`、`DevCard.icns` 和 `resources/{fonts,icons}` 放进 `bin/DevCard.app`。随后：
+`.pro` 的 `macx` 分支会把 `packaging/mac/Info.plist`、`DevCard.icns` 和 `resources/{fonts,icons}` 放进 `bin/DevCard.app`。随后用 `macdeployqt bin/DevCard.app -always-overwrite` 收依赖、删掉未使用且会引用缺失 QtPdf/QtSvg/VirtualKeyboard 的插件（`bin/DevCard.app/Contents/PlugIns/{imageformats,iconengines,platforminputcontexts,sqldrivers}`），再 `codesign --force --deep --sign - bin/DevCard.app`。
 
-```bash
-/opt/homebrew/opt/qt/bin/macdeployqt bin/DevCard.app -always-overwrite
-# 删除未使用、且会引用缺失 QtPdf/QtSvg/VirtualKeyboard 的插件
-rm -rf bin/DevCard.app/Contents/PlugIns/{imageformats,iconengines,platforminputcontexts,sqldrivers}
-codesign --force --deep --sign - bin/DevCard.app
-codesign --verify --deep --strict bin/DevCard.app
-hdiutil create -volname "DevCard 1.1.3" -srcfolder <stage> -ov -format UDZO dist/DevCard-1.1.3-macos-arm64.dmg
-```
+> 以上是 **v1.1.3 旧 Qt 线的历史做法**，只用于复现旧包。DMG 不再手工敲 `hdiutil`——新架构改用 §2.8 的 `tools/package/make_dmg.sh` 一条命令完成构建、签名与打包；旧线的完整步骤留档在 [改造技术方案 §10.4](docs/改造技术方案.md)。
 
 - 资源定位由 `src/app_paths.h` 的 `appResourcePath()` 完成：Windows 取 `<exe>/resources`，macOS 取 `Contents/Resources/resources`。
 - 当前 Homebrew 三方库按 macOS 15.0 构建，所以 DMG 的 `LSMinimumSystemVersion` 写的是 15.0，与 D7 已定的 macOS 15 一致。
@@ -151,7 +144,21 @@ ctest --test-dir build-new --output-on-failure
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`；Windows `%LOCALAPPDATA%\Anye\DevCard\`。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。
 - **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
+- **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构尚未真机跑过。
+
+### 2.8 新架构 macOS 打包（一条命令）
+
+```bash
+tools/package/make_dmg.sh                # 构建 + 依赖自检 + ad-hoc 签名 + DMG
+tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
+```
+
+- 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
+- **依赖自检按 `otool -L` 实测清单**，不写死文件列表：系统库只核对 `/usr/lib/`、`/System/Library/` 前缀（共享缓存里的库磁盘上没有文件），包外依赖必须已存在且收进 `.app`，否则失败。
+- 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
+- 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
+- 本机实测（0.1.0）：`dist/DevCard-0.1.0-macos-arm64.dmg`，1,651,241 B（1.6M），SHA256 `24bdae6c8816d35b33d4400f6019be2a5a25f175e56ac4291b365929756cd13e`。
 
 ---
 
@@ -173,7 +180,7 @@ dev_card_cpp/
 ├── tests/                    # 新架构：核心单测（ctest）
 ├── resources/                # 旧线运行期资源：字体、图标、qrc（示例 xlsx 不入库）
 ├── packaging/mac/            # macOS Info.plist 与 DevCard.icns
-├── tools/package/            # Windows 绿色版打包脚本（PowerShell）
+├── tools/package/            # macOS DMG 脚本（make_dmg.sh）/ Windows 绿色版脚本（PowerShell）
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖
 ├── docs/                     # 技术文档、样张、Release 正文
 ├── dist/                     # 本地打包产物（已 gitignore）
@@ -191,7 +198,7 @@ dev_card_cpp/
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [docs/现状技术方案.md](docs/现状技术方案.md) | 当前 Qt 版的实际架构、模块职责、数据流、数据库、构建部署方式，以及通读发现的问题清单 | 描述现状 |
-| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M4.2） |
+| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M4.2、M5 第一段） |
 | [docs/M4-卡片打印样张-17条-2页.pdf](docs/M4-卡片打印样张-17条-2页.pdf) | 17 条实测数据导出的完整 2 页 A4 卡片样张（新架构打印链路产物） | 实测样张 |
 
 改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（存量客户保留旧版冻结）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 才删 libharu）；原生 JS/CSS + 两个通用件；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；DAO 集中 SQL + 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（v1.1.3 实际只有绿色版脚本，安装版无 `.iss`）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。详见 [改造技术方案 §14](docs/改造技术方案.md)。
@@ -210,9 +217,10 @@ dev_card_cpp/
 
 **新架构当前已知边界（照实写）**：
 
-- **M0–M4 完成、M5 未开始**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**，旧 Qt 线仍是可用的发版路径。
+- **M0–M4.2 完成、M5 第一段完成（仅 macOS）**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**，旧 Qt 线仍是可用的发版路径。
+- **版本检查只读本地清单**：`/api/version` 读数据目录里的 `update.json`，不会联网拉远端清单；远端清单与自动下载/替换属 M6，且 M6 阻塞于签名决策。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- **Windows 侧未真机跑**：Windows 壳、WebView2、打包脚本都还没在 Windows 机器上执行过。
+- **Windows 侧未真机跑**：Windows 壳（WebView2）尚未开始，打包脚本与 SmartScreen 表现也都还没在 Windows 机器上执行过。
 - **旧库迁移夹具无设备行**：用于 M3 验收的脱敏旧库样本里没有设备记录，设备行迁移只做了逻辑与单测，未做真实数据抽样比对。
 
 v1.1.3 已修复：数据库迁出程序目录（构建不再删库、只读安装目录可写用户数据）、`build.bat` 构建后自动复制 `resources/` 到 `bin/`。详见 [v1.1.3 变更说明](docs/变更说明-v1.1.3.md)。

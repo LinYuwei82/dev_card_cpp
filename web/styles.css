@@ -83,6 +83,12 @@ button { cursor: pointer; }
   padding: 4px 10px; border-radius: 999px; background: var(--brand-50);
   color: var(--brand-700); font-size: 12px; font-weight: 600;
 }
+/* 有新版本：只提示与跳转下载页，不自动下载/替换。 */
+.pill-update {
+  border: 1px solid var(--accent); background: #FBF1E8; color: var(--accent);
+  cursor: pointer; font-family: inherit;
+}
+.pill-update:hover { background: #F6E4D4; }
 
 .page { padding: 22px 28px 28px; display: flex; flex-direction: column; gap: 14px; }
 .toolbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }

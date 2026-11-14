@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -154,6 +155,90 @@ std::size_t utf8_length(const std::string& value) {
     if ((ch & 0xC0) != 0x80) ++count;
   }
   return count;
+}
+
+// 版本检查（M5）：只读取数据目录里的更新清单并比较版本，不下载、不替换。
+// 清单由发布方投放；缺失或非法时接口照常返回，只是不给「有新版本」。
+constexpr std::string_view kUpdateManifestName = "update.json";
+constexpr std::string_view kDefaultDownloadPage =
+    "https://github.com/LinYuwei82/dev_card_cpp/releases";
+
+bool parse_version(const std::string& text, std::vector<long>* parts) {
+  if (text.empty()) return false;
+  std::vector<long> out;
+  long value = 0;
+  bool has_digit = false;
+  for (const char ch : text) {
+    if (ch >= '0' && ch <= '9') {
+      value = value * 10 + (ch - '0');
+      if (value > 100000000L) return false;
+      has_digit = true;
+    } else if (ch == '.') {
+      if (!has_digit) return false;
+      out.push_back(value);
+      value = 0;
+      has_digit = false;
+    } else {
+      return false;
+    }
+  }
+  if (!has_digit) return false;
+  out.push_back(value);
+  *parts = out;
+  return true;
+}
+
+// 逐段按数值比较，缺的段按 0 处理（1.2 == 1.2.0）。非法版本号视为相等。
+int compare_version(const std::string& left, const std::string& right) {
+  std::vector<long> a;
+  std::vector<long> b;
+  if (!parse_version(left, &a) || !parse_version(right, &b)) return 0;
+  const std::size_t count = std::max(a.size(), b.size());
+  for (std::size_t i = 0; i < count; ++i) {
+    const long l = i < a.size() ? a[i] : 0;
+    const long r = i < b.size() ? b[i] : 0;
+    if (l != r) return l > r ? 1 : -1;
+  }
+  return 0;
+}
+
+struct UpdateManifest {
+  bool found = false;
+  std::string latest;
+  std::string download_url;
+  std::string notes;
+  std::string error;
+};
+
+UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
+  UpdateManifest result;
+  std::ifstream in(data_dir / kUpdateManifestName, std::ios::binary);
+  if (!in) return result;
+  result.found = true;
+  const std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  const json doc = json::parse(text, nullptr, false);
+  if (doc.is_discarded() || !doc.is_object()) {
+    result.error = "更新清单不是合法的 JSON 对象";
+    return result;
+  }
+  result.latest = trim_copy(doc.value("latest", std::string{}));
+  result.download_url = trim_copy(doc.value("download_url", std::string{}));
+  result.notes = trim_copy(doc.value("notes", std::string{}));
+  std::vector<long> parts;
+  if (result.latest.empty()) {
+    result.error = "更新清单缺少 latest";
+  } else if (!parse_version(result.latest, &parts)) {
+    result.error = "更新清单中的 latest 不是合法版本号";
+  }
+  return result;
+}
+
+std::string download_page() {
+  if (const char* env = std::getenv("DEVCARD_DOWNLOAD_PAGE"); env && *env) {
+    return env;
+  }
+  return std::string(kDefaultDownloadPage);
 }
 
 constexpr std::string_view kLogoSettingKey = "company_logo_path";
@@ -362,6 +447,31 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                             {"schema_version", schema},
                             {"mode", "local"},
                             {"legacy_imported", state.legacy.performed}});
+  });
+
+  // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。
+  state.server.Get("/api/version", [&state, schema, version](
+                                       const httplib::Request&,
+                                       httplib::Response& response) {
+    const UpdateManifest manifest = read_update_manifest(state.data_dir);
+    const bool available = !manifest.latest.empty() &&
+                           compare_version(manifest.latest, version) > 0;
+    set_json(response,
+             json{{"version", version},
+                  {"schema_version", schema},
+                  {"latest", manifest.latest.empty() ? json(nullptr)
+                                                     : json(manifest.latest)},
+                  {"update_available", available},
+                  {"download_url", manifest.download_url},
+                  {"download_page", download_page()},
+                  {"notes", manifest.notes},
+                  {"manifest", manifest.found
+                                   ? json((state.data_dir / kUpdateManifestName)
+                                              .string())
+                                   : json(nullptr)},
+                  {"checked_at", now_text()},
+                  {"error", manifest.error.empty() ? json(nullptr)
+                                                   : json(manifest.error)}});
   });
 
   state.server.Post("/api/session/local",

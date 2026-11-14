@@ -26,13 +26,15 @@
     printBusy: false,
     companyName: '',
     companyNamePrint: '',
-    companyNameMaxWidth: 13
+    companyNameMaxWidth: 13,
+    update: null
   };
 
   var el = {
     app: document.getElementById('app'),
     health: document.getElementById('health'),
     version: document.getElementById('version-pill'),
+    updatePill: document.getElementById('update-pill'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
     navUsers: document.getElementById('nav-users'),
@@ -288,6 +290,37 @@
     }
   });
 
+  // ---------- 版本检查（M5）：只提示并跳下载页，不自动下载、不自动替换 ----------
+
+  function checkUpdate() {
+    return api('GET', '/api/version')
+      .then(function (data) {
+        state.update = data || null;
+        var available = !!(data && data.update_available && data.latest);
+        el.updatePill.hidden = !available;
+        if (!available) return;
+        el.updatePill.textContent = '有新版本 v' + data.latest;
+        el.updatePill.title = (data.notes ? data.notes + '；' : '') +
+          '点击打开下载页，不会自动下载或安装';
+      })
+      .catch(function () {
+        // 检查失败不打扰台账操作，也不保留上一次的提示。
+        state.update = null;
+        el.updatePill.hidden = true;
+      });
+  }
+
+  el.updatePill.addEventListener('click', function () {
+    var data = state.update;
+    var url = data && (data.download_url || data.download_page);
+    if (!url || !/^https?:\/\//i.test(url)) {
+      toast('未配置下载页地址', 'error');
+      return;
+    }
+    if (sendToShell('openExternal', { url: url })) return;
+    window.open(url, '_blank', 'noopener');
+  });
+
   // ---------- 会话 ----------
 
   function showLogin(message) {
@@ -355,6 +388,7 @@
   function enterApp() {
     loadOptions();
     load();
+    checkUpdate();
     if (state.view === 'users') {
       loadUsers();
       loadBackups();
