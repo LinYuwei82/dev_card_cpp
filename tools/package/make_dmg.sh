@@ -120,13 +120,19 @@ fi
 
 echo "依赖自检：通过（otool 实测 $DEP_TOTAL 项，系统 $SYSTEM_COUNT 项，包外 $EXTERNAL_COUNT 项）"
 
-PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)"
-[ "$PLIST_VERSION" = "$VERSION" ] || \
-  fail "Info.plist 版本（${PLIST_VERSION:-空}）与 VERSION.txt（${VERSION}）不一致"
+PLIST_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)"
+PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || true)"
+# 版本真值只有 VERSION.txt：新架构的 Info.plist 由 CMake 用
+# MACOSX_BUNDLE_SHORT_VERSION_STRING / MACOSX_BUNDLE_BUNDLE_VERSION 生成，
+# 这里只校验产物，不在这里回写——脚本写入再自己检查等于把门禁变成同义反复。
+[ "$PLIST_SHORT" = "$VERSION" ] || \
+  fail "Info.plist CFBundleShortVersionString（${PLIST_SHORT:-空}）与 VERSION.txt（${VERSION}）不一致"
+[ "$PLIST_BUILD" = "$VERSION" ] || \
+  fail "Info.plist CFBundleVersion（${PLIST_BUILD:-空}）与 VERSION.txt（${VERSION}）不一致"
 if find "$APP" -type f \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) | grep -q .; then
   fail "应用包里混入了数据库文件"
 fi
-echo "包内容检查：通过（Info.plist 版本 ${PLIST_VERSION}，无运行期数据）"
+echo "包内容检查：通过（Info.plist 版本 ${PLIST_SHORT}/${PLIST_BUILD}，无运行期数据）"
 
 # ---------- 2b. 子集字体随包自检 ----------
 # 界面与打印共用 web/fonts 下的同一份字体；没进包就会回落到系统字体，
