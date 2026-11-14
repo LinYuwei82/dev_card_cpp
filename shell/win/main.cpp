@@ -17,10 +17,12 @@
 #include <WebView2.h>
 
 #include <cstdio>
+#include <cwchar>
 #include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <string.h>
 #include <string>
 #include <vector>
 
@@ -205,26 +207,80 @@ void CreateA4PrintSettings(ComPtr<ICoreWebView2PrintSettings>* settings) {
   (*settings)->put_ShouldPrintHeaderAndFooter(FALSE);
 }
 
+// 文件名来自页面，不能直接塞进 SetFileName：对话框会收下，保存时才失败。
+// 非法字符、控制字符、保留名、结尾的点/空格、超长，逐项处理。
+std::wstring SanitizeFileName(std::wstring name) {
+  const std::wstring fallback = L"设备管理卡.pdf";
+  if (name.empty()) return fallback;
+  for (wchar_t& c : name) {
+    if (c < 0x20 || wcschr(L"\\/:*?\"<>|", c) != nullptr) c = L'_';
+  }
+  while (!name.empty() && (name.back() == L'.' || name.back() == L' ')) {
+    name.pop_back();
+  }
+  if (name.empty()) return fallback;
+
+  const std::size_t dot = name.find(L'.');
+  const std::wstring stem = (dot == std::wstring::npos) ? name : name.substr(0, dot);
+  const wchar_t* kReserved[] = {L"CON", L"PRN", L"AUX", L"NUL",
+                                L"COM1", L"COM2", L"COM3", L"COM4", L"COM5",
+                                L"COM6", L"COM7", L"COM8", L"COM9",
+                                L"LPT1", L"LPT2", L"LPT3", L"LPT4", L"LPT5",
+                                L"LPT6", L"LPT7", L"LPT8", L"LPT9"};
+  for (const wchar_t* reserved : kReserved) {
+    if (_wcsicmp(stem.c_str(), reserved) == 0) {
+      name = L"_" + name;
+      break;
+    }
+  }
+  if (name.find(L'.') == std::wstring::npos) name += L".pdf";
+
+  // 单段文件名上限 255 字符，留余量；截断时保住扩展名。
+  if (name.size() > 200) {
+    const std::size_t cut = name.rfind(L'.');
+    const std::wstring ext = (cut == std::wstring::npos) ? L".pdf" : name.substr(cut);
+    name = name.substr(0, 200 - ext.size()) + ext;
+  }
+  return name.empty() ? fallback : name;
+}
+
+// error 为空表示用户取消；非空是真实原因（调用方必须照实报，不能一律当取消）。
 bool PickSavePath(const std::wstring& suggested_name,
-                  std::filesystem::path* out) {
+                  std::filesystem::path* out, std::wstring* error) {
   ComPtr<IFileSaveDialog> dialog;
-  if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr,
-                              CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+  const HRESULT created = CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+                                           CLSCTX_INPROC_SERVER,
+                                           IID_PPV_ARGS(&dialog));
+  if (FAILED(created)) {
+    *error = L"保存对话框创建失败（" + HResultText(created) + L"）";
     return false;
   }
   const COMDLG_FILTERSPEC types[] = {{L"PDF 文件", L"*.pdf"}};
   dialog->SetFileTypes(1, types);
   dialog->SetDefaultExtension(L"pdf");
   dialog->SetTitle(L"导出卡片 PDF");
-  dialog->SetFileName(suggested_name.empty() ? L"设备管理卡.pdf"
-                                             : suggested_name.c_str());
+  const std::wstring file_name = SanitizeFileName(suggested_name);
+  dialog->SetFileName(file_name.c_str());
   const HRESULT hr = dialog->Show(g.hwnd);
-  if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED) || FAILED(hr)) return false;
+  if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+    error->clear();
+    return false;
+  }
+  if (FAILED(hr)) {
+    *error = L"保存对话框打不开（" + HResultText(hr) + L"）";
+    return false;
+  }
 
   ComPtr<IShellItem> item;
-  if (FAILED(dialog->GetResult(&item)) || !item) return false;
+  if (FAILED(dialog->GetResult(&item)) || !item) {
+    *error = L"保存对话框没有返回路径";
+    return false;
+  }
   PWSTR raw = nullptr;
-  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) return false;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw)) || !raw) {
+    *error = L"保存路径无法解析为文件系统路径";
+    return false;
+  }
   *out = std::filesystem::path(raw);
   CoTaskMemFree(raw);
   return true;
@@ -269,9 +325,15 @@ void ExportPdf(const std::string& suggested_name) {
         }
 
         std::filesystem::path target;
-        if (!PickSavePath(Widen(suggested_name), &target)) {
+        std::wstring pick_error;
+        if (!PickSavePath(Widen(suggested_name), &target, &pick_error)) {
           g.print_busy = false;
-          Notify(nullptr, L"已取消导出");
+          if (pick_error.empty()) {
+            Notify(nullptr, L"已取消导出");
+          } else {
+            // 真实原因必须照实报：以前这里也说「已取消」，用户只看到取消却不知道为什么没存下。
+            Notify(L"error", pick_error);
+          }
           return S_OK;
         }
 

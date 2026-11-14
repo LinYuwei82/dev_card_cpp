@@ -1322,17 +1322,28 @@
   // ---------- 卡片打印 ----------
 
   function hasNativeBridge() {
+    if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+      return true;
+    }
     return !!(window.webkit && window.webkit.messageHandlers &&
       window.webkit.messageHandlers.devcard);
   }
 
   // 壳层的两条输出通道共用同一份打印 DOM，只改变输出目标。
   function sendToShell(action, payload) {
-    if (!hasNativeBridge()) return false;
     var message = payload || {};
     message.action = action;
-    window.webkit.messageHandlers.devcard.postMessage(message);
-    return true;
+    // WebView2 原生桥优先：不依赖注入脚本的时机（注入晚于点击时老写法会静默落空）。
+    if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+      window.chrome.webview.postMessage(message);
+      return true;
+    }
+    if (window.webkit && window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.devcard) {
+      window.webkit.messageHandlers.devcard.postMessage(message);
+      return true;
+    }
+    return false;
   }
 
   // 壳层回传导出/打印结果（见 shell/mac/main.mm）。
@@ -1645,6 +1656,12 @@
     // 有壳层时一律交给壳：壳会向页面要布局，页面用 {error} 回应并中止，
     // 这样错误能落到系统对话框/日志里，而不是停在页面里没人知道。
     if (sendToShell('exportPdf', { filename: '设备管理卡.pdf' })) return;
+    // 在壳里却拿不到桥：说明注入失败，不能再静默退回 window.print()
+    // （那样文件名由打印预览按标题生成，壳既不知道也管不了）。
+    if (window.__devcardShell) {
+      toast('壳层桥不可用，导出已中止，请重启程序', 'error');
+      return;
+    }
     if (!printFonts.ready) {
       toast(printFonts.error || '子集字体未就绪，已中止导出', 'error');
       return;
