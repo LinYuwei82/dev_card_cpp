@@ -601,6 +601,7 @@ const std::vector<std::string>& route_error_codes() {
       "manifest_invalid", "download_failed",  "checksum_mismatch",
       "backup_failed",    "io_error",         "db_error",
       "xlsx_write_failed", "legacy_read",
+      "bad_version",      "bad_request",
   };
   return kCodes;
 }
@@ -1498,11 +1499,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       if (reinterpret_cast<std::intptr_t>(result) <= 32) {
                         throw AppError("bad_request",
                                        "无法打开数据目录：" +
-                                           path_utf8(state.data_dir));
+                                           path_to_utf8(state.data_dir));
                       }
                       set_json(response,
                                json{{"ok", true},
-                                    {"path", path_utf8(state.data_dir)}});
+                                    {"path", path_to_utf8(state.data_dir)}});
 #else
                       throw AppError("bad_request",
                                      "打开数据目录仅在 Windows 版本提供");
