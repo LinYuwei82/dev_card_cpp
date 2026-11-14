@@ -122,15 +122,16 @@ std::int64_t DeviceDao::count(const Db& db, const DeviceQuery& query) const {
 
 bool DeviceDao::find(const Db& db, std::int64_t id, Device& out) const {
   bool found = false;
-  db.read([&](sqlite3* conn) {
-    Stmt stmt(conn, std::string("SELECT ") + kColumns + " FROM device WHERE id = ?");
-    stmt.bind(1, id);
-    if (stmt.step()) {
-      read_row(stmt, out);
-      found = true;
-    }
-  });
+  db.read([&](sqlite3* conn) { found = find(conn, id, out); });
   return found;
+}
+
+bool DeviceDao::find(sqlite3* conn, std::int64_t id, Device& out) const {
+  Stmt stmt(conn, std::string("SELECT ") + kColumns + " FROM device WHERE id = ?");
+  stmt.bind(1, id);
+  if (!stmt.step()) return false;
+  read_row(stmt, out);
+  return true;
 }
 
 std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
@@ -156,16 +157,31 @@ std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
   return device.id;
 }
 
-void DeviceDao::update(sqlite3* conn, const Device& device) const {
+void DeviceDao::update(sqlite3* conn, const Device& device,
+                       std::string_view updated_by) const {
+  if (updated_by.empty()) {
+    Stmt stmt(conn,
+              "UPDATE device SET dev_name=?, location=?, control_range=?, phone=?,"
+              " updated_at=? WHERE id=?");
+    stmt.bind(1, device.dev_name)
+        .bind(2, device.location)
+        .bind(3, device.control_range)
+        .bind(4, device.phone)
+        .bind(5, now_text())
+        .bind(6, device.id);
+    stmt.run();
+    return;
+  }
   Stmt stmt(conn,
             "UPDATE device SET dev_name=?, location=?, control_range=?, phone=?,"
-            " updated_at=? WHERE id=?");
+            " updated_at=?, updated_by=? WHERE id=?");
   stmt.bind(1, device.dev_name)
       .bind(2, device.location)
       .bind(3, device.control_range)
       .bind(4, device.phone)
       .bind(5, now_text())
-      .bind(6, device.id);
+      .bind(6, updated_by)
+      .bind(7, device.id);
   stmt.run();
 }
 

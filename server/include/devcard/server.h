@@ -10,6 +10,9 @@ namespace devcard {
 
 std::filesystem::path default_data_dir();
 
+// 可执行文件所在目录：配置文件、随包字体都相对它解析，不依赖当前工作目录。
+std::filesystem::path executable_dir();
+
 // 随包分发的子集字体目录（web/fonts 在打包时复制到 app 的 Resources/fonts；
 // Windows 绿色版放在 exe 旁的 fonts/）。可用 DEVCARD_FONT_DIR 覆盖。
 std::filesystem::path default_font_dir();
@@ -18,6 +21,10 @@ struct ServerOptions {
   std::filesystem::path data_dir;
   std::string host = "127.0.0.1";
   int port = 18080;
+  // --server 网络模式：允许内网来源、不注入本地自动登录令牌、
+  // Host 白名单加入本机私有 IP 与 allowed_hosts。
+  bool network = false;
+  std::vector<std::string> allowed_hosts;
 };
 
 class ServerHandle {

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "devcard/backup.h"
+#include "devcard/audit.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
 #include "devcard/image_meta.h"
@@ -36,8 +37,16 @@
 #include "devcard/settings.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
+#include "config.h"
+#include "instance_lock.h"
 #include "web_assets.h"
 #include "font_coverage.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace devcard {
 namespace {
@@ -57,6 +66,7 @@ struct ServerState {
   std::unique_ptr<Db> db;
   std::unique_ptr<DeviceService> devices;
   std::unique_ptr<UserService> users;
+  std::unique_ptr<InstanceGuard> instance_guard;
   std::filesystem::path data_dir;
   std::filesystem::path font_dir;
   std::map<std::string, std::string> fonts;
@@ -64,6 +74,11 @@ struct ServerState {
   std::string local_token;
   LegacyImportReport legacy;
   bool seeded = false;
+  // 网络模式（--server）：允许内网来源；本地窗口模式只接受回环。
+  bool network = false;
+  std::string bound_host;
+  std::string machine_name;
+  std::vector<std::string> allowed_hosts;
 
   std::mutex sessions_mutex;
   std::map<std::string, Session> sessions;
@@ -445,11 +460,17 @@ bool is_loopback(const std::string& address) {
          address == "::ffff:127.0.0.1";
 }
 
-bool host_allowed(std::string host) {
-  if (host.empty()) return false;
-  std::transform(host.begin(), host.end(), host.begin(),
+std::string lowercase(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  std::string name = host;
+  return value;
+}
+
+// Host 白名单：本地窗口模式只认回环；网络模式再加入实际监听 IP、机器名
+// 与配置的 allowed_hosts，其他 Host 返回 421，用于防 DNS rebinding。
+bool host_allowed(const ServerState& state, std::string host) {
+  if (host.empty()) return false;
+  std::string name = lowercase(host);
   if (!name.empty() && name.front() == '[') {
     const std::size_t end = name.find(']');
     if (end != std::string::npos) name = name.substr(1, end - 1);
@@ -457,7 +478,39 @@ bool host_allowed(std::string host) {
     const std::size_t colon = name.find(':');
     if (colon != std::string::npos) name = name.substr(0, colon);
   }
-  return name == "127.0.0.1" || name == "localhost" || name == "::1";
+  if (name == "127.0.0.1" || name == "localhost" || name == "::1") return true;
+  if (!state.network) return false;
+  if (!state.bound_host.empty() && name == lowercase(state.bound_host)) return true;
+  if (!state.machine_name.empty() && name == lowercase(state.machine_name)) {
+    return true;
+  }
+  for (const std::string& allowed : state.allowed_hosts) {
+    if (name == lowercase(allowed)) return true;
+  }
+  return false;
+}
+
+unsigned long process_id() {
+#ifdef _WIN32
+  return GetCurrentProcessId();
+#else
+  return static_cast<unsigned long>(getpid());
+#endif
+}
+
+AuditContext audit_context(ServerState& state, const httplib::Request& request) {
+  return AuditContext{session_user(state, request), request.remote_addr};
+}
+
+// 独立于业务事务的审计（登录、恢复等）：写失败只告警，不影响主流程，
+// 但不能静默——静默失败等于审计形同虚设。
+void audit_event(ServerState& state, AuditEntry entry) {
+  if (entry.actor.empty()) entry.actor = "system";
+  try {
+    state.db->write([&](sqlite3* conn) { record_audit(conn, entry); });
+  } catch (const std::exception& error) {
+    std::cerr << "警告：审计写入失败：" << error.what() << std::endl;
+  }
 }
 
 User current_user(ServerState& state, const httplib::Request& request) {
@@ -539,6 +592,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
   ServerState& state = *handle->impl_;
   state.data_dir = options.data_dir;
+  state.network = options.network;
+  state.allowed_hosts = options.allowed_hosts;
+  state.bound_host = options.host;
+  state.machine_name = local_host_name();
 
   std::error_code ec;
   std::filesystem::create_directories(options.data_dir, ec);
@@ -548,10 +605,22 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
 
+  // 多实例防护：同一数据目录（规范化后）只能有一个 server 持有写权。
+  // 必须在打开数据库之前拿到锁，否则两个进程会先各自打开库再互相覆盖。
+  std::string guard_error;
+  state.instance_guard = InstanceGuard::acquire(options.data_dir, &guard_error);
+  if (!state.instance_guard) {
+    throw AppError("instance_in_use", guard_error);
+  }
+
   // 旧库自动探测：先备份、再只读导入，成功后旧库改名 *.migrated-<时间戳>。
   state.legacy = auto_import_if_needed(options.data_dir);
 
   state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
+  if (!state.instance_guard->claim_database(options.data_dir / "devicedb.db",
+                                            &guard_error)) {
+    throw AppError("instance_in_use", guard_error);
+  }
   migrate(*state.db);
 
   const SeedResult seed = seed_default_users(*state.db, options.data_dir);
@@ -568,6 +637,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.users = std::make_unique<UserService>(*state.db);
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
+#ifdef _WIN32
+  // Windows 的 SO_REUSEADDR 允许第二个进程绑同一端口，两边会随机抢连接；
+  // 换成 SO_EXCLUSIVEADDRUSE，让端口冲突在 bind 阶段就明确失败。
+  state.server.set_socket_options([](::socket_t sock) {
+    int disabled = 0;
+    int enabled = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&disabled), sizeof(disabled));
+    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+               reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+  });
+#endif
 
   // 子集字体随包分发，启动时读进内存并逐份校验。
   // 校验值是构建期从 web/fonts/ 读出来的（cmake/font_manifest.cmake），不是「服务器自己报自己的大小」——
@@ -612,7 +693,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     set_json(response, json{{"status", "ok"},
                             {"version", version},
                             {"schema_version", schema},
-                            {"mode", "local"},
+                            {"mode", state.network ? "network" : "local"},
                             {"legacy_imported", state.legacy.performed}});
   });
 
@@ -670,10 +751,33 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const json body = parse_body(request.body);
-                      const User user = state.users->authenticate(
-                          body.value("username", ""), body.value("password", ""));
+                      const std::string username = body.value("username", "");
+                      const std::string password = body.value("password", "");
+                      User user;
+                      try {
+                        user = state.users->authenticate(username, password);
+                      } catch (const AppError& error) {
+                        // 失败也记：撞库在审计里必须能看出来自哪个 IP。
+                        AuditEntry entry;
+                        entry.actor = username.empty() ? "anonymous" : username;
+                        entry.actor_ip = request.remote_addr;
+                        entry.action = "login_failed";
+                        entry.entity = "user";
+                        entry.entity_id = username;
+                        entry.summary = error.what();
+                        audit_event(state, entry);
+                        throw;
+                      }
                       set_session_cookie(response,
                                          create_session(state, user.user_name));
+                      AuditEntry entry;
+                      entry.actor = user.user_name;
+                      entry.actor_ip = request.remote_addr;
+                      entry.action = "login";
+                      entry.entity = "user";
+                      entry.entity_id = user.user_name;
+                      entry.summary = "登录成功";
+                      audit_event(state, entry);
                       set_json(response, json{{"user", user_json(user)}});
                     });
 
@@ -840,7 +944,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const auto rows = xlsx::read(request.body);
-                      const ImportReport report = state.devices->import_rows(rows);
+                      const ImportReport report = state.devices->import_rows(
+                          rows, audit_context(state, request));
                       set_json(response, json{{"imported", report.imported},
                                               {"skipped_empty", report.skipped_empty},
                                               {"duplicates", report.duplicates},
@@ -1000,7 +1105,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Post("/api/devices", [&state](const httplib::Request& request,
                                              httplib::Response& response) {
     Device device = device_from_json(parse_body(request.body));
-    set_json(response, device_json(state.devices->create(std::move(device))), 201);
+    set_json(response,
+             device_json(state.devices->create(std::move(device),
+                                               audit_context(state, request))),
+             201);
   });
 
   state.server.Put(R"(/api/devices/(\d+))",
@@ -1009,13 +1117,16 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      const auto id = std::stoll(request.matches[1].str());
                      Device device = device_from_json(parse_body(request.body));
                      set_json(response,
-                              device_json(state.devices->update(id, std::move(device))));
+                              device_json(state.devices->update(
+                                  id, std::move(device),
+                                  audit_context(state, request))));
                    });
 
   state.server.Delete(R"(/api/devices/(\d+))",
                       [&state](const httplib::Request& request,
                                httplib::Response& response) {
-                        state.devices->remove(std::stoll(request.matches[1].str()));
+                        state.devices->remove(std::stoll(request.matches[1].str()),
+                                              audit_context(state, request));
                         set_json(response, json{{"ok", true}});
                       });
 
@@ -1242,27 +1353,59 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Post("/api/system/restore",
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
-                      require_admin(state, request);
+                      const User actor = require_admin(state, request);
                       const json body = parse_body(request.body);
                       if (body.value("confirm", "") != "RESTORE") {
                         throw AppError("bad_json", "恢复操作需要 confirm=RESTORE");
                       }
-                      restore_backup(*state.db, state.data_dir,
-                                     body.value("name", ""));
+                      const std::string name = body.value("name", "");
+                      restore_backup(*state.db, state.data_dir, name);
                       {
                         std::lock_guard<std::mutex> lock(state.sessions_mutex);
                         state.sessions.clear();
                       }
+                      AuditEntry entry;
+                      entry.actor = actor.user_name;
+                      entry.actor_ip = request.remote_addr;
+                      entry.action = "restore";
+                      entry.entity = "system";
+                      entry.summary = "从备份恢复：" + name;
+                      audit_event(state, entry);
                       clear_session_cookie(response);
                       set_json(response, json{{"ok", true}, {"reload", true}});
                     });
 
+  // 审计查询：仅管理员。user 角色一律 403。
+  state.server.Get("/api/audit", [&state](const httplib::Request& request,
+                                          httplib::Response& response) {
+    require_admin(state, request);
+    const int limit = int_param(request, "limit", 200);
+    json items = json::array();
+    for (const AuditEntry& entry : list_audit(*state.db, limit)) {
+      items.push_back({{"id", entry.id},
+                       {"at", entry.at},
+                       {"actor", entry.actor},
+                       {"actor_ip", entry.actor_ip},
+                       {"action", entry.action},
+                       {"entity", entry.entity},
+                       {"entity_id", entry.entity_id},
+                       {"summary", entry.summary},
+                       {"before", entry.before_json},
+                       {"after", entry.after_json}});
+    }
+    set_json(response, json{{"items", items}});
+  });
+
   state.server.Get("/", [&state](const httplib::Request&, httplib::Response& response) {
     std::string html = embedded_index_html();
-    const std::string meta = "<meta name=\"devcard-local-token\" content=\"" +
-                             state.local_token + "\">";
-    const std::size_t head = html.find("</head>");
-    if (head != std::string::npos) html.insert(head, meta + "\n");
+    // 本地窗口模式注入一次性令牌供壳自动登录；网络模式绝不注入：
+    // 否则任何能打开首页的人都能拿到本地自动登录令牌。
+    if (!state.network) {
+      const std::string meta = "<meta name=\"devcard-local-token\" content=\"" +
+                               state.local_token + "\">";
+      const std::size_t head = html.find("</head>");
+      if (head != std::string::npos) html.insert(head, meta + "\n");
+    }
     set_asset(response, html, "text/html; charset=utf-8");
   });
   state.server.Get("/styles.css", [](const httplib::Request&, httplib::Response& response) {
@@ -1325,11 +1468,25 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
   state.server.set_pre_routing_handler(
       [&state](const httplib::Request& request, httplib::Response& response) {
-        if (!host_allowed(request.get_header_value("Host"))) {
+        if (!host_allowed(state, request.get_header_value("Host"))) {
           set_json(response,
                    json{{"error", "bad_host"},
-                        {"message", "Host 头必须是 127.0.0.1 或 localhost"}},
+                        {"message", "Host 头不在允许列表内（防 DNS rebinding）：" +
+                                        request.get_header_value("Host")}},
                    421);
+          return httplib::Server::HandlerResponse::Handled;
+        }
+        // 纵深防御：网络模式只接受回环与 RFC1918 来源，公网来源直接 403。
+        // 这不能替代防火墙，只是别把库暴露在公网网卡上。
+        if (state.network && !is_loopback(request.remote_addr) &&
+            !is_private_ipv4(request.remote_addr)) {
+          set_json(response,
+                   json{{"error", "forbidden_source"},
+                        {"message",
+                         "网络版只接受本机与内网（10/172.16–31/192.168）来源，"
+                         "当前来源 IP：" +
+                             request.remote_addr}},
+                   403);
           return httplib::Server::HandlerResponse::Handled;
         }
         if (request.path.rfind("/api/", 0) != 0) {
@@ -1417,10 +1574,19 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   });
 
   if (!state.server.bind_to_port(options.host, options.port)) {
-    throw AppError("port_in_use",
-                   "无法监听 " + options.host + ":" + std::to_string(options.port));
+    throw AppError(
+        "port_in_use",
+        "无法监听 " + options.host + ":" + std::to_string(options.port) +
+            "（端口被占用）。请换端口：--port " +
+            std::to_string(options.port + 1) +
+            "，或查看占用：netstat -ano | findstr :" +
+            std::to_string(options.port));
   }
   handle->port_ = options.port;
+  // 锁文件回写监听地址：第二个实例失败时能直接报出占用者在哪个地址上。
+  state.instance_guard->set_owner_info(
+      "PID " + std::to_string(process_id()) + "，启动于 " + now_text() +
+      "，监听 " + options.host + ":" + std::to_string(options.port));
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
   return handle;
 }

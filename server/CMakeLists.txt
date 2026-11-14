@@ -32,6 +32,8 @@ add_custom_command(
 add_library(devcard_server STATIC
     src/server.cpp
     src/platform_paths.cpp
+    src/config.cpp
+    src/instance_lock.cpp
     src/font_coverage.cpp
     src/web_assets_check.cpp
     "${WEB_ASSETS_CPP}"
@@ -48,7 +50,8 @@ target_compile_definitions(devcard_server PRIVATE
 )
 target_link_libraries(devcard_server PUBLIC devcard_core)
 if(WIN32)
-    target_link_libraries(devcard_server PUBLIC ws2_32)
+    # ws2_32: sockets（httplib / inet_ntop）；iphlpapi: 枚举本机私有 IPv4。
+    target_link_libraries(devcard_server PUBLIC ws2_32 iphlpapi)
 endif()
 
 add_executable(devcard-server src/main.cpp)

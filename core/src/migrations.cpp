@@ -45,9 +45,33 @@ CREATE TABLE app_setting (
 );
 )sql";
 
+// M7 网络版：审计表 + 设备行的写入者/版本列。
+// version 由后续乐观锁使用，本期只建列并给默认值 1，不改写路径。
+constexpr const char* kMigration002 = R"sql(
+ALTER TABLE device ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE device ADD COLUMN updated_by TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE audit_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  at          TEXT    NOT NULL,
+  actor       TEXT    NOT NULL,
+  actor_ip    TEXT    NOT NULL,
+  action      TEXT    NOT NULL,
+  entity      TEXT    NOT NULL,
+  entity_id   TEXT    NOT NULL DEFAULT '',
+  summary     TEXT    NOT NULL DEFAULT '',
+  before_json TEXT    NOT NULL DEFAULT '',
+  after_json  TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_audit_at     ON audit_log(at);
+CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+CREATE INDEX idx_audit_actor  ON audit_log(actor);
+)sql";
+
 const std::vector<Migration>& migrations() {
   static const std::vector<Migration> list = {
       {1, "initial_schema", kMigration001},
+      {2, "network_audit", kMigration002},
   };
   return list;
 }

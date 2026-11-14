@@ -51,6 +51,27 @@ std::string join(const std::vector<std::string>& parts, const char* sep) {
   return out;
 }
 
+std::string device_json_text(const Device& device) {
+  return "{\"id\":" + std::to_string(device.id) + ",\"dev_name\":\"" +
+         json_escape(device.dev_name) + "\",\"location\":\"" +
+         json_escape(device.location) + "\",\"control_range\":\"" +
+         json_escape(device.control_range) + "\",\"phone\":\"" +
+         json_escape(device.phone) + "\",\"updated_at\":\"" +
+         json_escape(device.updated_at) + "\"}";
+}
+
+AuditEntry device_audit(const AuditContext& context, const char* action,
+                        std::int64_t id, const std::string& summary) {
+  AuditEntry entry;
+  entry.actor = context.actor;
+  entry.actor_ip = context.actor_ip;
+  entry.action = action;
+  entry.entity = "device";
+  entry.entity_id = id > 0 ? std::to_string(id) : std::string();
+  entry.summary = summary;
+  return entry;
+}
+
 }  // namespace
 
 void DeviceService::validate(Device& device) const {
@@ -91,6 +112,10 @@ Device DeviceService::get(std::int64_t id) const {
 }
 
 Device DeviceService::create(Device device) {
+  return create(std::move(device), AuditContext{});
+}
+
+Device DeviceService::create(Device device, const AuditContext& audit) {
   validate(device);
   db_.write([&](sqlite3* conn) {
     if (dao_.exists_triplet(conn, device.dev_name, device.location,
@@ -98,17 +123,38 @@ Device DeviceService::create(Device device) {
       throw AppError("duplicate", "你要添加的设备己经存在，请重新输入");
     }
     dao_.insert(conn, device);
+    if (audit.enabled()) {
+      AuditEntry entry = device_audit(audit, "create", device.id, "新增设备");
+      entry.after_json = device_json_text(device);
+      record_audit(conn, entry);
+    }
   });
   return device;
 }
 
 Device DeviceService::update(std::int64_t id, Device device) {
+  return update(id, std::move(device), AuditContext{});
+}
+
+Device DeviceService::update(std::int64_t id, Device device,
+                             const AuditContext& audit) {
   validate(device);
   device.id = id;
+  Device before;
   db_.write([&](sqlite3* conn) {
-    dao_.update(conn, device);
+    // 先在同一事务里取旧值：审计的 before 与「行是否存在」都基于同一次快照。
+    if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
+    dao_.update(conn, device, audit.actor);
     if (sqlite3_changes(conn) == 0)
       throw AppError("not_found", "设备不存在");
+    if (audit.enabled()) {
+      Device after;
+      if (!dao_.find(conn, id, after)) after = device;
+      AuditEntry entry = device_audit(audit, "update", id, "修改设备");
+      entry.before_json = device_json_text(before);
+      entry.after_json = device_json_text(after);
+      record_audit(conn, entry);
+    }
   });
   Device saved;
   if (!dao_.find(db_, id, saved)) throw AppError("not_found", "设备不存在");
@@ -116,10 +162,21 @@ Device DeviceService::update(std::int64_t id, Device device) {
 }
 
 void DeviceService::remove(std::int64_t id) {
+  remove(id, AuditContext{});
+}
+
+void DeviceService::remove(std::int64_t id, const AuditContext& audit) {
+  Device before;
   db_.write([&](sqlite3* conn) {
+    const bool existed = dao_.find(conn, id, before);
     dao_.erase(conn, id);
-    if (sqlite3_changes(conn) == 0)
+    if (!existed || sqlite3_changes(conn) == 0)
       throw AppError("not_found", "设备不存在");
+    if (audit.enabled()) {
+      AuditEntry entry = device_audit(audit, "delete", id, "删除设备");
+      entry.before_json = device_json_text(before);
+      record_audit(conn, entry);
+    }
   });
 }
 
@@ -135,6 +192,12 @@ const std::vector<std::string>& DeviceService::expected_header() {
 
 ImportReport DeviceService::import_rows(
     const std::vector<std::vector<std::string>>& rows) {
+  return import_rows(rows, AuditContext{});
+}
+
+ImportReport DeviceService::import_rows(
+    const std::vector<std::vector<std::string>>& rows,
+    const AuditContext& audit) {
   if (rows.empty())
     throw AppError("bad_header", "导入文件是空的：第 1 行必须是表头");
 
@@ -184,6 +247,16 @@ ImportReport DeviceService::import_rows(
       }
       dao_.insert(conn, device);
       ++report.imported;
+    }
+    if (audit.enabled()) {
+      // 导入只记一条汇总；逐行记会让一次 5000 行导入写出 5000 条审计。
+      AuditEntry entry = device_audit(
+          audit, "import", 0,
+          "导入 " + std::to_string(report.imported) + " 行（跳过空行 " +
+              std::to_string(report.skipped_empty) + "，重复 " +
+              std::to_string(report.duplicates) + "，截断 " +
+              std::to_string(report.truncated) + "）");
+      record_audit(conn, entry);
     }
   });
   return report;

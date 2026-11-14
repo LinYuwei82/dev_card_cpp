@@ -11,6 +11,7 @@
 #include <unistd.h>
 #endif
 
+#include "config.h"
 #include "devcard/backup.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
@@ -92,8 +93,12 @@ void print_legacy_report(const devcard::LegacyImportReport& report) {
 void print_usage() {
   std::cout
       << "devcard-server [选项]\n"
+      << "  --server               以网络版启动：允许内网浏览器访问\n"
+      << "  --listen IP            监听地址（默认自动选一块私有 IPv4）\n"
       << "  --port N               监听端口（默认 18080）\n"
-      << "  --data-dir PATH        数据目录（默认为系统应用数据目录）\n"
+      << "  --allow-any            允许 --listen 0.0.0.0（默认拒绝）\n"
+      << "  --data-dir PATH        数据目录（命令行 → 环境变量 → 配置文件 → 形态默认）\n"
+      << "  --config PATH          配置文件（默认 exe 同目录 devcard-server.json）\n"
       << "  --import-legacy PATH   导入旧版 devicedb.db 后退出\n"
       << "  --set-password USER    重置本机账号密码后退出（密码从标准输入读取）\n"
       << "  --backup               立即备份后退出\n"
@@ -102,65 +107,87 @@ void print_usage() {
       << "  --help                 显示本帮助\n";
 }
 
+int parse_port_arg(const std::string& text) {
+  try {
+    const std::size_t used = text.find_first_not_of("0123456789");
+    if (used != std::string::npos) throw std::invalid_argument("port");
+    const int port = std::stoi(text);
+    if (port < 1 || port > 65535) throw std::out_of_range("port");
+    return port;
+  } catch (const std::exception&) {
+    throw devcard::AppError("bad_config",
+                            "--port 必须是 1–65535 的整数，收到: " + text);
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  devcard::ServerOptions options;
-  options.data_dir = devcard::default_data_dir();
-
+  devcard::CliOverrides cli;
   std::string import_legacy_path;
   std::string set_password_user;
   std::string restore_name;
   bool backup_only = false;
   bool show_version = false;
-
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
-    auto next = [&](const char* name) -> std::string {
-      if (i + 1 >= argc) {
-        std::cerr << name << " 缺少参数\n";
-        std::exit(2);
-      }
-      return argv[++i];
-    };
-    if (arg == "--port") {
-      options.port = std::stoi(next("--port"));
-    } else if (arg == "--data-dir") {
-      options.data_dir = next("--data-dir");
-    } else if (arg == "--import-legacy") {
-      import_legacy_path = next("--import-legacy");
-    } else if (arg == "--set-password") {
-      set_password_user = next("--set-password");
-    } else if (arg == "--restore") {
-      restore_name = next("--restore");
-    } else if (arg == "--backup") {
-      backup_only = true;
-    } else if (arg == "--version") {
-      show_version = true;
-    } else if (arg == "--help" || arg == "-h") {
-      print_usage();
-      return 0;
-    } else {
-      std::cerr << "未知参数: " << arg << "\n";
-      return 2;
-    }
-  }
+  bool server_mode = false;
 
   try {
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      auto next = [&](const char* name) -> std::string {
+        if (i + 1 >= argc) {
+          throw devcard::AppError("bad_config",
+                                  std::string(name) + " 缺少参数");
+        }
+        return argv[++i];
+      };
+      if (arg == "--server") {
+        server_mode = true;
+      } else if (arg == "--allow-any") {
+        cli.allow_any = true;
+      } else if (arg == "--port") {
+        cli.port = parse_port_arg(next("--port"));
+      } else if (arg == "--listen") {
+        cli.listen = next("--listen");
+      } else if (arg == "--config") {
+        cli.config = std::filesystem::path(next("--config"));
+      } else if (arg == "--data-dir") {
+        cli.data_dir = next("--data-dir");
+      } else if (arg == "--import-legacy") {
+        import_legacy_path = next("--import-legacy");
+      } else if (arg == "--set-password") {
+        set_password_user = next("--set-password");
+      } else if (arg == "--restore") {
+        restore_name = next("--restore");
+      } else if (arg == "--backup") {
+        backup_only = true;
+      } else if (arg == "--version") {
+        show_version = true;
+      } else if (arg == "--help" || arg == "-h") {
+        print_usage();
+        return 0;
+      } else {
+        std::cerr << "未知参数: " << arg << "\n";
+        return 2;
+      }
+    }
+
     if (show_version) {
       std::cout << DEVCARD_VERSION << std::endl;
       return 0;
     }
 
+    const devcard::ServerConfig config = devcard::resolve_config(cli);
+
     if (!import_legacy_path.empty()) {
       const devcard::LegacyImportReport report =
-          devcard::import_legacy(import_legacy_path, options.data_dir);
+          devcard::import_legacy(import_legacy_path, config.data_dir);
       print_legacy_report(report);
       return 0;
     }
 
     if (!set_password_user.empty()) {
-      OpenedDatabase opened = open_database(options.data_dir);
+      OpenedDatabase opened = open_database(config.data_dir);
       devcard::UserService users(*opened.db);
       const std::string first = prompt_password("新密码（8–128 个字符）: ");
       const std::string second = prompt_password("再次输入新密码: ");
@@ -187,26 +214,90 @@ int main(int argc, char** argv) {
     }
 
     if (backup_only) {
-      OpenedDatabase opened = open_database(options.data_dir);
+      OpenedDatabase opened = open_database(config.data_dir);
       const devcard::BackupEntry entry =
-          devcard::create_backup(*opened.db, options.data_dir, "cli");
+          devcard::create_backup(*opened.db, config.data_dir, "cli");
       std::cout << "备份完成: " << entry.path << " (" << entry.bytes << " 字节)"
                 << std::endl;
       return 0;
     }
 
     if (!restore_name.empty()) {
-      OpenedDatabase opened = open_database(options.data_dir);
-      devcard::restore_backup(*opened.db, options.data_dir, restore_name);
+      OpenedDatabase opened = open_database(config.data_dir);
+      devcard::restore_backup(*opened.db, config.data_dir, restore_name);
       std::cout << "已从备份 " << restore_name << " 恢复（恢复前已自动备份当前库）"
                 << std::endl;
       return 0;
     }
 
+    // 监听地址：显式配置优先；网络模式未指定时自动选一块私有 IPv4，
+    // 本地窗口模式（不带 --server）固定回环。
+    std::string listen = config.listen;
+    std::string listen_source = config.listen_source;
+    if (listen.empty()) {
+      if (server_mode) {
+        listen = devcard::select_listen_address(config);
+        listen_source = "自动选择私有网卡";
+      } else {
+        listen = "127.0.0.1";
+        listen_source = "默认（本机窗口模式）";
+      }
+    } else if (!server_mode && !devcard::is_private_ipv4(listen) &&
+               listen != "127.0.0.1" && listen != "localhost") {
+      throw devcard::AppError(
+          "bad_config",
+          "监听地址 " + listen + " 需要配合 --server 使用；本地模式只监听回环。");
+    }
+
+    if (devcard::is_wildcard_listen(listen)) {
+      if (!config.allow_any) {
+        throw devcard::AppError(
+            "bad_listen",
+            "拒绝监听 " + listen +
+                "：这会对所有网卡开放。确认要这样做时，请同时显式加 --allow-any。");
+      }
+      std::cerr << "警告：监听 " << listen
+                << " 将对所有网卡开放，请确保处在可信内网。" << std::endl;
+    }
+
+    devcard::ServerOptions options;
+    options.data_dir = config.data_dir;
+    options.host = listen;
+    options.port = config.port;
+    options.network = server_mode;
+    options.allowed_hosts = config.allowed_hosts;
+
     auto server = devcard::start_server(options);
-    std::cout << "devcard-server listening http://" << options.host << ":"
-              << server->port() << " data=" << options.data_dir << std::endl;
+
+    std::cout << "DevCard " << (server_mode ? "网络版" : "本地版") << " "
+              << DEVCARD_VERSION << "（schema "
+              << devcard::target_schema_version() << "）\n";
+    if (config.config_loaded) {
+      std::cout << "配置文件: " << config.config_file.string() << "（来源："
+                << config.config_source << "）\n";
+    } else {
+      std::cout << "配置文件: (未使用，exe 同目录无 devcard-server.json)\n";
+    }
+    std::cout << "数据目录: " << config.data_dir.string() << "（来源："
+              << config.data_dir_source << "）\n"
+              << "数据库:   " << (config.data_dir / "devicedb.db").string() << "\n"
+              << "监听地址: " << listen << ":" << server->port() << "（来源："
+              << listen_source << "，端口来源：" << config.port_source << "）\n";
+    if (server_mode) {
+      std::cout << "访问地址: http://" << listen << ":" << server->port() << "/"
+                << std::endl;
+    } else {
+      std::cout << "访问地址: http://127.0.0.1:" << server->port() << "/"
+                << std::endl;
+    }
+    std::cout.flush();
+
     while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
+  } catch (const devcard::AppError& error) {
+    std::cerr << "启动失败: " << error.what() << std::endl;
+    if (error.code() == "instance_in_use") return 3;
+    if (error.code() == "bad_config" || error.code() == "bad_listen") return 2;
+    return 1;
   } catch (const std::exception& error) {
     std::cerr << "启动失败: " << error.what() << std::endl;
     return 1;

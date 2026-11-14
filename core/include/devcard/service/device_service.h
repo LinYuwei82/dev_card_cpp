@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "devcard/audit.h"
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
 #include "devcard/models.h"
@@ -38,13 +39,19 @@ class DeviceService {
   DevicePage list(const DeviceQuery& query) const;
   Device get(std::int64_t id) const;
   Device create(Device device);
+  Device create(Device device, const AuditContext& audit);
   Device update(std::int64_t id, Device device);
+  Device update(std::int64_t id, Device device, const AuditContext& audit);
   void remove(std::int64_t id);
+  void remove(std::int64_t id, const AuditContext& audit);
   DeviceOptions options() const;
 
   // 导入：表头必须与预期四列一致，否则整批拒绝（不允许错位）。
   // 去重口径按 D5：不去重、不跳过、不合并，重复只统计并提示。
+  // 带 audit 时只记一条汇总，不逐行记。
   ImportReport import_rows(const std::vector<std::vector<std::string>>& rows);
+  ImportReport import_rows(const std::vector<std::vector<std::string>>& rows,
+                           const AuditContext& audit);
 
   // 导出：列头与导入一致，便于往返。
   std::vector<std::vector<std::string>> export_rows() const;

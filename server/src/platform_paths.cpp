@@ -17,6 +17,15 @@
 namespace devcard {
 namespace {
 
+constexpr const char* kRegularFontName = "NotoSansSC-Regular.subset.ttf";
+
+bool has_fonts(const std::filesystem::path& dir) {
+  std::error_code ec;
+  return std::filesystem::exists(dir / kRegularFontName, ec);
+}
+
+}  // namespace
+
 // 可执行文件所在目录：字体随包分发，不能依赖当前工作目录。
 std::filesystem::path executable_dir() {
 #ifdef _WIN32
@@ -48,15 +57,6 @@ std::filesystem::path executable_dir() {
 #endif
   return std::filesystem::current_path();
 }
-
-constexpr const char* kRegularFontName = "NotoSansSC-Regular.subset.ttf";
-
-bool has_fonts(const std::filesystem::path& dir) {
-  std::error_code ec;
-  return std::filesystem::exists(dir / kRegularFontName, ec);
-}
-
-}  // namespace
 
 std::filesystem::path default_font_dir() {
   if (const char* env = std::getenv("DEVCARD_FONT_DIR"); env && *env) {

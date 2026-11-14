@@ -1,6 +1,7 @@
 add_library(devcard_core STATIC
     src/db.cpp
     src/migrations.cpp
+    src/audit.cpp
     src/dao/device_dao.cpp
     src/dao/user_dao.cpp
     src/service/device_service.cpp
