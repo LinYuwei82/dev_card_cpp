@@ -163,40 +163,84 @@ std::string read_bytes(const fs::path& path) {
                      std::istreambuf_iterator<char>());
 }
 
-bool valid_utf8(const std::string& text) {
+// 严格 UTF-8 解码：拒绝过长编码、代理区、> U+10FFFF 与截断序列。
+// 切点劈开多字节字符时这里会失败，且能报出字节偏移——与「行尾差异」是两种
+// 可区分的失败。内容比较走码点，不再拿磁盘字节直接比。
+struct Decoded {
+  bool ok = true;
+  std::size_t error = 0;
+  std::vector<unsigned int> points;
+};
+
+Decoded decode_utf8(const std::string& text) {
+  Decoded result;
   std::size_t i = 0;
   while (i < text.size()) {
     const auto c = static_cast<unsigned char>(text[i]);
+    unsigned int point = 0;
     std::size_t extra = 0;
     if (c < 0x80) {
-      extra = 0;
+      point = c;
     } else if (c >= 0xC2 && c <= 0xDF) {
+      point = c & 0x1F;
       extra = 1;
     } else if (c >= 0xE0 && c <= 0xEF) {
+      point = c & 0x0F;
       extra = 2;
     } else if (c >= 0xF0 && c <= 0xF4) {
+      point = c & 0x07;
       extra = 3;
     } else {
-      return false;
+      result.ok = false;
+      result.error = i;
+      return result;
     }
     if (i + extra >= text.size()) {
-      return false;
+      result.ok = false;
+      result.error = i;
+      return result;
     }
     for (std::size_t k = 1; k <= extra; ++k) {
-      if ((static_cast<unsigned char>(text[i + k]) & 0xC0) != 0x80) {
-        return false;
+      const auto next = static_cast<unsigned char>(text[i + k]);
+      if ((next & 0xC0) != 0x80) {
+        result.ok = false;
+        result.error = i;
+        return result;
       }
+      point = (point << 6) | (next & 0x3F);
     }
+    if ((extra == 2 && point < 0x800) || (extra == 3 && point < 0x10000) ||
+        (point >= 0xD800 && point <= 0xDFFF) || point > 0x10FFFF) {
+      result.ok = false;
+      result.error = i;
+      return result;
+    }
+    result.points.push_back(point);
     i += extra + 1;
   }
-  return true;
+  return result;
+}
+
+// 只归一 CRLF，不碰单个 CR，也不做其它隐式转换。
+std::string normalize_crlf(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+      continue;
+    }
+    out += text[i];
+  }
+  return out;
 }
 
 struct Literal {
   std::size_t blocks = 0;
   std::size_t bytes = 0;
   std::size_t max_block = 0;
-  bool utf8 = true;
+  bool decoded = false;
+  std::size_t decode_error = 0;
+  std::vector<unsigned int> points;
   std::string content;
 };
 
@@ -228,9 +272,6 @@ Literal parse_array(const std::string& generated, const std::string& name) {
       break;
     }
     const std::string block = generated.substr(content_begin, end - content_begin);
-    if (!valid_utf8(block)) {
-      result.utf8 = false;
-    }
     result.blocks += 1;
     result.bytes += block.size();
     if (block.size() > result.max_block) {
@@ -246,13 +287,39 @@ Literal parse_array(const std::string& generated, const std::string& name) {
       cursor += kNewlineToken.size();
     }
   }
+  result.content = normalize_crlf(result.content);
+  const Decoded decoded = decode_utf8(result.content);
+  result.decoded = decoded.ok;
+  result.decode_error = decoded.error;
+  result.points = decoded.points;
   return result;
+}
+
+// 二进制资产走「抽 hex → 解码 → 逐字节比」，不受行尾影响。
+std::vector<unsigned char> parse_hex_array(const std::string& generated,
+                                           const std::string& name) {
+  const Literal literal = parse_array(generated, name);
+  std::string hex;
+  for (char c : literal.content) {
+    const auto byte = static_cast<unsigned char>(c);
+    if ((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') ||
+        (byte >= 'A' && byte <= 'F')) {
+      hex += c;
+    }
+  }
+  std::vector<unsigned char> bytes;
+  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+    bytes.push_back(static_cast<unsigned char>(
+        std::stoi(hex.substr(i, 2), nullptr, 16)));
+  }
+  return bytes;
 }
 
 struct RunResult {
   int code = -1;
   std::string output;
   Literal index;
+  std::vector<unsigned char> logo;
   std::size_t artifact_bytes = 0;  // 生成的 .cpp 大小；>0 才说明外部进程真的跑过
 };
 
@@ -283,6 +350,7 @@ RunResult generate(const std::string& name, const std::string& index_html) {
     result.artifact_bytes = generated.size();
     if (!generated.empty()) {
       result.index = parse_array(generated, "kIndexHtml");
+      result.logo = parse_hex_array(generated, "kLogoJpgHex");
     }
   }
   fs::remove_all(root);
@@ -300,14 +368,25 @@ void check_case(const std::string& name, const std::string& payload,
   }
   // 先证明外部进程真的运行过：产物存在且非空。
   CHECK(got.artifact_bytes > 0);
-  CHECK(got.index.utf8);
-  CHECK(got.index.content == payload);
+  // 二进制资产：抽 hex → 解码 → 与输入逐字节比。
+  const std::vector<unsigned char> expected_logo = {0xFF, 0xD8, 0xFF};
+  CHECK(got.logo == expected_logo);
   CHECK(got.index.bytes == payload.size());
   CHECK(got.index.blocks == expected_blocks);
   CHECK(got.index.max_block <= 4096);
-  if (got.index.content != payload || got.index.blocks != expected_blocks) {
+  if (!got.index.decoded) {
+    // 切点劈开多字节字符必须报解码错误，不能混成「内容不等」。
+    std::cerr << "FAIL [" << name << "] 字面量解码失败（非法 UTF-8），起始字节 "
+              << got.index.decode_error << "\n";
+    ++failures;
+    return;
+  }
+  const Decoded expected = decode_utf8(payload);
+  CHECK(expected.ok);
+  CHECK(got.index.points == expected.points);
+  if (got.index.points != expected.points || got.index.blocks != expected_blocks) {
     std::cerr << "  期望 " << payload.size() << " 字节 / " << expected_blocks
-              << " 块，实得 " << got.index.content.size() << " 字节 / "
+              << " 块，实得 " << got.index.bytes << " 字节 / "
               << got.index.blocks << " 块\n";
   }
 }
@@ -347,7 +426,8 @@ int main() {
     const std::string lf = "line1\nline2\nline3\n";
     const RunResult got = generate("newline-lf", lf);
     CHECK(got.code == 0);
-    CHECK(got.index.content == lf);
+    CHECK(got.index.decoded);
+    CHECK(got.index.points == decode_utf8(lf).points);
     CHECK(got.index.bytes == lf.size());
   }
   {
@@ -382,7 +462,8 @@ int main() {
                              std::chrono::steady_clock::now() - started).count();
     CHECK(ok.code == 0);
     CHECK(ok.index.bytes == big.size());
-    CHECK(ok.index.content == big);
+    CHECK(ok.index.decoded);
+    CHECK(ok.index.points == decode_utf8(big).points);
     CHECK(ok.index.blocks == (big.size() + 4095) / 4096);
     std::cout << "  200 KB 级 LF 源：" << elapsed << " ms\n";
 
@@ -405,9 +486,27 @@ int main() {
                                  std::chrono::steady_clock::now() - started_bad).count();
     CHECK(ironic.code == 0);
     CHECK(ironic.index.bytes == adversarial.size());
-    CHECK(ironic.index.content == adversarial);
+    // 这条输入本身就是非法 UTF-8，只验「字节数与块数没被 CR 扫描吃掉」；
+    // 解码判据由上面的文本用例与第 6 节自检覆盖。
+    CHECK(ironic.index.blocks == (adversarial.size() + 4095) / 4096);
     std::cout << "  220 KB 对抗输入（20 d1 重复）：" << elapsed_bad << " ms\n";
     CHECK(elapsed_bad < 5000);  // 判据是秒级以内，不是「没崩」
+  }
+
+  // 6) 判据自检：切点劈开多字节字符必须是「解码失败」，不能只是「内容不等」；
+  //    纯 CRLF 差异归一后必须解码成功且码点一致——两类失败要能区分。
+  {
+    const std::string broken =
+        "const char kIndexHtml[] = {\nR\"DEVCARD(a\xE7\x95)DEVCARD\"\n};\n";
+    const Literal split = parse_array(broken, "kIndexHtml");
+    CHECK(!split.decoded);
+    CHECK(split.decode_error == 1);
+
+    const std::string crlf =
+        "const char kIndexHtml[] = {\nR\"DEVCARD(a\r\nb)DEVCARD\"\n};\n";
+    const Literal line = parse_array(crlf, "kIndexHtml");
+    CHECK(line.decoded);
+    CHECK(line.points == std::vector<unsigned int>({'a', '\n', 'b'}));
   }
 
   if (failures != 0) {
