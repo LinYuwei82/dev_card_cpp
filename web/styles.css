@@ -40,6 +40,34 @@ button { cursor: pointer; }
 
 .app { display: grid; grid-template-columns: 228px minmax(0, 1fr); min-height: 100vh; }
 
+/* 视口级锁高（只作用于屏幕）：滚动收敛到内容区，侧栏与状态栏不跟随文档滚动。
+   不锁 html/body：导出与打印共用同一个文档，html 级 overflow:hidden 会把导出布局一起裁掉
+   （实测会让卡片 Logo 从 420×420 退化成 67×67，样张从 163,274 B 变成 54,480 B）。 */
+@media screen {
+  body:not(.is-export) .app:not(.is-print) {
+    height: 100vh;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  body:not(.is-export) .app:not(.is-print) .sidebar { min-height: 0; overflow-y: auto; }
+  body:not(.is-export) .app:not(.is-print) .main { min-height: 0; }
+  body:not(.is-export) .app:not(.is-print) .page { flex: 1; min-height: 0; overflow-y: auto; }
+  /* 页面容器定高后，子项默认会收缩；表格区禁止收缩，内容才会溢出成滚动 */
+  body:not(.is-export) .app:not(.is-print) .page > * { flex-shrink: 0; }
+  body:not(.is-export) .app:not(.is-print) .statusbar {
+    position: static;
+    height: 32px;
+    padding: 0 16px;
+    flex: none;
+  }
+}
+
+@media screen and (max-width: 900px) {
+  .statusbar { gap: 10px; padding: 0 10px; }
+  .statusbar .status-link { max-width: 150px; }
+  .statusbar .status-right { gap: 8px; }
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
