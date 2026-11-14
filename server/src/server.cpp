@@ -52,6 +52,8 @@ struct ServerState {
   std::unique_ptr<DeviceService> devices;
   std::unique_ptr<UserService> users;
   std::filesystem::path data_dir;
+  std::filesystem::path font_dir;
+  std::map<std::string, std::string> fonts;
   std::string local_token;
   LegacyImportReport legacy;
   bool seeded = false;
@@ -443,6 +445,19 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
 
+  // 子集字体随包分发，启动时读进内存。缺失不致命（界面还能开），但必须吵一声：
+  // 缺字体时浏览器会回落到系统字体，两个平台印出来的卡就不一致了。
+  state.font_dir = default_font_dir();
+  for (const char* name : {"NotoSansSC-Regular.subset.ttf",
+                           "NotoSansSC-Bold.subset.ttf"}) {
+    std::string bytes = read_file_bytes(state.font_dir / name);
+    if (bytes.empty()) {
+      std::cerr << "警告：缺少子集字体 " << (state.font_dir / name)
+                << "（界面与打印会回落到系统字体）" << std::endl;
+    } else {
+      state.fonts[name] = std::move(bytes);
+    }
+  }
 
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;
@@ -976,6 +991,25 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Get("/app.js", [](const httplib::Request&, httplib::Response& response) {
     set_asset(response, embedded_app_js(), "application/javascript; charset=utf-8");
   });
+  // 子集字体：@font-face 从这里取，界面与打印共用同一份。
+  // 只认白名单里的两个文件名，字体目录不整体开放成静态目录。
+  state.server.Get(R"(/fonts/([A-Za-z0-9._-]+))",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     const std::string name = request.matches[1].str();
+                     const auto it = state.fonts.find(name);
+                     if (it == state.fonts.end()) {
+                       set_json(response,
+                                json{{"error", "not_found"},
+                                     {"message", "字体不存在：" + name}},
+                                404);
+                       return;
+                     }
+                     response.status = 200;
+                     response.set_header("Content-Type", "font/ttf");
+                     response.set_header("Cache-Control", "public, max-age=86400");
+                     response.body = it->second;
+                   });
   // 打印图标：优先数据目录下的自定义文件，缺失时回落内嵌默认 logo。
   state.server.Get("/company-logo",
                    [&state](const httplib::Request&, httplib::Response& response) {

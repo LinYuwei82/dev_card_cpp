@@ -1,0 +1,35 @@
+Noto Sans SC 子集字体 —— 上游版本与来源登记
+============================================
+
+本文件与 OFL.txt 同级，OFL.txt 保持原样（SIL OFL-1.1 原文，不得改写）。
+
+上游
+----
+项目      notofonts/noto-cjk
+release   Sans2.004
+commit    523d033d6cb47f4a80c58a35753646f5c3608a78
+源文件    Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf（Google Fonts 再分发地址见下）
+许可      SIL Open Font License 1.1（见同目录 OFL.txt）
+
+入库原件
+--------
+NotoSansSC-VF.ttf
+  17,772,300 bytes
+  SHA256 a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da
+  下载地址 https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf
+  （git blob SHA1 fb0637bafbcd804fe32152370a1225990745b4bc 与 GitHub API 一致，证明文件完整）
+
+子集产物（由 tools/fonts/make_subset.sh 生成，参数写在脚本里）
+------------------------------------------------------------
+web/fonts/NotoSansSC-Regular.subset.ttf   2,281,488 bytes
+  SHA256 64afa0cd3ffa5c8144a4be3ce12932f6ad1d7cbc1da4da40f2419ba70c14a271
+web/fonts/NotoSansSC-Bold.subset.ttf      2,278,984 bytes
+  SHA256 54775a238b536e199d680e8ee1ae7069db5d7be1505ab24cfd44aa0875002b3e
+
+工具与口径
+----------
+fontTools 4.68.0；varLib.instancer 固定 wght=400/700（--update-name-table）；
+pyftsubset 字符集 = GB2312 全集 + ASCII + 常用标点（合并后 8513 码位）；
+--layout-features= （去掉 GSUB/GPOS 特性）、--no-hinting、--recalc-bounds；
+不做 woff2 压缩，只出 TTF，界面与打印共用同一份。
+子集产物可复现：head.created/modified 固定为 2020-01-01，同一输入两次生成 SHA256 相同。

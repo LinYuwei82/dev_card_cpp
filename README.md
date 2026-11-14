@@ -158,8 +158,9 @@ tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 - 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
 - **依赖自检按 `otool -L` 实测清单**，不写死文件列表：系统库只核对 `/usr/lib/`、`/System/Library/` 前缀（共享缓存里的库磁盘上没有文件），包外依赖必须已存在且收进 `.app`，否则失败。
 - 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
+- **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
-- 本机实测（0.1.0）：`dist/DevCard-0.1.0-macos-arm64.dmg`，1,651,241 B（1.6M），SHA256 `24bdae6c8816d35b33d4400f6019be2a5a25f175e56ac4291b365929756cd13e`。
+- 本机实测（0.1.0）：`dist/DevCard-0.1.0-macos-arm64.dmg`，**4,587,847 B（4.4M）**，SHA256 `4de23e8614c304a12bf4abec0e8ffb09905d48e883da68426a06e731056524f6`。构成为主程序 2,949,728 B + `Resources/fonts` 下两个子集字体 4,560,472 B；上一版不含字体时为 1,651,241 B（`24bdae6c…cd13e`）。
 
 ---
 
@@ -177,12 +178,13 @@ dev_card_cpp/
 ├── core/                     # 新架构：业务 / DAO / 迁移 / xlsx / 设置 / 图片元数据
 ├── server/                   # 新架构：HTTP 路由与入口 devcard-server
 ├── shell/                    # 新架构：macOS 壳（WKWebView + 打印桥，已实测）/ Windows 壳（WebView2，代码已写未编译）
-├── web/                      # 新架构：原生 JS/CSS 前端（构建期内嵌进二进制）
+├── web/                      # 新架构：原生 JS/CSS 前端（构建期内嵌进二进制）；web/fonts/ 放子集 TTF（随包进 Resources）
+├── tools/fonts/              # 字体子集脚本（make_subset.sh：变量字体定字重 + pyftsubset，可 --verify）
 ├── tests/                    # 新架构：核心单测（ctest）
 ├── resources/                # 旧线运行期资源：字体、图标、qrc（示例 xlsx 不入库）
 ├── packaging/mac/            # macOS Info.plist 与 DevCard.icns
 ├── tools/package/            # macOS DMG 脚本（make_dmg.sh）/ Windows 绿色版脚本（PowerShell）
-├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖
+├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
 ├── docs/                     # 技术文档、样张、Release 正文
 ├── dist/                     # 本地打包产物（已 gitignore）
 └── bin/ build/ build-new/    # 构建产物（已 gitignore）

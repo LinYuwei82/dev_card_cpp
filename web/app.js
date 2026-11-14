@@ -1332,6 +1332,56 @@
       String(Math.max(0.2, Math.round(scale * 1000) / 1000)));
   }
 
+  // 打印/导出前必须确认子集字体已就绪。字体走 /fonts/ HTTP 路由，
+  // 未加载完就截图会静默退回系统字体：屏幕上「差不多」，但字宽变了，叠图会超 1 mm。
+  // 这里既等待 document.fonts.ready，也用 check() 断言两个字重确实可用；
+  // 失败时把错误交给调用方中止，绝不产出用系统字体「顶替」的 PDF。
+  var printFonts = { ready: false, error: '' };
+
+  // 期望的字体文件与字节数：与 docs/改造技术方案.md D12 的三要素一致。
+  // 光看 document.fonts.check() 不够——字体加载失败时 WebKit 仍可能报「可用」，
+  // 必须直接确认 /fonts/ 两份文件真的取到、字节数对得上。
+  var printFontSpec = [
+    ['/fonts/NotoSansSC-Regular.subset.ttf', 2281488],
+    ['/fonts/NotoSansSC-Bold.subset.ttf', 2278984]
+  ];
+
+  function probePrintFonts() {
+    return Promise.all(printFontSpec.map(function (spec) {
+      // no-store：字体响应带 max-age=86400，走缓存会掩盖「这一版根本没带字体」。
+      return fetch(spec[0], { cache: 'no-store' }).then(function (response) {
+        if (!response.ok) return false;
+        return response.arrayBuffer().then(function (buffer) {
+          return buffer.byteLength === spec[1];
+        });
+      }).catch(function () { return false; });
+    })).then(function (results) {
+      return results.every(function (ok) { return ok; });
+    });
+  }
+
+  function ensurePrintFonts() {
+    var sample = '设备管理卡 0123456789';
+    var loaded = (document.fonts && document.fonts.load)
+      ? Promise.all([
+          document.fonts.load('700 11pt "DevCard Sans"', sample),
+          document.fonts.load('400 11pt "DevCard Sans"', sample)
+        ]).then(function () { return document.fonts.ready; })
+          .then(function () {
+            return document.fonts.check('700 11pt "DevCard Sans"', sample) &&
+                   document.fonts.check('400 11pt "DevCard Sans"', sample);
+          })
+          .catch(function () { return false; })
+      : Promise.resolve(true);
+    return Promise.all([probePrintFonts(), loaded]).then(function (results) {
+      var ok = results[0] && results[1];
+      printFonts.ready = ok;
+      printFonts.error = ok ? '' :
+        '子集字体未加载或字节数不符（/fonts/ 不可用），已中止：不能用系统字体顶替，否则两张卡版式不一致';
+      return ok;
+    });
+  }
+
   function loadPrint() {
     state.printBusy = true;
     updatePrintControls();
@@ -1340,8 +1390,17 @@
         state.printItems = data.items || [];
         state.printTruncated = !!data.truncated;
         if (data.company_name) state.companyNamePrint = data.company_name;
+        // 打印页初始化就等字体：用户点导出时字体必须已经就位，
+        // 而不是在截图那一瞬间才去加载。
+        return ensurePrintFonts();
+      })
+      .then(function (fontsOk) {
         state.printBusy = false;
         renderPrint();
+        if (!fontsOk) {
+          toast(printFonts.error, 'error');
+          return;
+        }
         el.printHint.textContent = hasNativeBridge()
           ? '导出 PDF 会打开保存对话框；直接打印会打开系统打印面板。两条通道共用同一份版式与数据快照。'
           : '浏览器模式：两个按钮都会打开打印对话框，选「另存为 PDF」即可导出。';
@@ -1358,6 +1417,10 @@
 
   // 壳层导出 PDF 前切换到 1:1 布局，并返回每页的截取区域（CSS px，页面坐标）。
   window.__devcardExportLayout = function () {
+    // 字体没就绪就返回错误：壳层据此中止，不产出用系统字体顶替的 PDF。
+    if (!printFonts.ready) {
+      return { error: printFonts.error || '子集字体未就绪，已中止导出' };
+    }
     document.body.classList.add('is-export');
     window.scrollTo(0, 0);
     var sheets = document.querySelectorAll('#print-stage .sheet');
@@ -1393,13 +1456,23 @@
 
   el.printExport.addEventListener('click', function () {
     if (!state.printItems.length) return;
+    // 有壳层时一律交给壳：壳会向页面要布局，页面用 {error} 回应并中止，
+    // 这样错误能落到系统对话框/日志里，而不是停在页面里没人知道。
     if (sendToShell('exportPdf', { filename: '设备管理卡.pdf' })) return;
+    if (!printFonts.ready) {
+      toast(printFonts.error || '子集字体未就绪，已中止导出', 'error');
+      return;
+    }
     window.print();
   });
 
   el.printPrint.addEventListener('click', function () {
     if (!state.printItems.length) return;
     if (sendToShell('print')) return;
+    if (!printFonts.ready) {
+      toast(printFonts.error || '子集字体未就绪，已中止打印', 'error');
+      return;
+    }
     window.print();
   });
 

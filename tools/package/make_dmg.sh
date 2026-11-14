@@ -128,6 +128,20 @@ if find "$APP" -type f \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \
 fi
 echo "包内容检查：通过（Info.plist 版本 ${PLIST_VERSION}，无运行期数据）"
 
+# ---------- 2b. 子集字体随包自检 ----------
+# 界面与打印共用 web/fonts 下的同一份字体；没进包就会回落到系统字体，
+# 两个平台印出来的卡不一致——按 bug 处理，不能只警告。
+FONT_DIR="$APP/Contents/Resources/fonts"
+for font in NotoSansSC-Regular.subset.ttf NotoSansSC-Bold.subset.ttf; do
+  SRC_FONT="$REPO_ROOT/web/fonts/$font"
+  DST_FONT="$FONT_DIR/$font"
+  [ -f "$SRC_FONT" ] || fail "仓库缺少子集字体：${SRC_FONT}（先跑 tools/fonts/make_subset.sh）"
+  [ -f "$DST_FONT" ] || fail "字体没进包：${DST_FONT}（检查 shell/CMakeLists.txt 的 POST_BUILD）"
+  cmp -s "$SRC_FONT" "$DST_FONT" || fail "包内字体与仓库不一致：${DST_FONT}"
+  echo "  字体 ${font}  $(stat -f%z "$DST_FONT") bytes  $(shasum -a 256 "$DST_FONT" | awk '{print $1}')"
+done
+echo "字体自检：通过（Resources/fonts 与 web/fonts 逐字节一致）"
+
 # ---------- 3. ad-hoc 签名 ----------
 echo "签名：ad-hoc（codesign -s -）"
 codesign --force --deep --sign - "$APP"

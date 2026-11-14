@@ -1,0 +1,33 @@
+Noto Sans SC —— 原始上游文件与复现方式
+=====================================
+
+本目录只放「原始上游文件」，不放子集产物。子集在 web/fonts/，可用 tools/fonts/make_subset.sh 从本目录重算。
+
+一、上游来源
+------------
+仓库        https://github.com/notofonts/noto-cjk
+tag         Sans2.004
+commit      523d033d6cb47f4a80c58a35753646f5c3608a78
+原始路径    Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
+版本        2.004（Noto Sans SC 是 Adobe Source Han Sans 合作项目的简体中文区域子集）
+许可        SIL Open Font License 1.1（见同目录 OFL.txt）
+
+二、实际下载地址（本机 2026-11-14 下载）
+--------------------------------------
+https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf
+（Google Fonts 官方对上述 commit 的再分发；经 git blob SHA1 核对与 GitHub API 一致：
+  API 返回 sha=fb0637bafbcd804fe32152370a1225990745b4bc，本地按 git blob 规则重算相同，
+  证明文件完整、未被截断。）
+
+三、文件
+--------
+NotoSansSC-VF.ttf   17,772,300 bytes
+  SHA256 a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da
+OFL.txt                  4,388 bytes
+  SHA256 1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9
+
+上游只提供变量字体（wght 100–900），没有单独的 Regular/Bold 静态 TTF。
+本项目的 Regular(400) / Bold(700) 由该变量字体用 fontTools 4.68.0 的
+varLib.instancer 固定字重生成，再用 pyftsubset 做 GB2312 子集，
+命令与参数见 tools/fonts/make_subset.sh。子集产物三要素记在
+docs/改造技术方案.md 的 D12。

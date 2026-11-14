@@ -1,3 +1,22 @@
+/* 打印与界面共用同一份子集字体（Noto Sans SC，GB2312 全集）。
+   不用系统 PingFang SC / 微软雅黑：系统字体不能随包分发，两个平台字形也会不同，
+   同一张卡在 macOS 与 Windows 上印出来就不一样了。
+   文件由服务端 /fonts/ 路由提供，打包时进 app 的 Resources/fonts。 */
+@font-face {
+  font-family: "DevCard Sans";
+  src: url("/fonts/NotoSansSC-Regular.subset.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "DevCard Sans";
+  src: url("/fonts/NotoSansSC-Bold.subset.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   --brand-900: #082F34;
   --brand-800: #0B3A40;
@@ -23,7 +42,7 @@
   --r-md: 10px;
   --r-sm: 6px;
   --shadow: 0 2px 6px rgba(20, 35, 35, .06), 0 16px 40px rgba(20, 35, 35, .08);
-  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font: "DevCard Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -371,7 +390,7 @@ td.col-actions { text-align: right; white-space: nowrap; }
 .card {
   position: relative; width: 62mm; height: 65mm; overflow: hidden;
   background: #fff; border: .8pt solid #000; color: #000;
-  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  font-family: "DevCard Sans", "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }

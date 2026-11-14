@@ -8,6 +8,10 @@ namespace devcard {
 
 std::filesystem::path default_data_dir();
 
+// 随包分发的子集字体目录（web/fonts 在打包时复制到 app 的 Resources/fonts；
+// Windows 绿色版放在 exe 旁的 fonts/）。可用 DEVCARD_FONT_DIR 覆盖。
+std::filesystem::path default_font_dir();
+
 struct ServerOptions {
   std::filesystem::path data_dir;
   std::string host = "127.0.0.1";

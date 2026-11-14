@@ -143,6 +143,11 @@ API_AVAILABLE(macos(11.0))
        completionHandler:^(id result, NSError* error) {
          NSDictionary* layout =
              [result isKindOfClass:[NSDictionary class]] ? result : nil;
+         // 页面侧字体没就绪时只回一个 error，不返回 rects：这里必须中止，不能落到系统字体。
+         if ([layout[@"error"] length] > 0) {
+           [self finishExport:NO message:layout[@"error"]];
+           return;
+         }
          NSArray* rects = layout[@"rects"];
          if (rects.count == 0) {
            [self finishExport:NO message:@"没有可导出的卡片"];
@@ -298,6 +303,10 @@ API_AVAILABLE(macos(11.0))
        completionHandler:^(id result, NSError* error) {
          NSDictionary* layout =
              [result isKindOfClass:[NSDictionary class]] ? result : nil;
+         if ([layout[@"error"] length] > 0) {
+           [self notify:layout[@"error"] kind:@"error"];
+           return;
+         }
          NSArray* rects = layout[@"rects"];
          if (rects.count == 0) {
            [self notify:@"没有可打印的卡片" kind:@"error"];
