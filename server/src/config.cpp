@@ -75,6 +75,10 @@ struct FileConfig {
   std::optional<std::string> listen;
   std::optional<int> port;
   std::vector<std::string> allowed_hosts;
+  std::optional<bool> rate_limit_enabled;
+  std::optional<int> rate_limit_max_failures;
+  std::optional<int> rate_limit_window_seconds;
+  std::optional<int> rate_limit_lock_seconds;
 };
 
 FileConfig read_config_file(const std::filesystem::path& path) {
@@ -123,6 +127,31 @@ FileConfig read_config_file(const std::filesystem::path& path) {
           throw AppError("bad_config", "配置项 allowed_hosts 必须是字符串数组");
         }
         config.allowed_hosts.push_back(item.get<std::string>());
+      }
+    } else if (key == "rate_limit_enabled") {
+      if (!value.is_boolean()) {
+        throw AppError("bad_config", "配置项 rate_limit_enabled 必须是布尔值");
+      }
+      config.rate_limit_enabled = value.get<bool>();
+    } else if (key == "rate_limit_max_failures" ||
+               key == "rate_limit_window_seconds" ||
+               key == "rate_limit_lock_seconds") {
+      if (!value.is_number_integer()) {
+        throw AppError("bad_config", "配置项 " + key + " 必须是整数");
+      }
+      const int number = value.get<int>();
+      const int upper = key == "rate_limit_max_failures" ? 1000 : 86400;
+      if (number < 1 || number > upper) {
+        throw AppError("bad_config",
+                       "配置项 " + key + " 必须在 1–" + std::to_string(upper) +
+                           " 之间");
+      }
+      if (key == "rate_limit_max_failures") {
+        config.rate_limit_max_failures = number;
+      } else if (key == "rate_limit_window_seconds") {
+        config.rate_limit_window_seconds = number;
+      } else {
+        config.rate_limit_lock_seconds = number;
       }
     } else {
       // 未知键报错，不静默忽略：拼错的键会让用户以为配置生效了。
@@ -321,6 +350,17 @@ ServerConfig resolve_config(const CliOverrides& cli) {
 
   config.allow_any = cli.allow_any;
   config.allowed_hosts = file.allowed_hosts;
+
+  const bool rate_limit_from_file =
+      file.rate_limit_enabled || file.rate_limit_max_failures ||
+      file.rate_limit_window_seconds || file.rate_limit_lock_seconds;
+  config.rate_limit_enabled = file.rate_limit_enabled.value_or(true);
+  config.rate_limit_max_failures = file.rate_limit_max_failures.value_or(5);
+  config.rate_limit_window_seconds =
+      file.rate_limit_window_seconds.value_or(300);
+  config.rate_limit_lock_seconds = file.rate_limit_lock_seconds.value_or(60);
+  config.rate_limit_source = rate_limit_from_file ? "配置文件 rate_limit_*"
+                                                  : "默认（开启，5 次 / 300 秒 → 锁 60 秒）";
   return config;
 }
 

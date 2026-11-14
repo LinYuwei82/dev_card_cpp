@@ -390,6 +390,10 @@ int main(int argc, char** argv) {
     options.port = config.port;
     options.network = server_mode;
     options.allowed_hosts = config.allowed_hosts;
+    options.rate_limit.enabled = config.rate_limit_enabled;
+    options.rate_limit.max_failures = config.rate_limit_max_failures;
+    options.rate_limit.window_seconds = config.rate_limit_window_seconds;
+    options.rate_limit.lock_seconds = config.rate_limit_lock_seconds;
 
     auto server = devcard::start_server(options);
 
@@ -409,6 +413,15 @@ int main(int argc, char** argv) {
               << "数据库:   " << devcard::path_to_utf8(config.data_dir / "devicedb.db") << "\n"
               << "监听地址: " << listen << ":" << server->port() << "（来源："
               << listen_source << "，端口来源：" << config.port_source << "）\n";
+    std::cout << "登录限流: ";
+    if (config.rate_limit_enabled) {
+      std::cout << config.rate_limit_max_failures << " 次 / "
+                << config.rate_limit_window_seconds << " 秒 → 锁 "
+                << config.rate_limit_lock_seconds << " 秒（内存计数，重启清零）";
+    } else {
+      std::cout << "已关闭";
+    }
+    std::cout << "（来源：" << config.rate_limit_source << "）\n";
     if (server_mode) {
       std::cout << "访问地址: http://" << listen << ":" << server->port() << "/"
                 << std::endl;

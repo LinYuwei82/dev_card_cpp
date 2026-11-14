@@ -30,6 +30,13 @@ struct ServerConfig {
   std::string port_source;
   bool allow_any = false;
   std::vector<std::string> allowed_hosts;
+  // 登录/改密失败限流：默认开启。内存实现，重启清零（不写库，避免
+  // 把「被锁」这种瞬时状态做成持久真值）。
+  bool rate_limit_enabled = true;
+  int rate_limit_max_failures = 5;
+  int rate_limit_window_seconds = 300;
+  int rate_limit_lock_seconds = 60;
+  std::string rate_limit_source = "默认";
 };
 
 // 优先级：命令行 → 环境变量 → 配置文件 → 形态默认。

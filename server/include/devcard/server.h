@@ -21,6 +21,15 @@ std::filesystem::path executable_dir();
 // Windows 绿色版放在 exe 旁的 fonts/）。可用 DEVCARD_FONT_DIR 覆盖。
 std::filesystem::path default_font_dir();
 
+// 登录与改密的失败限流。只管这两条接口，不做全局限流：
+// 局域网里先被打死的是静态页与轮询，全局限流会连带把正常界面拖垮。
+struct RateLimitOptions {
+  bool enabled = true;
+  int max_failures = 5;      // 同键连续失败次数阈值，达到即锁
+  int window_seconds = 300;  // 计数窗口，超出窗口重新计数
+  int lock_seconds = 60;     // 锁定时长，期间一律 429
+};
+
 struct ServerOptions {
   std::filesystem::path data_dir;
   std::string host = "127.0.0.1";
@@ -29,6 +38,7 @@ struct ServerOptions {
   // Host 白名单加入本机私有 IP 与 allowed_hosts。
   bool network = false;
   std::vector<std::string> allowed_hosts;
+  RateLimitOptions rate_limit;
 };
 
 class ServerHandle {

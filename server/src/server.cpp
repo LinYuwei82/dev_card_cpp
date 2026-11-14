@@ -60,6 +60,20 @@ using nlohmann::json;
 
 constexpr auto kSessionTtl = std::chrono::hours(12);
 
+// 登录/改密失败计数的单个键（来源 IP 或用户名）。字段用 atomic，
+// 计数与判定另由 ServerState::rate_limit_mutex 串成一次操作。
+struct RateLimitEntry {
+  std::atomic<int> failures{0};
+  std::atomic<long long> window_start{0};  // steady 秒；0 表示窗口未开始
+  std::atomic<long long> locked_until{0};  // steady 秒
+};
+
+long long steady_seconds() {
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 struct Session {
   std::string user;
   std::chrono::steady_clock::time_point last_seen;
@@ -91,6 +105,13 @@ struct ServerState {
 
   std::mutex sessions_mutex;
   std::map<std::string, Session> sessions;
+
+  // 登录/改密失败限流：内存实现，进程重启清零（不落库）。
+  // 双键（来源 IP / 用户名）各自独立计数，任一超限即拒。
+  RateLimitOptions rate_limit;
+  std::mutex rate_limit_mutex;
+  std::map<std::string, RateLimitEntry> rate_limit_by_ip;
+  std::map<std::string, RateLimitEntry> rate_limit_by_user;
 
   // 自更新阶段一：同一时间只允许一个下载任务；状态由后台线程更新。
   struct UpdateDownload {
@@ -383,6 +404,9 @@ const StatusTable& error_status_table() {
       {"legacy_db", 409},
       {"invalid_credentials", 401},
       {"unauthorized", 401},
+      // 登录/改密失败限流：单独一项，不混进 401/403——客户端要能按 429
+      // 读 Retry-After 决定等待，而不是把「密码错了」和「先别试了」混为一谈。
+      {"too_many_requests", 429},
       {"locked", 423},
       {"forbidden", 403},
       {"must_change_password", 403},
@@ -500,6 +524,102 @@ bool is_loopback(const std::string& address) {
          address == "::ffff:127.0.0.1";
 }
 
+struct RateLimitDecision {
+  bool locked = false;
+  int retry_after = 0;
+};
+
+// 回环地址不计：本机界面与壳的自动登录不该被自己的失败计数锁在门外。
+bool rate_limit_exempt(const std::string& address) {
+  return is_loopback(address);
+}
+
+void rate_limit_touch(std::map<std::string, RateLimitEntry>& table,
+                      const std::string& key, const RateLimitOptions& options) {
+  if (key.empty()) return;
+  RateLimitEntry& entry = table[key];
+  const long long now = steady_seconds();
+  const long long start = entry.window_start.load();
+  // 窗口过期就重新计数：5 次必须落在同一个窗口内才累计。
+  if (start == 0 || now - start >= options.window_seconds) {
+    entry.window_start.store(now);
+    entry.failures.store(0);
+  }
+  const int failures = entry.failures.fetch_add(1) + 1;
+  if (failures >= options.max_failures) {
+    entry.locked_until.store(now + options.lock_seconds);
+    entry.failures.store(0);
+    entry.window_start.store(now);
+  }
+}
+
+// 键空间只增不减会随来源 IP 数量无限涨；超过上限时清掉已解锁且窗口过期的项。
+void rate_limit_prune(std::map<std::string, RateLimitEntry>& table,
+                      const RateLimitOptions& options) {
+  if (table.size() <= 1024) return;
+  const long long now = steady_seconds();
+  for (auto item = table.begin(); item != table.end();) {
+    const long long start = item->second.window_start.load();
+    const bool unlocked = item->second.locked_until.load() <= now;
+    const bool expired = start == 0 || now - start >= options.window_seconds;
+    if (unlocked && expired) {
+      item = table.erase(item);
+    } else {
+      ++item;
+    }
+  }
+}
+
+RateLimitDecision rate_limit_check(ServerState& state, const std::string& address,
+                                   const std::string& user) {
+  RateLimitDecision decision;
+  // 本机地址整体不受限：壳与本地界面不能被自己的失败计数锁在门外。
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return decision;
+  const long long now = steady_seconds();
+  const auto inspect = [&](const std::map<std::string, RateLimitEntry>& table,
+                           const std::string& key) {
+    if (key.empty()) return;
+    const auto found = table.find(key);
+    if (found == table.end()) return;
+    const long long until = found->second.locked_until.load();
+    if (until <= now) return;
+    decision.locked = true;
+    const int wait = static_cast<int>(until - now);
+    if (wait > decision.retry_after) decision.retry_after = wait;
+  };
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  if (!rate_limit_exempt(address)) inspect(state.rate_limit_by_ip, address);
+  inspect(state.rate_limit_by_user, user);
+  return decision;
+}
+
+void rate_limit_record_failure(ServerState& state, const std::string& address,
+                               const std::string& user) {
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  rate_limit_touch(state.rate_limit_by_ip, address, state.rate_limit);
+  rate_limit_touch(state.rate_limit_by_user, user, state.rate_limit);
+  rate_limit_prune(state.rate_limit_by_ip, state.rate_limit);
+  rate_limit_prune(state.rate_limit_by_user, state.rate_limit);
+}
+
+void rate_limit_clear(ServerState& state, const std::string& address,
+                      const std::string& user) {
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  if (!address.empty()) state.rate_limit_by_ip.erase(address);
+  if (!user.empty()) state.rate_limit_by_user.erase(user);
+}
+
+// 锁定期间一律 429，连密码正确也不放行；Retry-After 由响应头带出。
+void throw_rate_limited(httplib::Response& response,
+                        const RateLimitDecision& decision) {
+  const int retry_after = decision.retry_after > 0 ? decision.retry_after : 1;
+  response.set_header("Retry-After", std::to_string(retry_after));
+  throw AppError("too_many_requests",
+                 "失败次数过多，请 " + std::to_string(retry_after) + " 秒后重试");
+}
+
 std::string lowercase(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -602,6 +722,7 @@ const std::vector<std::string>& route_error_codes() {
       "duplicate",        "last_admin",       "self_delete",
       "no_user",          "not_found",        "legacy_db",
       "invalid_credentials", "unauthorized",  "locked",
+      "too_many_requests",
       "forbidden",        "must_change_password",
       "invalid_device",   "invalid_user",     "weak_password",
       "bad_field",        "bad_json",         "bad_header",
@@ -669,6 +790,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.data_dir = options.data_dir;
   state.network = options.network;
   state.allowed_hosts = options.allowed_hosts;
+  state.rate_limit = options.rate_limit;
   state.bound_host = options.host;
   state.machine_name = local_host_name();
 
@@ -839,10 +961,29 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       const json body = parse_body(request.body);
                       const std::string username = body.value("username", "");
                       const std::string password = body.value("password", "");
+                      // 先查锁定再验密码：锁定期内即使密码正确也拒，
+                      // 否则攻击者只要撞对一次就能把计数清零。
+                      const RateLimitDecision limited =
+                          rate_limit_check(state, request.remote_addr, username);
+                      if (limited.locked) {
+                        AuditEntry blocked;
+                        blocked.actor = username.empty() ? "anonymous" : username;
+                        blocked.actor_ip = request.remote_addr;
+                        blocked.action = "login_blocked";
+                        blocked.entity = "user";
+                        blocked.entity_id = username;
+                        blocked.summary = "失败次数过多，429 拒绝（" +
+                                          std::to_string(limited.retry_after) +
+                                          " 秒后可重试）";
+                        audit_event(state, blocked);
+                        throw_rate_limited(response, limited);
+                      }
                       User user;
                       try {
                         user = state.users->authenticate(username, password);
                       } catch (const AppError& error) {
+                        rate_limit_record_failure(state, request.remote_addr,
+                                                 username);
                         // 失败也记：撞库在审计里必须能看出来自哪个 IP。
                         AuditEntry entry;
                         entry.actor = username.empty() ? "anonymous" : username;
@@ -854,6 +995,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         audit_event(state, entry);
                         throw;
                       }
+                      // 登录成功清零：同一键的正常使用不该被历史失败拖累。
+                      rate_limit_clear(state, request.remote_addr, username);
                       set_session_cookie(response,
                                          create_session(state, user.user_name));
                       AuditEntry entry;
@@ -1451,38 +1594,50 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const User actor = current_user(state, request);
-                      const json body = parse_body(request.body);
-                      std::string target = body.value("user_name", "");
-                      if (target.empty()) target = actor.user_name;
-                      const std::string new_password = body.value("new_password", "");
-                      if (new_password.empty()) {
-                        throw AppError("bad_json", "new_password 不能为空");
-                      }
-                      if (target == actor.user_name) {
-                        // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
-                        // 重置后的强制改密时，用户本来就不掌握旧密码。
-                        if (actor.must_change_password) {
-                          state.users->complete_forced_change(actor.user_name,
-                                                              new_password);
-                        } else {
-                          const std::string old_password =
-                              body.value("old_password", "");
-                          if (old_password.empty()) {
-                            throw AppError("old_password_required", "请输入原密码");
+                      // 改密同样双键计数：猜旧密码与撞登录密码是同一类攻击。
+                      const RateLimitDecision limited =
+                          rate_limit_check(state, request.remote_addr,
+                                           actor.user_name);
+                      if (limited.locked) throw_rate_limited(response, limited);
+                      try {
+                        const json body = parse_body(request.body);
+                        std::string target = body.value("user_name", "");
+                        if (target.empty()) target = actor.user_name;
+                        const std::string new_password = body.value("new_password", "");
+                        if (new_password.empty()) {
+                          throw AppError("bad_json", "new_password 不能为空");
+                        }
+                        if (target == actor.user_name) {
+                          // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
+                          // 重置后的强制改密时，用户本来就不掌握旧密码。
+                          if (actor.must_change_password) {
+                            state.users->complete_forced_change(actor.user_name,
+                                                                new_password);
+                          } else {
+                            const std::string old_password =
+                                body.value("old_password", "");
+                            if (old_password.empty()) {
+                              throw AppError("old_password_required", "请输入原密码");
+                            }
+                            state.users->change_password(actor.user_name, old_password,
+                                                         new_password);
                           }
-                          state.users->change_password(actor.user_name, old_password,
-                                                       new_password);
+                        } else {
+                          if (actor.role != "admin") {
+                            throw AppError("forbidden", "需要管理员权限");
+                          }
+                          state.users->reset_password(target, new_password);
                         }
-                      } else {
-                        if (actor.role != "admin") {
-                          throw AppError("forbidden", "需要管理员权限");
+                        if (!state.users->any_must_change()) {
+                          remove_seed_password_file(state.data_dir);
                         }
-                        state.users->reset_password(target, new_password);
+                        set_json(response, json{{"ok", true}, {"user_name", target}});
+                      } catch (const AppError&) {
+                        rate_limit_record_failure(state, request.remote_addr,
+                                                  actor.user_name);
+                        throw;
                       }
-                      if (!state.users->any_must_change()) {
-                        remove_seed_password_file(state.data_dir);
-                      }
-                      set_json(response, json{{"ok", true}, {"user_name", target}});
+                      rate_limit_clear(state, request.remote_addr, actor.user_name);
                     });
 
   // 打印卡片头部公司名：仅管理员可改；空值表示恢复默认。
