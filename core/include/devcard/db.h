@@ -55,6 +55,10 @@ class Db {
   void write_raw(const std::function<void(sqlite3*)>& fn);
   void read(const std::function<void(sqlite3*)>& fn) const;
 
+  // 把 WAL 中已提交的内容尽量写回主库（PASSIVE，不阻塞读写）。
+  // 库内心跳依赖它：两条路径 hardlink 到同一个文件时，只有主库里的行可见。
+  void checkpoint();
+
   std::int64_t schema_version() const;
   const std::filesystem::path& file() const { return file_; }
 

@@ -161,8 +161,10 @@ std::unique_ptr<InstanceGuard> InstanceGuard::acquire(
 #ifdef _WIN32
   HANDLE handle = CreateFileW(lock_path.c_str(),
                               GENERIC_READ | GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                              FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                  FILE_SHARE_DELETE,
+                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
   if (handle == INVALID_HANDLE_VALUE) {
     if (error) {
       *error = "无法打开实例锁文件 " + path_text(lock_path) + "（错误码 " +

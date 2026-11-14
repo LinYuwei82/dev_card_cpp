@@ -7,6 +7,7 @@
 #include "font_manifest.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
@@ -38,6 +39,7 @@
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
 #include "config.h"
+#include "heartbeat.h"
 #include "instance_lock.h"
 #include "web_assets.h"
 #include "font_coverage.h"
@@ -74,6 +76,10 @@ struct ServerState {
   std::string local_token;
   LegacyImportReport legacy;
   bool seeded = false;
+  // 库内心跳（多实例第 3 层）：启动时抢占一行，运行期定时刷新。
+  std::string instance_id;
+  std::thread heartbeat_thread;
+  std::atomic<bool> heartbeat_stop{false};
   // 网络模式（--server）：允许内网来源；本地窗口模式只接受回环。
   bool network = false;
   std::string bound_host;
@@ -594,8 +600,19 @@ struct ServerHandle::Impl : ServerState {};
 
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
 ServerHandle::~ServerHandle() {
-  if (impl_ && impl_->server.is_running()) impl_->server.stop();
-  if (impl_ && impl_->thread.joinable()) impl_->thread.join();
+  if (!impl_) return;
+  impl_->heartbeat_stop = true;
+  if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
+  if (impl_->server.is_running()) impl_->server.stop();
+  if (impl_->thread.joinable()) impl_->thread.join();
+  // 正常析构时删掉自己那一行；异常/强杀留下的行由下次启动按 PID/超时接管。
+  if (impl_->db && !impl_->instance_id.empty()) {
+    try {
+      release_heartbeat(*impl_->db, impl_->instance_id);
+    } catch (const std::exception& error) {
+      std::cerr << "警告：释放库内心跳失败：" << error.what() << std::endl;
+    }
+  }
 }
 
 const std::string& ServerHandle::local_token() const { return impl_->local_token; }
@@ -636,11 +653,21 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.legacy = auto_import_if_needed(options.data_dir);
 
   state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
+  migrate(*state.db);
+
+  // 第三层防护：库内心跳。锁文件被删除、或两条路径 hardlink 到同一个库时，
+  // 只有这一行能判出「还有人在用」。放在库文件身份互斥体之前，
+  // 这样验收（删锁文件后再起一个）会走到心跳这条判据上。
+  state.instance_id = random_token().substr(0, 16);
+  std::string heartbeat_error;
+  if (!claim_heartbeat(*state.db, state.instance_id, &heartbeat_error)) {
+    throw AppError("instance_in_use", heartbeat_error);
+  }
+
   if (!state.instance_guard->claim_database(options.data_dir / "devicedb.db",
                                             &guard_error)) {
     throw AppError("instance_in_use", guard_error);
   }
-  migrate(*state.db);
 
   const SeedResult seed = seed_default_users(*state.db, options.data_dir);
   state.seeded = seed.seeded;
@@ -1403,6 +1430,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       }
                       const std::string name = body.value("name", "");
                       restore_backup(*state.db, state.data_dir, name);
+                      // 备份里带着导出时的心跳行，恢复后必须由当前实例重写，
+                      // 否则定时刷新会因 instance_id 不匹配而停摆。
+                      force_heartbeat(*state.db, state.instance_id);
                       {
                         std::lock_guard<std::mutex> lock(state.sessions_mutex);
                         state.sessions.clear();
@@ -1630,6 +1660,24 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.instance_guard->set_owner_info(
       "PID " + std::to_string(process_id()) + "，启动于 " + now_text() +
       "，监听 " + options.host + ":" + std::to_string(options.port));
+  // 心跳行同步监听地址，失败时第二个实例的报错能指出占用者。
+  set_heartbeat_listen(*state.db, state.instance_id,
+                       options.host + ":" + std::to_string(options.port));
+  state.heartbeat_thread = std::thread([&state]() {
+    while (!state.heartbeat_stop) {
+      for (int i = 0; i < kHeartbeatIntervalSeconds; ++i) {
+        if (state.heartbeat_stop) return;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+      try {
+        // 返回 false 说明行已被别的实例接管，自己停止刷新即可。
+        if (!refresh_heartbeat(*state.db, state.instance_id)) return;
+      } catch (const std::exception& error) {
+        // 心跳写失败不终止服务；下一轮重试，连续失败会在下次启动时暴露。
+        std::cerr << "警告：心跳写入失败：" << error.what() << std::endl;
+      }
+    }
+  });
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
   return handle;
 }

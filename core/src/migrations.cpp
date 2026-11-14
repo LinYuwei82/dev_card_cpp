@@ -68,10 +68,25 @@ CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
 CREATE INDEX idx_audit_actor  ON audit_log(actor);
 )sql";
 
+// M7 多实例第三层：库内心跳。锁文件/文件身份只能覆盖本机本会话，
+// hardlink 等绕开路径的场景只有库里这行「谁在用」能判出冲突。
+constexpr const char* kMigration003 = R"sql(
+CREATE TABLE instance_heartbeat (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  instance_id  TEXT    NOT NULL,
+  pid          INTEGER NOT NULL,
+  host         TEXT    NOT NULL,
+  listen       TEXT    NOT NULL DEFAULT '',
+  started_at   TEXT    NOT NULL,
+  heartbeat_at TEXT    NOT NULL
+);
+)sql";
+
 const std::vector<Migration>& migrations() {
   static const std::vector<Migration> list = {
       {1, "initial_schema", kMigration001},
       {2, "network_audit", kMigration002},
+      {3, "instance_heartbeat", kMigration003},
   };
   return list;
 }

@@ -145,8 +145,14 @@ void Db::write(const std::function<void(sqlite3*)>& fn) {
   }
 }
 
-void Db::read(const std::function<void(sqlite3*)>& fn) const {
-  sqlite3* conn = nullptr;
+void Db::checkpoint() {
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  // PASSIVE：能写多少写多少，遇到读者不阻塞，失败也不影响主流程。
+  sqlite3_exec(write_, "PRAGMA wal_checkpoint(PASSIVE)", nullptr, nullptr,
+               nullptr);
+}
+
+void Db::read(const std::function<void(sqlite3*)>& fn) const {  sqlite3* conn = nullptr;
   std::size_t slot = 0;
   {
     std::unique_lock<std::mutex> lock(pool_mutex_);

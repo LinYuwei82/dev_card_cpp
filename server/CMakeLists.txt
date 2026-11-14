@@ -34,6 +34,7 @@ add_library(devcard_server STATIC
     src/platform_paths.cpp
     src/config.cpp
     src/instance_lock.cpp
+    src/heartbeat.cpp
     src/font_coverage.cpp
     src/web_assets_check.cpp
     "${WEB_ASSETS_CPP}"
