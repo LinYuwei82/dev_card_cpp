@@ -1473,7 +1473,13 @@
   }
 
   function probePrintFonts() {
-    if (!printFontSpec || !printFontSpec.length) return Promise.resolve(false);
+    // 清单随覆盖接口下发；还没拿到就先取一次，避免第一次导出被误判成「字体不可用」。
+    if (!printFontSpec) {
+      return loadFontCoverage().then(function () {
+        return printFontSpec ? probePrintFonts() : false;
+      });
+    }
+    if (!printFontSpec.length) return Promise.resolve(false);
     if (!(window.crypto && crypto.subtle)) return Promise.resolve(false);
     return Promise.all(printFontSpec.map(function (spec) {
       // no-store：走缓存会掩盖「这一版根本没带字体」。
