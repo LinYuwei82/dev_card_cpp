@@ -16,6 +16,12 @@ function(emit_text_literal out_var path)
   # 两者混用会让循环提前结束（尾部被丢），或者在汉字中间切开（C4828）。
   # 这里统一用字节数：HEX 串长度 / 2。
   math(EXPR total_bytes "${total_hex} / 2")
+  # 换行必须是 LF：仓库用 .gitattributes 的 `web/** -text` 定死，但检出配置或编辑器仍可能改坏。
+  # 用 HEX 串判断，不依赖 file(READ) 是否做换行转换：只有落在偶数位上的 0d 才是独立的 CR 字节。
+  string(REGEX MATCH "^([0-9a-f][0-9a-f])*0d" cr_hit "${content_hex}")
+  if(NOT cr_hit STREQUAL "")
+    message(FATAL_ERROR "embed_web：${path} 含 CR（0x0D）。web/ 源文件必须是 LF 换行，见 .gitattributes")
+  endif()
   set(offset 0)
   set(parts "")
   set(joined "")

@@ -1,0 +1,10 @@
+# web/ 是编译期内嵌资源：文件的字节就是产品的一部分
+# （cmake/embed_web.cmake 把字节数/SHA256 写进生成代码，运行时与 ctest 再校验一次）。
+# 所以不能让 git 在检出时替换换行：
+#   - 文本资源强制 LF，Windows 与 macOS 检出后字节一致；
+#   - 二进制资源显式标为二进制，禁止任何换行处理。
+# cmake/embed_web.cmake 里另有一道 CR 检测，作为检出配置失灵时的兜底。
+web/**     -text
+web/*.html text eol=lf
+web/*.css  text eol=lf
+web/*.js   text eol=lf
