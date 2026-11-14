@@ -207,44 +207,53 @@ void CreateA4PrintSettings(ComPtr<ICoreWebView2PrintSettings>* settings) {
   (*settings)->put_ShouldPrintHeaderAndFooter(FALSE);
 }
 
-// 文件名来自页面，不能直接塞进 SetFileName：对话框会收下，保存时才失败。
-// 非法字符、控制字符、保留名、结尾的点/空格、超长，逐项处理。
-std::wstring SanitizeFileName(std::wstring name) {
-  const std::wstring fallback = L"设备管理卡.pdf";
-  if (name.empty()) return fallback;
-  for (wchar_t& c : name) {
-    if (c < 0x20 || wcschr(L"\\/:*?\"<>|", c) != nullptr) c = L'_';
-  }
-  while (!name.empty() && (name.back() == L'.' || name.back() == L' ')) {
-    name.pop_back();
-  }
-  if (name.empty()) return fallback;
-
-  const std::size_t dot = name.find(L'.');
-  const std::wstring stem = (dot == std::wstring::npos) ? name : name.substr(0, dot);
-  const wchar_t* kReserved[] = {L"CON", L"PRN", L"AUX", L"NUL",
-                                L"COM1", L"COM2", L"COM3", L"COM4", L"COM5",
-                                L"COM6", L"COM7", L"COM8", L"COM9",
-                                L"LPT1", L"LPT2", L"LPT3", L"LPT4", L"LPT5",
-                                L"LPT6", L"LPT7", L"LPT8", L"LPT9"};
-  for (const wchar_t* reserved : kReserved) {
-    if (_wcsicmp(stem.c_str(), reserved) == 0) {
-      name = L"_" + name;
-      break;
+// 文件名兜底：SetFileName 收下非法字符后，用户要等点到「保存」才被系统拒绝，
+// 现象就是「PDF 存不下来」且不说是哪个字符。这里先按 Windows 规则收口：
+// 路径分隔符与通配符换掉、去掉结尾的点与空格、保留名加前缀。
+std::wstring SanitizeLeaf(std::wstring leaf) {
+  static const wchar_t kIllegal[] = L"\\/:*?\"<>|";
+  for (wchar_t& c : leaf) {
+    if (c < 0x20) {
+      c = L'_';
+      continue;
+    }
+    for (const wchar_t* p = kIllegal; *p; ++p) {
+      if (c == *p) {
+        c = L'_';
+        break;
+      }
     }
   }
-  if (name.find(L'.') == std::wstring::npos) name += L".pdf";
-
-  // 单段文件名上限 255 字符，留余量；截断时保住扩展名。
-  if (name.size() > 200) {
-    const std::size_t cut = name.rfind(L'.');
-    const std::wstring ext = (cut == std::wstring::npos) ? L".pdf" : name.substr(cut);
-    name = name.substr(0, 200 - ext.size()) + ext;
+  while (!leaf.empty() && (leaf.back() == L'.' || leaf.back() == L' ')) {
+    leaf.pop_back();
   }
-  return name.empty() ? fallback : name;
+  if (leaf.empty()) return L"设备管理卡.pdf";
+
+  // 保留名判在扩展名之前的那一段：CON.pdf 同样打不开。
+  std::wstring stem = leaf.substr(0, leaf.find(L'.'));
+  for (wchar_t& c : stem) {
+    if (c >= L'a' && c <= L'z') c = static_cast<wchar_t>(c - L'a' + L'A');
+  }
+  const bool reserved =
+      stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
+      (stem.size() == 4 &&
+       ((stem.compare(0, 3, L"COM") == 0) || (stem.compare(0, 3, L"LPT") == 0)) &&
+       stem[3] >= L'1' && stem[3] <= L'9');
+  if (reserved) leaf = L"_" + leaf;
+  // 没有扩展名就补 .pdf：文件类型筛选器给的是 PDF，缺扩展名时 PrintToPdf 写出来的
+  // 文件在资源管理器里打不开。
+  if (leaf.find(L'.') == std::wstring::npos) leaf += L".pdf";
+  // 单个路径分量的上限是 255 个 UTF-16 单元；超了 PrintToPdf 会失败。
+  if (leaf.size() > 255) {
+    const std::size_t dot = leaf.rfind(L'.');
+    const std::wstring ext =
+        (dot == std::wstring::npos || leaf.size() - dot > 8) ? std::wstring()
+                                                            : leaf.substr(dot);
+    leaf = leaf.substr(0, 255 - ext.size()) + ext;
+  }
+  return leaf;
 }
 
-// error 为空表示用户取消；非空是真实原因（调用方必须照实报，不能一律当取消）。
 bool PickSavePath(const std::wstring& suggested_name,
                   std::filesystem::path* out, std::wstring* error) {
   ComPtr<IFileSaveDialog> dialog;
@@ -259,9 +268,27 @@ bool PickSavePath(const std::wstring& suggested_name,
   dialog->SetFileTypes(1, types);
   dialog->SetDefaultExtension(L"pdf");
   dialog->SetTitle(L"导出卡片 PDF");
-  const std::wstring file_name = SanitizeFileName(suggested_name);
-  dialog->SetFileName(file_name.c_str());
+  // SetFileName 只收文件名：把整条路径传进去会被原样当成「文件名」显示在输入框里
+  // （用户看到 D:\...\x.pdf 这种名字，空格与问号还会让保存失败）。
+  // 目录部分单独走 SetFolder：路径里带目录时定位过去，文件名只留末段。
+  const std::filesystem::path suggested(suggested_name);
+  std::wstring leaf = SanitizeLeaf(suggested.filename().wstring());
+  const std::wstring parent = suggested.parent_path().wstring();
+  if (!parent.empty()) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(parent, ec)) {
+      ComPtr<IShellItem> folder;
+      if (SUCCEEDED(SHCreateItemFromParsingName(parent.c_str(), nullptr,
+                                                IID_PPV_ARGS(&folder))) &&
+          folder) {
+        dialog->SetFolder(folder.Get());
+      }
+    }
+  }
+  dialog->SetFileName(leaf.c_str());
   const HRESULT hr = dialog->Show(g.hwnd);
+  // 取消与失败必须分开报：以前两者都落成「已取消导出」，
+  // 用户看到的是「我点了保存，它说取消」，真实原因（磁盘/权限/路径）被吞掉。
   if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
     error->clear();
     return false;
