@@ -16,6 +16,7 @@
 #include "devcard/backup.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
+#include "devcard/paths.h"
 #include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/server.h"
@@ -113,7 +114,7 @@ void import_adjacent_legacy(const std::filesystem::path& data_dir) {
 
   const devcard::LegacyInfo info = devcard::inspect_legacy(source);
   if (!info.is_legacy) {
-    std::cout << "提示：exe 同级发现 " << source.string()
+    std::cout << "提示：exe 同级发现 " << devcard::path_to_utf8(source)
               << "，不是旧版库，未自动导入。" << std::endl;
     return;
   }
@@ -129,16 +130,16 @@ void import_adjacent_legacy(const std::filesystem::path& data_dir) {
         throw devcard::AppError(
             "legacy_conflict",
             "无法读取用户数据目录里的台账记录数，拒绝自动导入：\n  目标: " +
-                target.string() +
+                devcard::path_to_utf8(target) +
                 "\n请先用 --data-dir 指向正确目录，或人工检查该库是否损坏。");
       }
       if (existing > 0) {
         throw devcard::AppError(
             "legacy_conflict",
             "用户数据目录已有台账，拒绝自动导入（不会合并两份台账）：\n"
-            "  已有: " + target.string() + "（设备 " +
+            "  已有: " + devcard::path_to_utf8(target) + "（设备 " +
                 std::to_string(existing) + " 条）\n"
-            "  待导入: " + source.string() + "（设备 " +
+            "  待导入: " + devcard::path_to_utf8(source) + "（设备 " +
                 std::to_string(info.devices) + " 条）\n"
             "请确认保留哪一份：用 --data-dir 指向旧目录，或先自行备份/移走其中一个库。");
       }
@@ -146,7 +147,7 @@ void import_adjacent_legacy(const std::filesystem::path& data_dir) {
   }
   if (target_is_legacy) return;  // 由 open_database 的 auto_import_if_needed 处理
 
-  std::cout << "检测到安装版随包旧数据 " << source.string()
+  std::cout << "检测到安装版随包旧数据 " << devcard::path_to_utf8(source)
             << "，导入到用户数据目录（原文件保留、不改名）：" << std::endl;
   print_legacy_report(devcard::import_legacy(source, data_dir));
 }
@@ -360,16 +361,16 @@ int main(int argc, char** argv) {
               << DEVCARD_VERSION << "（schema "
               << devcard::target_schema_version() << "）\n";
     if (config.config_loaded) {
-      std::cout << "配置文件: " << config.config_file.string() << "（来源："
+      std::cout << "配置文件: " << devcard::path_to_utf8(config.config_file) << "（来源："
                 << config.config_source << "）\n";
     } else {
       std::cout << "配置文件: (未使用，exe 同目录无 devcard-server.json)\n";
     }
-    std::cout << "数据目录: " << config.data_dir.string() << "（来源："
+    std::cout << "数据目录: " << devcard::path_to_utf8(config.data_dir) << "（来源："
               << config.data_dir_source << "）\n"
               << "安装形态: " << (devcard::is_installed_layout() ? "安装版" : "便携版")
               << "\n"
-              << "数据库:   " << (config.data_dir / "devicedb.db").string() << "\n"
+              << "数据库:   " << devcard::path_to_utf8(config.data_dir / "devicedb.db") << "\n"
               << "监听地址: " << listen << ":" << server->port() << "（来源："
               << listen_source << "，端口来源：" << config.port_source << "）\n";
     if (server_mode) {

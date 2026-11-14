@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "devcard/error.h"
+#include "devcard/paths.h"
 #include "devcard/server.h"
 
 #ifdef _WIN32
@@ -278,7 +279,9 @@ ServerConfig resolve_config(const CliOverrides& cli) {
     config.data_dir = *env;
     config.data_dir_source = "环境变量 DEVCARD_DATA_DIR";
   } else if (file.data_dir) {
-    config.data_dir = *file.data_dir;
+    // 配置文件是 UTF-8：这里必须按 UTF-8 还原，否则 ACP 机器上 emoji/生僻字路径
+    // 会被按 GBK 再解释一次（命令行/环境变量那两条来源本身就是 ACP，保持原样）。
+    config.data_dir = path_from_utf8(*file.data_dir);
     config.data_dir_source = "配置文件 data_dir";
   } else {
     config.data_dir = default_data_dir();
