@@ -509,6 +509,15 @@ const std::vector<std::string>& route_error_codes() {
 
 int status_for(const AppError& error) { return http_status_for(error.code()); }
 
+const std::vector<std::string>& mapped_error_codes() {
+  static const std::vector<std::string> kCodes = [] {
+    std::vector<std::string> codes;
+    for (const auto& item : error_status_table()) codes.push_back(item.first);
+    return codes;
+  }();
+  return kCodes;
+}
+
 struct ServerHandle::Impl : ServerState {};
 
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}

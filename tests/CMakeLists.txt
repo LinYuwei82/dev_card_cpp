@@ -21,7 +21,6 @@ add_test(NAME devcard_no_opposans_tests
 
 # 生成器本身的验收：跨字符切口、尺寸、换行保真、CR 政策、块数。
 add_executable(devcard_embed_web_tests test_embed_web.cpp)
-target_link_libraries(devcard_embed_web_tests PRIVATE devcard_core)
 target_compile_definitions(devcard_embed_web_tests PRIVATE
     DEVCARD_CMAKE_COMMAND="${CMAKE_COMMAND}"
     DEVCARD_EMBED_SCRIPT="${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake")

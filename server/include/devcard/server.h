@@ -50,5 +50,7 @@ bool http_status_known(std::string_view code);
 int http_status_for(std::string_view code);
 // 路由实际会抛出的错误码清单（服务启动阶段的错误码不在其中）。
 const std::vector<std::string>& route_error_codes();
+// 映射表里登记的全部错误码（用于反向检查：表里不许有孤儿项）。
+const std::vector<std::string>& mapped_error_codes();
 
 }  // namespace devcard

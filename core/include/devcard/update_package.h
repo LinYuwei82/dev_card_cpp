@@ -69,11 +69,14 @@ struct UpdateDownloadOutcome {
 
 using UpdateFetcher = std::function<bool(const std::string& url,
                                          const std::filesystem::path& target,
-                                         std::string* error)>;
+                                         std::string* error,
+                                         std::string* error_code)>;
 
 // 生产下载器：系统 curl，固定参数、不经 shell、只允许 https（含重定向）。
+// 命令行里只有 ASCII：工作目录设为 target 的父目录，`-o` 用固定 ASCII 临时名，
+// 下载完在进程内改名成中文文件名（改名失败回 rename_failed，与校验失败区分）。
 bool curl_fetch(const std::string& url, const std::filesystem::path& target,
-                std::string* error);
+                std::string* error, std::string* error_code);
 
 // 下载 + 双校验 + 原子改名（`<name>.part` → `<name>`）。
 // 任一步失败都删除残件，错误信息可直接展示；不抛异常。

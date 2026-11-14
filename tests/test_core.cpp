@@ -38,9 +38,12 @@ std::filesystem::path temp_db() {
   static std::uint64_t counter = 0;
   const auto stamp =
       std::chrono::steady_clock::now().time_since_epoch().count();
-  const auto dir = std::filesystem::temp_directory_path() /
-                   ("devcard-test-" + std::to_string(stamp) + "-" +
-                    std::to_string(counter++));
+  // 根目录故意带非 ASCII 段：纯 ASCII 下 `.string()` 给出的字节与 UTF-8 相同，
+  // 编码错误测不出来（Windows 上会落成 ACP 乱码）。夹具自己也走 path_from_utf8。
+  const auto root = std::filesystem::temp_directory_path() /
+                    devcard::path_from_utf8("devcard-test-样张-📇");
+  const auto dir = root / ("run-" + std::to_string(stamp) + "-" +
+                           std::to_string(counter++));
   std::filesystem::create_directories(dir);
   return dir / "devicedb.db";
 }
@@ -124,7 +127,7 @@ void run_update_package_case(const std::filesystem::path& dir) {
   const std::filesystem::path updates = dir / "updates";
   auto copy_fetcher = [&fixture](const std::string&,
                                  const std::filesystem::path& target,
-                                 std::string*) {
+                                 std::string*, std::string*) {
     std::filesystem::copy_file(fixture, target,
                                std::filesystem::copy_options::overwrite_existing);
     return true;
@@ -133,7 +136,23 @@ void run_update_package_case(const std::filesystem::path& dir) {
       download_update_package(updates, spec, copy_fetcher);
   CHECK(ok.ok);
   CHECK(ok.path == devcard::path_to_utf8(updates / "DevCard-1.2.3.zip"));
-  CHECK(std::filesystem::exists(ok.path));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(ok.path)));
+  // 调用点判据（不是 helper 判据）：数据目录含中文时，产物必须真的落在
+  // <data_dir>/updates/ 下。只看返回字符串会让「helper 全绿、调用点没改」
+  // 蒙混过关（`target.string()` 交给 curl 就是这样下到错路径的）。
+  // 所以枚举目录项、逐码点比文件名与父路径。
+  bool asset_on_disk = false;
+  bool asset_parent_ok = false;
+  for (const auto& entry : std::filesystem::directory_iterator(updates)) {
+    if (devcard::path_to_utf8(entry.path().filename()) != "DevCard-1.2.3.zip") {
+      continue;
+    }
+    asset_on_disk = true;
+    asset_parent_ok = devcard::path_to_utf8(entry.path().parent_path()) ==
+                      devcard::path_to_utf8(updates);
+  }
+  CHECK(asset_on_disk);
+  CHECK(asset_parent_ok);
   CHECK(!std::filesystem::exists(updates / "DevCard-1.2.3.zip.part"));
   CHECK(ok.sha256 == hash);
   CHECK(ok.bytes == size);
@@ -141,7 +160,7 @@ void run_update_package_case(const std::filesystem::path& dir) {
   const std::filesystem::path failed_dir = dir / "updates-failed";
   auto offline_fetcher = [](const std::string&,
                             const std::filesystem::path& target,
-                            std::string* error) {
+                            std::string* error, std::string*) {
     std::ofstream out(target, std::ios::binary);
     out << "partial";
     if (error) *error = "模拟断网";
@@ -156,7 +175,7 @@ void run_update_package_case(const std::filesystem::path& dir) {
 
   auto corrupt_fetcher = [](const std::string&,
                             const std::filesystem::path& target,
-                            std::string*) {
+                            std::string*, std::string*) {
     std::ofstream out(target, std::ios::binary);
     out << "corrupted";
     return true;
@@ -280,6 +299,9 @@ void run_user_service_case(const std::filesystem::path& dir) {
 void run_path_encoding_case(const std::filesystem::path& dir) {
   const std::string expected = "初始账号密码.txt";
   CHECK(utf8_codepoints(expected) == 10);
+  // 夹具目录必须真的带非 ASCII 段，否则下面几条在 ASCII 路径下等于没测。
+  CHECK(devcard::path_to_utf8(dir).find("样张-📇") != std::string::npos);
+  CHECK(std::filesystem::exists(dir));
 
   // 1) 内存里来回一趟不能变形（Windows 上这里就会暴露 ACP 解释）。
   CHECK(devcard::path_to_utf8(devcard::path_from_utf8(expected)) == expected);
@@ -309,6 +331,35 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
     }
     CHECK(found);
     CHECK(!mojibake);
+  }
+
+  // 5) 宽→窄→宽往返的退化检查（`path.string() + "-wal"` vs 在 path 上 `+=`）。
+  //    POSIX：窄编码就是 UTF-8，两种写法必然相等；
+  //    Windows/ACP：`.string()` 会把非 ASCII 段改坏，两者必须不等——这条 CHECK
+  //    在那种环境下会红，那正是「旧写法会退化」的证据，改回 `+=` 才绿。
+  const std::filesystem::path db_file = dir / "devicedb.db";
+  std::filesystem::path direct_wal = db_file;
+  direct_wal += "-wal";
+  const std::filesystem::path legacy_wal =
+      std::filesystem::path(db_file.string() + "-wal");
+  CHECK(legacy_wal == direct_wal);
+  CHECK(direct_wal.parent_path() == db_file.parent_path());
+  CHECK(devcard::path_to_utf8(direct_wal.parent_path()) ==
+        devcard::path_to_utf8(db_file.parent_path()));
+
+  // 6) `+=` 的结果要落在真实目录里：写出来再按目录项核对，而不是只看内存。
+  {
+    std::ofstream probe(direct_wal, std::ios::binary);
+    probe << "x";
+    probe.close();
+    bool wal_found = false;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+      if (devcard::path_to_utf8(entry.path().filename()) == "devicedb.db-wal") {
+        wal_found = true;
+      }
+    }
+    CHECK(wal_found);
+    std::filesystem::remove(direct_wal);
   }
 
   // 4) 删除也要按同一套码元命中，不能删出个「看起来删了」。

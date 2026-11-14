@@ -83,7 +83,8 @@ std::wstring quote_arg(const std::wstring& value) {
   return out;
 }
 
-int run_process(const std::vector<std::string>& args) {
+int run_process(const std::vector<std::string>& args,
+                const std::filesystem::path& working_dir) {
   std::wstring command;
   for (std::size_t i = 0; i < args.size(); ++i) {
     if (i) command.push_back(L' ');
@@ -96,8 +97,11 @@ int run_process(const std::vector<std::string>& args) {
   PROCESS_INFORMATION process{};
   std::vector<wchar_t> buffer(command.begin(), command.end());
   buffer.push_back(L'\0');
+  // 工作目录用宽路径：中文/emoji 目录只在这一层出现，不进命令行。
+  const std::wstring cwd = working_dir.wstring();
   if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+                      CREATE_NO_WINDOW, nullptr, cwd.c_str(), &startup,
+                      &process)) {
     return -1;
   }
   WaitForSingleObject(process.hProcess, INFINITE);
@@ -110,7 +114,8 @@ int run_process(const std::vector<std::string>& args) {
 
 #else
 
-int run_process(const std::vector<std::string>& args) {
+int run_process(const std::vector<std::string>& args,
+                const std::filesystem::path& working_dir) {
   std::vector<char*> argv;
   argv.reserve(args.size() + 1);
   for (const std::string& arg : args) {
@@ -121,6 +126,7 @@ int run_process(const std::vector<std::string>& args) {
   const pid_t pid = fork();
   if (pid < 0) return -1;
   if (pid == 0) {
+    if (chdir(working_dir.c_str()) != 0) _exit(127);
     execvp(argv[0], argv.data());
     _exit(127);
   }
@@ -265,15 +271,21 @@ UpdateVerification verify_update_file(const std::filesystem::path& file,
 }
 
 bool curl_fetch(const std::string& url, const std::filesystem::path& target,
-                std::string* error) {
+                std::string* error, std::string* error_code) {
   const char* override_path = std::getenv("DEVCARD_CURL");
   const std::string curl =
       (override_path && *override_path) ? std::string(override_path)
                                         : std::string("curl");
-  std::filesystem::path log = target;
-  log += ".log";
+  // 命令行里只出现 ASCII：工作目录承载中文路径，`-o` / `--stderr` 用固定名。
+  // 这样即使 curl.exe 的 CRT 再按 ACP 解释一次 argv，也没有非 ASCII 字节可坏。
+  const std::filesystem::path work_dir = target.parent_path();
+  const std::string temp_name = ".devcard-download.tmp";
+  const std::string log_name = ".devcard-download.log";
+  const std::filesystem::path temp_path = work_dir / temp_name;
+  const std::filesystem::path log_path = work_dir / log_name;
   std::error_code ec;
-  std::filesystem::remove(log, ec);
+  std::filesystem::remove(temp_path, ec);
+  std::filesystem::remove(log_path, ec);
 
   const std::vector<std::string> args = {
       curl,
@@ -292,16 +304,23 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
       "--max-filesize",
       std::to_string(kUpdateMaxBytes),
       "--output",
-      // 交给 curl 的必须是 UTF-8：Windows 侧再经 CreateProcessW 变成宽字符，
-      // 用 .string()（ACP）会先把中文目录转坏。
-      path_to_utf8(target),
+      temp_name,
       "--stderr",
-      path_to_utf8(log),
+      log_name,
       url,
   };
-  const int code = run_process(args);
+  const int code = run_process(args, work_dir);
   if (code == 0) {
-    std::filesystem::remove(log, ec);
+    std::filesystem::rename(temp_path, target, ec);
+    if (ec) {
+      std::filesystem::remove(temp_path, ec);
+      std::filesystem::remove(log_path, ec);
+      // 与校验失败区分：字节已经完整落到临时名，只是改名这一步失败。
+      if (error) *error = "下载完成但落盘改名失败：" + ec.message();
+      if (error_code) *error_code = "rename_failed";
+      return false;
+    }
+    std::filesystem::remove(log_path, ec);
     return true;
   }
   std::string detail;
@@ -310,10 +329,12 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
   } else {
     detail = "curl 退出码 " + std::to_string(code);
   }
-  const std::string tail = read_tail(log, 400);
+  const std::string tail = read_tail(log_path, 400);
   if (!tail.empty()) detail += "：" + tail;
-  std::filesystem::remove(log, ec);
+  std::filesystem::remove(temp_path, ec);
+  std::filesystem::remove(log_path, ec);
   if (error) *error = detail;
+  if (error_code) *error_code = "download_failed";
   return false;
 }
 
@@ -357,9 +378,12 @@ UpdateDownloadOutcome download_update_package(
   std::filesystem::remove(part, ec);
 
   std::string fetch_error;
-  if (!fetcher || !fetcher(spec.url, part, &fetch_error)) {
+  std::string fetch_code;
+  if (!fetcher || !fetcher(spec.url, part, &fetch_error, &fetch_code)) {
     std::filesystem::remove(part, ec);
-    outcome.error_code = "download_failed";
+    // 改名失败与下载失败分开报，前端能区分「字节下完了但落盘改名失败」。
+    outcome.error_code =
+        fetch_code.empty() ? std::string("download_failed") : fetch_code;
     outcome.error = "下载失败：" + (fetch_error.empty() ? "未知原因" : fetch_error);
     return outcome;
   }
@@ -399,7 +423,9 @@ void cleanup_update_partials(const std::filesystem::path& updates_dir) {
         name.size() >= 5 && name.compare(name.size() - 5, 5, ".part") == 0;
     const bool log = name.size() >= 5 &&
                      name.compare(name.size() - 5, 5, ".log") == 0;
-    if (partial || log) std::filesystem::remove(entry.path(), ec);
+    // curl 的 ASCII 临时产物（工作目录承载中文路径后才有）。
+    const bool temp = name == ".devcard-download.tmp";
+    if (partial || log || temp) std::filesystem::remove(entry.path(), ec);
   }
 }
 

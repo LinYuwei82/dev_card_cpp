@@ -20,7 +20,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include "devcard/paths.h"
 #include <string>
 #include <vector>
 
@@ -338,12 +337,12 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
   const fs::path output = root / "out.cpp";
 
-  // 子进程参数是 UTF-8 文本；Windows 上 .string() 给的是 ACP，临时目录含中文/emoji
-  // 时 cmake 会收到乱码路径。夹具也要走同一套转换，否则产品绿、测试假绿。
+  // argv 的编码归属由 Windows 侧统一收口（宽命令行 + 工作目录），本文件先保持原样，
+  // 等 win-m5 的版本落地后按它对齐；不要在这里再造第三份转换。
   const std::vector<std::string> args = {
       DEVCARD_CMAKE_COMMAND,
-      "-DINPUT_DIR=" + devcard::path_to_utf8(input),
-      "-DOUTPUT=" + devcard::path_to_utf8(output),
+      "-DINPUT_DIR=" + input.string(),
+      "-DOUTPUT=" + output.string(),
       "-P",
       script_path(),
   };

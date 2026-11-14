@@ -273,6 +273,17 @@ int check_status_map() {
     }
   }
 
+  // 反向：表里不许有孤儿项（登记了但没有任何路由会抛），否则表会越滚越大、
+  // 掩盖「这个码其实已经没人抛了」的事实。
+  const std::set<std::string> listed(codes.begin(), codes.end());
+  for (const std::string& code : devcard::mapped_error_codes()) {
+    if (!listed.count(code)) {
+      std::cerr << "[失败] status_for 表里的 \"" << code
+                << "\" 是孤儿项：没有路由会抛它，请从表里删掉或补进清单" << std::endl;
+      ++failures;
+    }
+  }
+
   // 未映射类型必须能被认出来（不能和「已映射」混在一起）。
   if (devcard::http_status_known("__unmapped_probe__")) {
     std::cerr << "[失败] 未映射的错误码被当成了已知类型" << std::endl;
@@ -319,7 +330,6 @@ int check_status_map() {
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
                                               "port_in_use"};
-  const std::set<std::string> listed(codes.begin(), codes.end());
   std::size_t pos = 0;
   while ((pos = source.find(needle, pos)) != std::string::npos) {
     pos += needle.size();
@@ -338,7 +348,8 @@ int check_status_map() {
 
   if (failures == 0) {
     std::cout << "状态码自检通过：路由错误码 " << codes.size()
-              << " 项全部有对应 HTTP 状态，未映射码回落 500" << std::endl;
+              << " 项全部有对应 HTTP 状态，表内无孤儿项，未映射码回落 500"
+              << std::endl;
   }
   return failures;
 }
