@@ -1172,6 +1172,21 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      }
                    });
 
+  // P3：管理员强制覆盖。普通用户 403（role 校验在服务端，不依赖按钮隐藏）；
+  // 覆盖的受害者版本与 updated_by/updated_at 由 core 写入 force_overwrite 审计。
+  state.server.Post(R"(/api/devices/(\d+)/force)",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      const User actor = require_admin(state, request);
+                      const auto id = std::stoll(request.matches[1].str());
+                      Device device = device_from_json(parse_body(request.body));
+                      const AuditContext context{actor.user_name,
+                                                 request.remote_addr};
+                      set_json(response,
+                               device_json(state.devices->force_update(
+                                   id, std::move(device), context)));
+                    });
+
   state.server.Delete(R"(/api/devices/(\d+))",
                       [&state](const httplib::Request& request,
                                httplib::Response& response) {

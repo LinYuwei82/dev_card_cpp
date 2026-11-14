@@ -63,6 +63,11 @@ class DeviceService {
   Device create(Device device, const AuditContext& audit);
   Device update(std::int64_t id, Device device);
   Device update(std::int64_t id, Device device, const AuditContext& audit);
+  // P3 管理员强制覆盖：无视版本冲突，但版本仍从库里当前值 +1（不倒退），
+  // updated_by 记实际操作人；审计 action=force_overwrite，before 快照保留
+  // 被覆盖版本的 updated_by/updated_at/version，普通 update 无法伪装成它。
+  // 调用方必须保证 audit.actor 是管理员身份。
+  Device force_update(std::int64_t id, Device device, const AuditContext& audit);
   void remove(std::int64_t id, std::int64_t version);
   void remove(std::int64_t id, std::int64_t version, const AuditContext& audit);
   DeviceOptions options() const;

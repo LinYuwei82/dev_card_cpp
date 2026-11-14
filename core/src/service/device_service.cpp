@@ -200,8 +200,41 @@ Device DeviceService::update(std::int64_t id, Device device,
   return saved;
 }
 
-void DeviceService::remove(std::int64_t id, std::int64_t version) {
-  remove(id, version, AuditContext{});
+Device DeviceService::force_update(std::int64_t id, Device device,
+                                   const AuditContext& audit) {
+  validate(device);
+  if (!audit.enabled()) {
+    throw AppError("forbidden", "强制覆盖必须带明确的操作人");
+  }
+  Device saved;
+  db_.write([&](sqlite3* conn) {
+    Device before;
+    if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
+    // 覆盖不是回退：以库里当前版本为基准再 +1，旧页面上的 version 直接忽略。
+    device.id = id;
+    device.version = before.version;
+    if (!dao_.update(conn, device, audit.actor)) {
+      // 同一写事务内刚读过，正常不会失败；真失败说明行被删除，按 404 处理。
+      throw AppError("not_found", "设备不存在");
+    }
+    if (!dao_.find(conn, id, saved)) throw AppError("not_found", "设备不存在");
+    // 与普通 update 明确区分：action 不同，summary 写清被抹掉的是谁的哪一版，
+    // before_json 里保留当时的 updated_by/updated_at/version。
+    const std::string loser =
+        before.updated_by.empty() ? std::string("未知用户") : before.updated_by;
+    AuditEntry entry = device_audit(
+        audit, "force_overwrite", id,
+        "强制覆盖：抹掉 " + loser + " 于 " + before.updated_at + " 保存的 v" +
+            std::to_string(before.version) + "，生成 v" +
+            std::to_string(saved.version));
+    entry.before_json = device_json_text(before);
+    entry.after_json = device_json_text(saved);
+    record_audit(conn, entry);
+  });
+  return saved;
+}
+
+void DeviceService::remove(std::int64_t id, std::int64_t version) {  remove(id, version, AuditContext{});
 }
 
 void DeviceService::remove(std::int64_t id, std::int64_t version,

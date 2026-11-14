@@ -1434,7 +1434,29 @@
           return;
         }
         if (error.status === 409) {
-          // 冲突口径（P3 未拍板，不提供强制覆盖）：提示刷新后重填，绝不静默覆盖。
+          // 只有管理员在冲突时看到强制覆盖入口；普通用户仍然只能刷新重填。
+          // 覆盖会抹掉别人刚保存的内容，所以文案必须写清后果。
+          var canForce = editingId && state.user && state.user.role === 'admin';
+          if (canForce && window.confirm(
+                '数据已被他人修改。\n\n' +
+                '强制覆盖会用你刚才填写的内容覆盖别人刚保存的修改；' +
+                '被覆盖的版本、修改人和时间会写入审计记录。\n\n' +
+                '确定强制覆盖吗？')) {
+            return api('POST', '/api/devices/' + editingId + '/force', payload)
+              .then(function () {
+                closeDrawer();
+                toast('已强制覆盖（已写入审计）');
+                return loadOptions().then(load);
+              })
+              .catch(function (forceError) {
+                if (handleAuthFailure(forceError)) {
+                  closeDrawer();
+                  return;
+                }
+                el.formError.textContent = forceError.message;
+                el.formError.hidden = false;
+              });
+          }
           closeDrawer();
           toast('数据已被他人修改，请刷新后重试', 'error');
           return loadOptions().then(load);
