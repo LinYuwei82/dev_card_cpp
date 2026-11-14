@@ -431,8 +431,14 @@ int main(int argc, const char* argv[]) {
     // 自动化验证：把打印视图导出成 PDF 后退出，便于脚本核对页数与文字。
     NSString* selftest_pdf =
         NSProcessInfo.processInfo.environment[@"DEVCARD_PRINT_SELFTEST_PDF"];    bridge.automaticPdfPath = selftest_pdf;
+    // 负向自检：摘掉 crypto.subtle，验证「判据没跑起来」会被单独拦住。
+    BOOL selftest_nosubtle =
+        NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_NOSUBTLE"].length > 0;
 
-    NSString* page = selftest_pdf.length > 0 ? @"/?view=print" : @"/";
+    NSString* page = selftest_pdf.length > 0
+                         ? (selftest_nosubtle ? @"/?view=print&selftest_nosubtle=1"
+                                              : @"/?view=print")
+                         : @"/";
     NSString* url_string = [NSString
         stringWithFormat:@"http://127.0.0.1:%d%@", server->port(), page];
     [web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:url_string]]];
@@ -440,8 +446,39 @@ int main(int argc, const char* argv[]) {
     if (selftest_pdf.length > 0) {
       __block void (^poll)(int) = nil;
       poll = ^(int attempts) {
-        [web evaluateJavaScript:@"document.querySelectorAll('.sheet').length"
-              completionHandler:^(id result, NSError* error) {
+        // 先取安全上下文与闸门的真实状态：不依赖数据，打印视图有没有卡片都能读到。
+        [web evaluateJavaScript:@"window.__devcardFontGate ? JSON.stringify(window.__devcardFontGate()) : ''"
+              completionHandler:^(id gate, NSError* gate_error) {
+                NSString* gate_json = [gate isKindOfClass:NSString.class] ? gate : @"";
+                if (gate_json.length > 0 && attempts == 50) {
+                  NSLog(@"DEVCARD_SELFTEST font_gate=%@", gate_json);
+                }
+                if (selftest_nosubtle && gate_json.length > 0) {
+                  // 负向自检：字体未就绪时按钮是禁用的，点按钮不会有回调，所以直接调版式入口，
+                  // 断言拿到的是「校验机制不可用」这条错误，且没有产出 HTML/PDF。
+                  [web evaluateJavaScript:@"window.__devcardEnsurePrintFonts()"
+                        completionHandler:^(id ignored, NSError* ensure_error) {
+                  dispatch_after(
+                      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                      dispatch_get_main_queue(), ^{
+                  [web evaluateJavaScript:
+                           @"(function(){try{var r=window.__devcardExportLayout();"
+                            "return JSON.stringify({error:(r&&r.error)||'',html:(r&&r.html)?r.html.length:0});}"
+                            "catch(e){return JSON.stringify({thrown:String(e)});}})()"
+                        completionHandler:^(id value, NSError* error) {
+                          NSString* json = [value isKindOfClass:NSString.class] ? value : @"";
+                          NSLog(@"DEVCARD_SELFTEST font_gate_export=%@", json.length ? json : (error.localizedDescription ?: @"nil"));
+                          BOOL blocked = [json containsString:@"crypto.subtle"] &&
+                                         [json containsString:@"\"html\":0"];
+                          NSLog(@"DEVCARD_SELFTEST %@", blocked ? @"OK" : @"FAIL");
+                          exit(blocked ? 0 : 1);
+                        }];
+                  });
+                  }];
+                  return;
+                }
+                [web evaluateJavaScript:@"document.querySelectorAll('.sheet').length"
+                      completionHandler:^(id result, NSError* error) {
                 NSInteger sheets = [result respondsToSelector:@selector(integerValue)]
                                        ? [result integerValue]
                                        : 0;
@@ -461,6 +498,9 @@ int main(int argc, const char* argv[]) {
                             operation ? @"ok" : @"nil");
                     }
                     NSLog(@"DEVCARD_SELFTEST %@", ok ? @"OK" : @"FAIL");
+                    if (!ok) {
+                      NSLog(@"DEVCARD_SELFTEST error=%@", message ?: @"(无消息)");
+                    }
                     exit(ok ? 0 : 1);
                   };
                   // 走真实链路：页面按钮 -> WKScriptMessageHandler -> 导出。
@@ -478,6 +518,7 @@ int main(int argc, const char* argv[]) {
                     dispatch_get_main_queue(), ^{
                       poll(attempts - 1);
                     });
+              }];
               }];
       };
       poll(50);

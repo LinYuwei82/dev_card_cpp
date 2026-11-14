@@ -1497,7 +1497,48 @@
     });
   }
 
+  // 校验机制本身能不能跑，必须和「字体不一致」分开报：前者是环境问题，后者是数据问题，
+  // 处置完全不同。crypto.subtle 只在安全上下文里存在；缺了它 digest 会抛 TypeError，
+  // 若被 catch 吞成「字体校验失败」，用户看到的是「导出被拒绝」，真实原因却是判据没跑起来。
+  function fontGateEnvironmentError() {
+    if (window.isSecureContext !== true) {
+      return '当前页面不是安全上下文（isSecureContext=false），无法校验字体完整性，导出已中止';
+    }
+    if (!(window.crypto && window.crypto.subtle &&
+          typeof window.crypto.subtle.digest === 'function')) {
+      return '当前环境缺少 crypto.subtle.digest，无法校验字体完整性，导出已中止';
+    }
+    return '';
+  }
+
+  // 负向自检专用：壳层以 DEVCARD_SELFTEST_NOSUBTLE=1 启动时页面带 ?selftest_nosubtle=1，
+  // 这里摘掉 subtle，验证「判据没跑起来」会被独立拦下，而不是混进「字体不一致」。
+  if (/[?&]selftest_nosubtle=1/.test(location.search)) {
+    try {
+      Object.defineProperty(window.crypto, 'subtle', { value: undefined, configurable: true });
+    } catch (e) { /* 只读实现也拦不住：下面的探测照样为假 */ }
+  }
+
+  // 自检取值口：安全上下文的真实值，供壳层在 selftest 里打印，不按规范推断。
+  // 同时暴露字体就绪入口，负向自检要先跑一遍闸门，才能拿到具体错误而不是「未就绪」。
+  window.__devcardEnsurePrintFonts = ensurePrintFonts;
+  window.__devcardFontGate = function () {
+    return {
+      href: location.href,
+      secure: window.isSecureContext,
+      subtle: typeof (window.crypto && window.crypto.subtle),
+      digest: typeof (window.crypto && window.crypto.subtle && window.crypto.subtle.digest),
+      error: fontGateEnvironmentError()
+    };
+  };
+
   function ensurePrintFonts() {
+    var envError = fontGateEnvironmentError();
+    if (envError) {
+      printFonts.ready = false;
+      printFonts.error = envError;
+      return Promise.resolve(false);
+    }
     var sample = '设备管理卡 0123456789';
     var loaded = (document.fonts && document.fonts.load)
       ? Promise.all([
