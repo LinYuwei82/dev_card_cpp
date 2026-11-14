@@ -761,8 +761,11 @@
   function loadFontCoverage() {
     return api('GET', '/api/fonts/coverage').then(function (data) {
       state.fontRanges = (data && data.available && data.ranges) ? data.ranges : null;
+      // 字体的字节数与 SHA256 由构建期从 web/fonts/ 读出、随接口下发，前端不再写死。
+      printFontSpec = (data && data.fonts && data.fonts.length) ? data.fonts : null;
     }).catch(function () {
       state.fontRanges = null;
+      printFontSpec = null;
     });
   }
 
@@ -1456,21 +1459,31 @@
   // 失败时把错误交给调用方中止，绝不产出用系统字体「顶替」的 PDF。
   var printFonts = { ready: false, error: '' };
 
-  // 期望的字体文件与字节数：与 docs/改造技术方案.md D12 的三要素一致。
-  // 光看 document.fonts.check() 不够——字体加载失败时 WebKit 仍可能报「可用」，
-  // 必须直接确认 /fonts/ 两份文件真的取到、字节数对得上。
-  var printFontSpec = [
-    ['/fonts/NotoSansSC-Regular.subset.ttf', 2281488],
-    ['/fonts/NotoSansSC-Bold.subset.ttf', 2278984]
-  ];
+  // 期望的字体文件、字节数与 SHA256 来自构建期（/api/fonts/coverage 的 fonts 字段），
+  // 不在 JS 里写死：重新子集后忘了同步，导出会以「字节数不符」永久中止，而真正的原因是清单过期。
+  // 判据用 SHA256：重子集后大小碰巧相同、内容变了，只比大小会判「通过」再拿错字体排版。
+  var printFontSpec = null;
+
+  function sha256Hex(buffer) {
+    return crypto.subtle.digest('SHA-256', buffer).then(function (digest) {
+      return Array.prototype.map.call(new Uint8Array(digest), function (b) {
+        return ('0' + b.toString(16)).slice(-2);
+      }).join('');
+    });
+  }
 
   function probePrintFonts() {
+    if (!printFontSpec || !printFontSpec.length) return Promise.resolve(false);
+    if (!(window.crypto && crypto.subtle)) return Promise.resolve(false);
     return Promise.all(printFontSpec.map(function (spec) {
-      // no-store：字体响应带 max-age=86400，走缓存会掩盖「这一版根本没带字体」。
-      return fetch(spec[0], { cache: 'no-store' }).then(function (response) {
+      // no-store：走缓存会掩盖「这一版根本没带字体」。
+      return fetch(spec.url, { cache: 'no-store' }).then(function (response) {
         if (!response.ok) return false;
         return response.arrayBuffer().then(function (buffer) {
-          return buffer.byteLength === spec[1];
+          if (buffer.byteLength !== spec.bytes) return false;
+          return sha256Hex(buffer).then(function (digest) {
+            return digest === spec.sha256;
+          });
         });
       }).catch(function () { return false; });
     })).then(function (results) {
@@ -1495,8 +1508,8 @@
       var ok = results[0] && results[1];
       printFonts.ready = ok;
       printFonts.error = ok ? '' :
-        '子集字体不可用（/fonts/ 取不到或字节数不符），导出已中止：整份字体缺失时影响不可枚举，' +
-        '无法判断哪些字、哪些行会变，不继续产出 PDF';
+        '子集字体未通过校验（/fonts/ 取不到、字节数或 SHA256 与构建期清单不符），导出已中止：' +
+        '整份字体缺失时影响不可枚举，无法判断哪些字、哪些行会变，不继续产出 PDF';
       return ok;
     });
   }

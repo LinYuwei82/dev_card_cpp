@@ -16,16 +16,31 @@ add_custom_command(
     VERBATIM
 )
 
+set(FONT_MANIFEST_H "${CMAKE_CURRENT_BINARY_DIR}/generated/font_manifest.h")
+add_custom_command(
+    OUTPUT "${FONT_MANIFEST_H}"
+    COMMAND ${CMAKE_COMMAND}
+            -DFONT_DIR=${WEB_DIR}/fonts
+            -DOUTPUT=${FONT_MANIFEST_H}
+            -P ${CMAKE_SOURCE_DIR}/cmake/font_manifest.cmake
+    DEPENDS "${WEB_DIR}/fonts/NotoSansSC-Regular.subset.ttf"
+            "${WEB_DIR}/fonts/NotoSansSC-Bold.subset.ttf"
+            "${CMAKE_SOURCE_DIR}/cmake/font_manifest.cmake"
+    VERBATIM
+)
+
 add_library(devcard_server STATIC
     src/server.cpp
     src/platform_paths.cpp
     src/font_coverage.cpp
     src/web_assets_check.cpp
     "${WEB_ASSETS_CPP}"
+    "${FONT_MANIFEST_H}"
 )
 target_include_directories(devcard_server PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_SOURCE_DIR}/third_party/httplib"
 )
 target_compile_definitions(devcard_server PRIVATE

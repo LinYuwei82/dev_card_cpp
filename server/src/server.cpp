@@ -3,6 +3,9 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include "devcard/sha256.h"
+#include "font_manifest.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -447,18 +450,29 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
 
-  // 子集字体随包分发，启动时读进内存。缺失不致命（界面还能开），但必须吵一声：
-  // 缺字体时浏览器会回落到系统字体，两个平台印出来的卡就不一致了。
+  // 子集字体随包分发，启动时读进内存并逐份校验。
+  // 校验值是构建期从 web/fonts/ 读出来的（cmake/font_manifest.cmake），不是「服务器自己报自己的大小」——
+  // 后者两边一起错也一致，等于没检查。
+  // 缺一份或对不上就中止启动：一个能录台账却永远打不出卡的版本，比启动即失败更糟，
+  // 用户会先录一批数据，再发现打不了。
   state.font_dir = default_font_dir();
-  for (const char* name : {"NotoSansSC-Regular.subset.ttf",
-                           "NotoSansSC-Bold.subset.ttf"}) {
-    std::string bytes = read_file_bytes(state.font_dir / name);
+  for (const auto& spec : kEmbeddedFonts) {
+    const auto path = state.font_dir / spec.name;
+    std::string bytes = read_file_bytes(path);
     if (bytes.empty()) {
-      std::cerr << "警告：缺少子集字体 " << (state.font_dir / name)
-                << "（界面与打印会回落到系统字体）" << std::endl;
-    } else {
-      state.fonts[name] = std::move(bytes);
+      throw AppError("font_missing",
+                     "缺少随包字体 " + path.string() +
+                         "：打印与预览必须用同一份子集，缺字体时不做降级，直接中止启动");
     }
+    const std::string actual = sha256_hex(bytes);
+    if (bytes.size() != spec.bytes || actual != spec.sha256) {
+      throw AppError("font_corrupt",
+                     "字体校验失败 " + path.string() + "：期望 " +
+                         std::to_string(spec.bytes) + " 字节 / SHA256 " + spec.sha256 +
+                         "，实得 " + std::to_string(bytes.size()) + " 字节 / SHA256 " + actual +
+                         "（多为重新子集后未重建，或文件被截断）");
+    }
+    state.fonts[spec.name] = std::move(bytes);
   }
   // 「哪些字能印」的唯一判据取自随包字体的 cmap，不做手写清单：
   // 换字体或换字符集时，它自动跟着变。
@@ -672,10 +686,20 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      for (const auto& range : state.coverage.ranges()) {
                        ranges.push_back({range.first, range.second});
                      }
+                     // 字体的字节数与 SHA256 一并下发：前端不再自己写死这两个数，
+                     // 否则重新子集后忘了同步，导出会以「字节数不符」永久中止。
+                     json fonts = json::array();
+                     for (const auto& spec : kEmbeddedFonts) {
+                       fonts.push_back({{"name", spec.name},
+                                        {"url", spec.url},
+                                        {"bytes", spec.bytes},
+                                        {"sha256", spec.sha256}});
+                     }
                      set_json(response,
                               json{{"available", !state.coverage.empty()},
                                    {"count", state.coverage.count()},
-                                   {"ranges", ranges}});
+                                   {"ranges", ranges},
+                                   {"fonts", fonts}});
                    });
 
   // 打印数据快照：与台账共用筛选条件，一次取全量（不分页），供前端排版。
