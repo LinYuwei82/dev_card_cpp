@@ -710,9 +710,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
 
                       const std::filesystem::path updates_dir =
                           state.data_dir / "updates";
+                      // 与下载器共用同一处计算：轮询读的 part 必须就是 curl 写的那个。
                       const std::filesystem::path part =
-                          updates_dir /
-                          (sanitize_update_file_name(spec.file_name) + ".part");
+                          update_part_path(updates_dir, spec.file_name);
                       const std::shared_ptr<ServerState::UpdateDownload> download =
                           state.update;
                       {

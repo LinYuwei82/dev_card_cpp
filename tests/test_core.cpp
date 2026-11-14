@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -5,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
@@ -186,6 +188,145 @@ void run_update_package_case(const std::filesystem::path& dir) {
   CHECK(corrupt.error.find("校验失败") != std::string::npos);
   CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip.part"));
   CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip"));
+
+  // 进度判据（不是字段判据）：服务端轮询读的是 `update_part_path()`，
+  // 所以这里就盯着这个路径取 file_size，必须在 curl 还没退出时读到非 0。
+  // 两条输入各跑一遍：
+  //   1) 包名纯 ASCII → part 名就是原名；
+  //   2) 包名含中文 → sanitize 成 ASCII，part 名全 ASCII。
+  // 两组的 curl 命令行都必须无中文（目录本身是中文，靠工作目录承载）。
+#ifndef _WIN32
+  {
+    const std::filesystem::path fake = dir / "fake-curl.sh";
+    const std::filesystem::path fake_argv = dir / "fake-curl-argv.txt";
+    {
+      std::ofstream out(fake);
+      out << "#!/bin/sh\n"
+             "if [ -n \"$DEVCARD_FAKE_ARGV_LOG\" ]; then\n"
+             "  for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done"
+             " > \"$DEVCARD_FAKE_ARGV_LOG\"\n"
+             "fi\n"
+             "out=\"\"\n"
+             "log=\"\"\n"
+             "while [ \"$#\" -gt 0 ]; do\n"
+             "  case \"$1\" in\n"
+             "    --output) out=\"$2\"; shift 2 ;;\n"
+             "    --stderr) log=\"$2\"; shift 2 ;;\n"
+             "    *) shift ;;\n"
+             "  esac\n"
+             "done\n"
+             "[ -n \"$out\" ] || exit 2\n"
+             "[ -n \"$DEVCARD_FAKE_RELEASE\" ] || exit 4\n"
+             "head -c 8 \"$DEVCARD_FAKE_SOURCE\" > \"$out\"\n"
+             "i=0\n"
+             "while [ ! -f \"$DEVCARD_FAKE_RELEASE\" ] && [ \"$i\" -lt 500 ];"
+             " do sleep 0.02; i=$((i+1)); done\n"
+             "tail -c +9 \"$DEVCARD_FAKE_SOURCE\" >> \"$out\"\n"
+             "[ -z \"$log\" ] || printf 'fake curl ok\\n' > \"$log\"\n"
+             "exit 0\n";
+    }
+    std::filesystem::permissions(fake,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace);
+    ::setenv("DEVCARD_CURL", fake.c_str(), 1);
+    ::setenv("DEVCARD_FAKE_SOURCE", fixture.c_str(), 1);
+    ::setenv("DEVCARD_FAKE_ARGV_LOG", fake_argv.c_str(), 1);
+
+    const auto run_curl_case = [&](const std::string& file_name,
+                                   const std::string& label) {
+      const std::filesystem::path case_updates =
+          dir / (std::string("updates-curl-") + label);
+      UpdatePackageSpec case_spec = spec;
+      case_spec.file_name = file_name;
+      const std::filesystem::path part =
+          update_part_path(case_updates, case_spec.file_name);
+      const std::filesystem::path final_path =
+          case_updates / sanitize_update_file_name(case_spec.file_name);
+
+      std::atomic<bool> finished{false};
+      UpdateDownloadOutcome outcome;
+      // 假 curl 写完前 8 字节就停住等释放文件：主线程先读到非 0 再放行，
+      // 这样「进度在下载过程中可读」不依赖 sleep 与调度，不会假绿也不会假红。
+      // 释放文件路径必须在起线程之前设好，否则子进程可能继承不到。
+      const std::filesystem::path release =
+          dir / ("fake-curl-release-" + label);
+      std::filesystem::remove(release);
+      ::setenv("DEVCARD_FAKE_RELEASE", release.c_str(), 1);
+      std::thread worker([&] {
+        outcome = download_update_package(case_updates, case_spec);
+        finished.store(true);
+      });
+      std::uint64_t observed = 0;
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
+        std::error_code size_ec;
+        const auto size = std::filesystem::file_size(part, size_ec);
+        if (!size_ec && size > observed) {
+          observed = static_cast<std::uint64_t>(size);
+        }
+        if (observed > 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      {
+        std::ofstream go(release);
+        go << "go";
+      }
+      worker.join();
+      std::filesystem::remove(release);
+
+      CHECK(outcome.ok);
+      // 进度必须在下载过程中就读到非 0，且小于总字节（不是下载完才有的终值）。
+      CHECK(observed > 0);
+      CHECK(observed < size);
+      CHECK(std::filesystem::exists(final_path));
+      CHECK(verify_update_file(final_path, size, hash).ok);
+
+      // 命令行判据：假 curl 收到的每个参数都必须是 ASCII。
+      std::ifstream argv_in(fake_argv, std::ios::binary);
+      const std::string argv_text{std::istreambuf_iterator<char>(argv_in),
+                                  std::istreambuf_iterator<char>()};
+      CHECK(!argv_text.empty());
+      bool argv_ascii = true;
+      for (const unsigned char byte : argv_text) {
+        if (byte >= 0x80) argv_ascii = false;
+      }
+      CHECK(argv_ascii);
+      CHECK(argv_text.find("--output\n" + path_to_utf8(part.filename()) + "\n") !=
+            std::string::npos);
+      argv_in.close();
+      std::filesystem::remove(fake_argv);
+
+      std::cout << "[fake-curl] " << label
+                << " file_name=" << file_name
+                << " part=" << path_to_utf8(part.filename())
+                << " argv_ascii=" << (argv_ascii ? 1 : 0)
+                << " progress_first=" << observed << " final_bytes=" << size
+                << "\n";
+    };
+
+    run_curl_case("DevCard-1.2.3.zip", "ascii");
+    run_curl_case("卡片-DevCard-1.2.3.zip", "cjk");
+
+    // 非 ASCII 目标直接失败：不再退回固定临时名（那条路进度永远是 0）。
+    std::string reject_error;
+    std::string reject_code;
+    const bool accepted = curl_fetch(
+        spec.url, dir / path_from_utf8("卡片.part"), &reject_error,
+        &reject_code);
+    CHECK(!accepted);
+    CHECK(reject_code == "download_failed");
+    CHECK(reject_error.find("非 ASCII") != std::string::npos);
+    std::cout << "[fake-curl] non-ascii-target code=" << reject_code
+              << " error=" << reject_error << "\n";
+
+    ::unsetenv("DEVCARD_CURL");
+    ::unsetenv("DEVCARD_FAKE_SOURCE");
+    ::unsetenv("DEVCARD_FAKE_ARGV_LOG");
+  }
+#endif
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。

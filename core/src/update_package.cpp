@@ -210,6 +210,11 @@ std::string sanitize_update_file_name(std::string_view raw) {
   return name;
 }
 
+std::filesystem::path update_part_path(const std::filesystem::path& updates_dir,
+                                       std::string_view file_name) {
+  return updates_dir / (sanitize_update_file_name(file_name) + ".part");
+}
+
 std::string validate_update_spec_code(const UpdatePackageSpec& spec) {
   if (!is_valid_update_version(spec.version)) return "manifest_invalid";
   if (!is_trusted_update_url(spec.url)) return "endpoint_not_allowed";
@@ -277,20 +282,26 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
       (override_path && *override_path) ? std::string(override_path)
                                         : std::string("curl");
   // 命令行里只出现 ASCII：工作目录承载中文路径，`-o` / `--stderr` 只给文件名。
-  // 文件名取 part 的 ASCII 名（`sanitize_update_file_name` 已保证 ASCII），这样
-  // 服务端按 part 路径轮询进度仍然读得到真实字节；万一不是 ASCII（理论上不会），
-  // 才退回固定临时名 + 下载完改名。
+  // 文件名取 part 的 ASCII 名（`sanitize_update_file_name` / `update_part_path`
+  // 已保证 ASCII），这样服务端按 part 路径轮询进度读到的就是 curl 正在写的
+  // 那个文件。非 ASCII 不再退回固定临时名：那条路的 curl 写
+  // `.devcard-download.tmp`、轮询仍读 `part`，进度会静默停在 0 直到下载完。
   const std::filesystem::path work_dir = target.parent_path();
-  std::string output_name = path_to_utf8(target.filename());
+  const std::string output_name = path_to_utf8(target.filename());
   const bool ascii_name =
       !output_name.empty() &&
       std::all_of(output_name.begin(), output_name.end(), [](unsigned char c) {
         return c > 0x20 && c < 0x7F && c != '"' && c != '\\';
       });
-  const std::string fetch_name =
-      ascii_name ? output_name : std::string(".devcard-download.tmp");
-  const std::string log_name =
-      ascii_name ? output_name + ".log" : std::string(".devcard-download.log");
+  if (!ascii_name) {
+    if (error) {
+      *error = "更新包落盘文件名含非 ASCII 字节（应已 sanitize）：" + output_name;
+    }
+    if (error_code) *error_code = "download_failed";
+    return false;
+  }
+  const std::string fetch_name = output_name;
+  const std::string log_name = output_name + ".log";
   const std::filesystem::path fetch_path = work_dir / fetch_name;
   const std::filesystem::path log_path = work_dir / log_name;
   std::error_code ec;
@@ -321,17 +332,6 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
   };
   const int code = run_process(args, work_dir);
   if (code == 0) {
-    if (!ascii_name) {
-      std::filesystem::rename(fetch_path, target, ec);
-      if (ec) {
-        std::filesystem::remove(fetch_path, ec);
-        std::filesystem::remove(log_path, ec);
-        // 与校验失败区分：字节已经完整落到临时名，只是改名这一步失败。
-        if (error) *error = "下载完成但落盘改名失败：" + ec.message();
-        if (error_code) *error_code = "rename_failed";
-        return false;
-      }
-    }
     std::filesystem::remove(log_path, ec);
     return true;
   }
@@ -385,8 +385,7 @@ UpdateDownloadOutcome download_update_package(
     std::filesystem::remove(final_path, ec);
   }
 
-  std::filesystem::path part = final_path;
-  part += ".part";
+  std::filesystem::path part = update_part_path(updates_dir, spec.file_name);
   std::filesystem::remove(part, ec);
 
   std::string fetch_error;
@@ -435,9 +434,7 @@ void cleanup_update_partials(const std::filesystem::path& updates_dir) {
         name.size() >= 5 && name.compare(name.size() - 5, 5, ".part") == 0;
     const bool log = name.size() >= 5 &&
                      name.compare(name.size() - 5, 5, ".log") == 0;
-    // curl 的 ASCII 临时产物（工作目录承载中文路径后才有）。
-    const bool temp = name == ".devcard-download.tmp";
-    if (partial || log || temp) std::filesystem::remove(entry.path(), ec);
+    if (partial || log) std::filesystem::remove(entry.path(), ec);
   }
 }
 

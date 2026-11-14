@@ -27,6 +27,12 @@ bool is_valid_sha256(std::string_view value);
 // 取 basename，非法字符替换为 '_'，去掉结尾的点与空格；空 / "." / ".." 回落 update.bin。
 std::string sanitize_update_file_name(std::string_view raw);
 
+// 下载中的 part 路径：`<updates>/<sanitized>.part`。
+// 服务端轮询进度与下载器落盘必须共用这一处，否则两边各算一次会出现
+// 「curl 写 A、轮询读 B」→ 进度永远 0。文件名恒为 ASCII（sanitize 保证）。
+std::filesystem::path update_part_path(const std::filesystem::path& updates_dir,
+                                       std::string_view file_name);
+
 struct UpdatePackageSpec {
   std::string version;    // 清单里的版本（用于落盘命名与状态展示）
   std::string file_name;  // 资产文件名（来自清单）
@@ -73,8 +79,9 @@ using UpdateFetcher = std::function<bool(const std::string& url,
                                          std::string* error_code)>;
 
 // 生产下载器：系统 curl，固定参数、不经 shell、只允许 https（含重定向）。
-// 命令行里只有 ASCII：工作目录设为 target 的父目录，`-o` 用固定 ASCII 临时名，
-// 下载完在进程内改名成中文文件名（改名失败回 rename_failed，与校验失败区分）。
+// 命令行里只有 ASCII：工作目录设为 target 的父目录，`-o` 只用文件名。
+// 目标文件名必须已 sanitize 成 ASCII：非 ASCII 时直接失败，不退回到固定临时名——
+// 那样 curl 写的路径和被轮询的 part 路径不是同一个，进度会静默停在 0。
 bool curl_fetch(const std::string& url, const std::filesystem::path& target,
                 std::string* error, std::string* error_code);
 
