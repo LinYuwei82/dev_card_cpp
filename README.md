@@ -5,7 +5,7 @@
 > **当前状态（重要）**
 > 仓库里有两条线并行：
 > 1. **旧 Qt 6 / C++17 线（v1.1.3，冻结）**：Windows + macOS（Apple Silicon，最低 macOS 15）。v1.1.3 的 macOS DMG 已挂到 Gitee / GitHub Release；Windows 绿色版 zip 尚未产出（打包脚本已就绪但未在 Windows 实跑），安装版没有 `.iss`。**旧线仍可编译、可发版，不在本轮改动范围内**（`src/`、`dev_card.pro`、`build.bat` 一行不动）。
-> 2. **新架构线（分支 `macmini/new-arch`，C++20 + SQLite + 系统 WebView）**：**当前状态：M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 的 Windows 壳代码已写、未编译**（本机无 Windows）。**M6 的「检查 + 告知」已交付**（含 CSP `connect-src` 根因修复与断言）；自更新已拍板「下载 + 校验 + 替换 + 重启」，**阶段一（下载与校验）未落地、无提交**，阶段二/三未开始，见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
+> 2. **新架构线（分支 `macmini/new-arch`，C++20 + SQLite + 系统 WebView）**：**当前状态：M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 的 Windows 壳代码已写、未编译**（本机无 Windows）。**M6 的「检查 + 告知」已交付**（含 CSP `connect-src` 根因修复与断言）；自更新已拍板「下载 + 校验 + 替换 + 重启」，**阶段一（下载 + SHA256/字节数校验）已交付（`a4cda3a`）**，阶段二/三未开始，见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
 >
 > 新架构开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 > 下文凡标注「目标形态」的内容都是计划；判断旧线现状看 [现状技术方案](docs/现状技术方案.md)。
@@ -145,7 +145,7 @@ ctest --test-dir build-new --output-on-failure
 - **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
 - **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
-- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新已拍板分三阶段，目前**仍不自动下载/替换**。
+- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已交付：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**只下载、不替换**；阶段二/三未开始。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（服务端按 `must_change_password` 判定），自助改密仍验旧密码；密码框支持明文/掩码切换。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」，超出时明确告知会截断。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构壳**代码已写，未编译、未实跑**（§10.9）。
@@ -224,7 +224,7 @@ dev_card_cpp/
 **新架构当前已知边界（照实写）**：
 
 - **M0–M4.2 完成、M5 第一段完成（仅 macOS）、M6 检查 + 告知完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**，旧 Qt 线仍是可用的发版路径。
-- **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段，**阶段一未落地（无提交）**，阶段二/三未开始。无 Authenticode / 公证，信任锚只有「固定 HTTPS 域名 + 清单版本与哈希」，挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
+- **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段，**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已交付（`a4cda3a`）**，阶段二/三未开始。无 Authenticode / 公证，信任锚只有「固定 HTTPS 域名 + 清单版本与哈希」，挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
 - **Windows 侧未真机跑**：Windows 壳（WebView2）**代码已写但从未编译**——本机是 macOS，没有 MSVC，也没有 Windows 机器；编译、CRT、`/utf-8`、generator、中文路径、打印对话框、SmartScreen、WebView2 Runtime、交互回归、导出桥与文件名、System32 保存失败共十一项全部待做，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。打包脚本与 SmartScreen 表现同样还没在 Windows 上执行过。
 - **旧库迁移夹具无设备行**：用于 M3 验收的脱敏旧库样本里没有设备记录，设备行迁移只做了逻辑与单测，未做真实数据抽样比对。
