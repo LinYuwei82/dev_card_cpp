@@ -50,6 +50,7 @@
     add: document.getElementById('add'),
     importBtn: document.getElementById('import-btn'),
     exportBtn: document.getElementById('export-btn'),
+    templateBtn: document.getElementById('template-btn'),
     importFile: document.getElementById('import-file'),
 
     scrim: document.getElementById('scrim'),
@@ -623,6 +624,32 @@
       })
       .then(function () {
         el.exportBtn.disabled = false;
+      });
+  });
+
+  el.templateBtn.addEventListener('click', function () {
+    el.templateBtn.disabled = true;
+    fetch('/api/devices/template')
+      .then(function (response) {
+        if (!response.ok) throw new Error('下载模板失败（' + response.status + '）');
+        return response.blob();
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = '设备导入模板.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        toast('已下载 设备导入模板.xlsx，可直接上传（空模板导入 0 行）');
+      })
+      .catch(function (error) {
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.templateBtn.disabled = false;
       });
   });
 

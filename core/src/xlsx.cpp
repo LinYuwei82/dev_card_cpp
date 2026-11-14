@@ -114,6 +114,22 @@ void add_entry(mz_zip_archive& zip, const char* name, const std::string& body) {
   }
 }
 
+std::string xml_escape(std::string_view in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (char ch : in) {
+    switch (ch) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&apos;"; break;
+      default: out.push_back(ch);
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 Rows read(const std::string& bytes) {
@@ -235,57 +251,81 @@ Rows read(const std::string& bytes) {
 }
 
 std::string write(const Rows& rows) {
+  return write_workbook({Sheet{"设备台账", rows}});
+}
+
+std::string write_workbook(const std::vector<Sheet>& sheets) {
+  if (sheets.empty()) {
+    throw AppError("xlsx_write_failed", "生成 xlsx 失败：至少需要一个工作表");
+  }
+
   const std::string header =
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
 
-  std::string sheet = header +
-      "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-      "<sheetData>";
-  for (std::size_t r = 0; r < rows.size(); ++r) {
-    sheet += "<row r=\"" + std::to_string(r + 1) + "\">";
-    for (std::size_t c = 0; c < rows[r].size(); ++c) {
-      std::string text;
-      for (char ch : rows[r][c]) {
-        switch (ch) {
-          case '&': text += "&amp;"; break;
-          case '<': text += "&lt;"; break;
-          case '>': text += "&gt;"; break;
-          case '"': text += "&quot;"; break;
-          case '\'': text += "&apos;"; break;
-          default: text.push_back(ch);
-        }
-      }
-      sheet += "<c r=\"" + column_name(static_cast<int>(c)) +
-               std::to_string(r + 1) + "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">" +
-               text + "</t></is></c>";
-    }
-    sheet += "</row>";
-  }
-  sheet += "</sheetData></worksheet>";
-
-  const std::string content_types = header +
+  std::string content_types = header +
       "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
       "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
       "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
-      "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
-      "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
-      "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
+      "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>";
+
+  std::string workbook = header +
+      "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+      "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+      "<sheets>";
+
+  std::string workbook_rels = header +
+      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">";
+
+  std::vector<std::string> sheet_files;
+  sheet_files.reserve(sheets.size());
+
+  for (std::size_t i = 0; i < sheets.size(); ++i) {
+    const Sheet& sheet_info = sheets[i];
+    if (sheet_info.name.empty()) {
+      throw AppError("xlsx_write_failed", "生成 xlsx 失败：工作表名称不能为空");
+    }
+    const std::string id = std::to_string(i + 1);
+
+    std::string sheet = header +
+        "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+        "<sheetData>";
+    for (std::size_t r = 0; r < sheet_info.rows.size(); ++r) {
+      sheet += "<row r=\"" + std::to_string(r + 1) + "\">";
+      for (std::size_t c = 0; c < sheet_info.rows[r].size(); ++c) {
+        sheet += "<c r=\"" + column_name(static_cast<int>(c)) +
+                 std::to_string(r + 1) +
+                 "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">" +
+                 xml_escape(sheet_info.rows[r][c]) + "</t></is></c>";
+      }
+      sheet += "</row>";
+    }
+    sheet += "</sheetData></worksheet>";
+    sheet_files.push_back(std::move(sheet));
+
+    content_types += "<Override PartName=\"/xl/worksheets/sheet" + id +
+                     ".xml\" ContentType=\"application/vnd.openxmlformats-"
+                     "officedocument.spreadsheetml.worksheet+xml\"/>";
+    workbook += "<sheet name=\"" + xml_escape(sheet_info.name) + "\" sheetId=\"" +
+                id + "\" r:id=\"rId" + id + "\"/>";
+    workbook_rels += "<Relationship Id=\"rId" + id +
+                     "\" Type=\"http://schemas.openxmlformats.org/officeDocument/"
+                     "2006/relationships/worksheet\" Target=\"worksheets/sheet" +
+                     id + ".xml\"/>";
+  }
+
+  content_types +=
+      "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-"
+      "officedocument.spreadsheetml.styles+xml\"/>"
       "</Types>";
+  workbook += "</sheets></workbook>";
+  workbook_rels += "<Relationship Id=\"rId" + std::to_string(sheets.size() + 1) +
+                   "\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/"
+                   "relationships/styles\" Target=\"styles.xml\"/>"
+                   "</Relationships>";
 
   const std::string rels = header +
       "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
       "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
-      "</Relationships>";
-
-  const std::string workbook = header +
-      "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
-      "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
-      "<sheets><sheet name=\"设备台账\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
-
-  const std::string workbook_rels = header +
-      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-      "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
-      "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
       "</Relationships>";
 
   const std::string styles = header +
@@ -309,7 +349,10 @@ std::string write(const Rows& rows) {
     add_entry(zip, "xl/workbook.xml", workbook);
     add_entry(zip, "xl/_rels/workbook.xml.rels", workbook_rels);
     add_entry(zip, "xl/styles.xml", styles);
-    add_entry(zip, "xl/worksheets/sheet1.xml", sheet);
+    for (std::size_t i = 0; i < sheet_files.size(); ++i) {
+      add_entry(zip, ("xl/worksheets/sheet" + std::to_string(i + 1) + ".xml").c_str(),
+                sheet_files[i]);
+    }
     if (!mz_zip_writer_finalize_heap_archive(&zip, &buf, &size)) {
       throw AppError("xlsx_write_failed", "生成 xlsx 失败：收尾失败");
     }

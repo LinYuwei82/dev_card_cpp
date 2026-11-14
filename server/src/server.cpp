@@ -419,6 +419,44 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                               {"truncated", report.truncated}});
                     });
 
+  // 导入模板：第一个工作表只放表头（与导入校验同一份常量），
+  // 第二个工作表放填写说明与假号码示例，避免模板与校验各写一份。
+  state.server.Get("/api/devices/template",
+                   [](const httplib::Request&, httplib::Response& response) {
+                     xlsx::Sheet data;
+                     data.name = "设备台账";
+                     data.rows.push_back(DeviceService::expected_header());
+
+                     xlsx::Sheet help;
+                     help.name = "填写说明";
+                     help.rows = {
+                         {"列名", "含义与要求"},
+                         {"设备名称", "必填；导入时超过 10 个字符会被截断"},
+                         {"位置", "必填；导入时超过 10 个字符会被截断"},
+                         {"控制范围", "必填；导入时超过 10 个字符会被截断"},
+                         {"维护电话", "必填；仅数字、空格、短横线；导入时超过 11 个字符会被截断"},
+                         {},
+                         {"示例（假号码，请勿直接使用）",
+                          "13800000001（卡片上显示为 138 0000 0001）"},
+                         {},
+                         {"说明",
+                          "第一个工作表只有表头，可直接上传，导入 0 行；四列全空的行会跳过，"
+                          "重复记录照常导入并提示。"},
+                     };
+
+                     response.status = 200;
+                     response.set_header(
+                         "Content-Type",
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+                     response.set_header(
+                         "Content-Disposition",
+                         "attachment; filename=\"devices-template.xlsx\"; "
+                         "filename*=UTF-8''%E8%AE%BE%E5%A4%87%E5%AF%BC%E5%85%A5"
+                         "%E6%A8%A1%E6%9D%BF.xlsx");
+                     response.set_header("Cache-Control", "no-store");
+                     response.body = xlsx::write_workbook({data, help});
+                   });
+
   state.server.Get("/api/devices/export",
                    [&state](const httplib::Request&, httplib::Response& response) {
                      const std::string body =

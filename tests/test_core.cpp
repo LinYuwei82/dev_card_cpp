@@ -502,6 +502,37 @@ int main() {
     std::filesystem::remove_all(dir);
   }
 
+  {
+    // 导入模板：第一个工作表只有表头，且与导入校验共用同一份常量。
+    const std::filesystem::path dir = temp_db().parent_path();
+    const std::filesystem::path file = dir / "devicedb.db";
+    devcard::Db db(file);
+    devcard::migrate(db);
+    devcard::DeviceService service(db);
+
+    devcard::xlsx::Sheet data;
+    data.name = "设备台账";
+    data.rows.push_back(devcard::DeviceService::expected_header());
+    devcard::xlsx::Sheet help;
+    help.name = "填写说明";
+    help.rows = {{"设备名称", "必填"}, {"示例（假号码）", "13800000001"}};
+
+    const std::string bytes = devcard::xlsx::write_workbook({data, help});
+    CHECK(!bytes.empty());
+    const auto rows = devcard::xlsx::read(bytes);
+    CHECK(rows.size() == 1);
+    CHECK(rows[0] == devcard::DeviceService::expected_header());
+
+    // 模板原样上传 = 0 行导入，不会带入假数据。
+    const devcard::ImportReport report = service.import_rows(rows);
+    CHECK(report.imported == 0);
+    CHECK(report.skipped_empty == 0);
+    CHECK(report.duplicates == 0);
+    CHECK(service.export_rows().size() == 1);  // 只剩表头
+
+    std::filesystem::remove_all(dir);
+  }
+
   std::filesystem::remove_all(file.parent_path());
   if (failures) {
     std::cerr << failures << " 项失败\n";
