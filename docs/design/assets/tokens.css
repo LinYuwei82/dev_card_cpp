@@ -1,0 +1,99 @@
+/* ============================================================
+   DevCard 设计令牌（唯一来源）
+   改这里即可全站生效；样张与后续 web/ 生产代码共用同一套变量。
+   配色：青墨主色 + 暖纸中性色 + 少量铜色点缀（D10 已定）
+   ============================================================ */
+:root {
+  /* 品牌 · 青墨 */
+  --brand-900: #082F34;
+  --brand-800: #0B3A40;
+  --brand-700: #0E4B52;
+  --brand-600: #12646B;   /* 主行动色 */
+  --brand-500: #1A7F86;
+  --brand-100: #D6E9E7;
+  --brand-50:  #EDF5F3;
+
+  /* 点缀 · 铜 */
+  --accent-600: #A9622F;
+  --accent-500: #C07A45;
+  --accent-100: #F5E6DA;
+
+  /* 状态 */
+  --danger-600: #B3261E;
+  --danger-50:  #FBEAE8;
+  --success-600: #2E6B4F;
+  --success-50:  #E9F3EE;
+  --warning-600: #A9622F;
+  --warning-50:  #FBF0E6;
+
+  /* 中性 · 暖纸 */
+  --bg:        #F5F3EE;
+  --surface:   #FFFFFF;
+  --surface-2: #FAF9F5;
+  --surface-3: #F0EDE6;
+  --text:      #1B2426;
+  --text-2:    #5C696B;
+  --text-3:    #8B9698;
+  --border:      #E4DFD5;
+  --border-strong: #CFC8BB;
+
+  /* 圆角 */
+  --r-lg: 14px;
+  --r-md: 10px;
+  --r-sm: 6px;
+  --r-pill: 999px;
+
+  /* 间距（4 的倍数） */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* 字号 */
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-20: 20px;
+  --fs-26: 26px;
+
+  /* 阴影 */
+  --shadow-1: 0 1px 2px rgba(20, 35, 35, .05);
+  --shadow-2: 0 2px 6px rgba(20, 35, 35, .06), 0 16px 40px rgba(20, 35, 35, .08);
+
+  /* 字体：开源字体优先，系统字体兜底（D12） */
+  --font: "Source Han Sans SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont,
+          "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-num: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* 布局 */
+  --sidebar-w: 232px;
+  --topbar-h: 64px;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg:        #0F1516;
+  --surface:   #161E20;
+  --surface-2: #1B2426;
+  --surface-3: #222D2F;
+  --text:      #E6EDEC;
+  --text-2:    #A3B0B0;
+  --text-3:    #7C8989;
+  --border:      #2A3638;
+  --border-strong: #3A4749;
+  --brand-600: #2A949B;
+  --brand-500: #37A6AC;
+  --brand-100: #173B3E;
+  --brand-50:  #122B2D;
+  --accent-100: #3A2A1D;
+  --danger-50:  #3A1E1C;
+  --success-50: #16302A;
+  --warning-50: #33261A;
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, .35), 0 16px 40px rgba(0, 0, 0, .45);
+  color-scheme: dark;
+}
