@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #ifndef DEVCARD_CMAKE_COMMAND
 #define DEVCARD_CMAKE_COMMAND "cmake"
 #endif
@@ -51,14 +55,81 @@ std::string script_path() {
                                                     : DEVCARD_EMBED_SCRIPT;
 }
 
-// 跑命令并连 stderr 一起收回来；返回退出码。
-int run(const std::string& command, std::string* output) {
-  std::string full = command + " 2>&1";
+// 起一个外部进程并连 stderr 一起收回来；返回退出码。
+// 两条路径共用同一份「参数数组」，只有最后的落地方式不同：
+//   Windows 走 CreateProcessW，不经过 cmd.exe —— 整行以引号开头时 cmd 会按另一套规则剥引号，
+//   把命令行拆坏（实测报 The filename, directory name, or volume label syntax is incorrect.，
+//   而且 cmake 一次都没跑起来，看上去却像「用例全红」）。
+//   POSIX 走 popen，参数逐个加单引号，不依赖字符串拼接的正确性。
+std::string quote_arg(const std::string& arg) {
 #ifdef _WIN32
-  FILE* pipe = _popen(full.c_str(), "r");
+  return "\"" + arg + "\"";
 #else
-  FILE* pipe = popen(full.c_str(), "r");
+  std::string quoted = "'";
+  for (char c : arg) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  return quoted + "'";
 #endif
+}
+
+int run_process(const std::vector<std::string>& args, std::string* output) {
+#ifdef _WIN32
+  const fs::path log = fs::temp_directory_path() /
+                       ("devcard-spawn-" + std::to_string(std::rand()) + ".log");
+  SECURITY_ATTRIBUTES inherit = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+  HANDLE sink = CreateFileW(log.wstring().c_str(), GENERIC_WRITE,
+                            FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (sink == INVALID_HANDLE_VALUE) {
+    return -1;
+  }
+  std::wstring command;
+  for (const auto& arg : args) {
+    if (!command.empty()) {
+      command += L' ';
+    }
+    const std::string quoted = quote_arg(arg);
+    command.append(quoted.begin(), quoted.end());
+  }
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdOutput = sink;
+  startup.hStdError = sink;
+  PROCESS_INFORMATION process{};
+  const BOOL started =
+      CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+                     CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+  int code = -1;
+  if (started) {
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    code = static_cast<int>(exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  }
+  CloseHandle(sink);
+  if (output != nullptr) {
+    *output = read_bytes(log);
+  }
+  fs::remove(log);
+  return code;
+#else
+  std::string command;
+  for (const auto& arg : args) {
+    if (!command.empty()) {
+      command += ' ';
+    }
+    command += quote_arg(arg);
+  }
+  command += " 2>&1";
+  FILE* pipe = popen(command.c_str(), "r");
   if (pipe == nullptr) {
     return -1;
   }
@@ -68,9 +139,6 @@ int run(const std::string& command, std::string* output) {
       *output += buffer;
     }
   }
-#ifdef _WIN32
-  return _pclose(pipe);
-#else
   const int status = pclose(pipe);
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
@@ -167,14 +235,11 @@ Literal parse_array(const std::string& generated, const std::string& name) {
   return result;
 }
 
-std::string quote_path(const fs::path& path) {
-  return "\"" + path.string() + "\"";
-}
-
 struct RunResult {
   int code = -1;
   std::string output;
   Literal index;
+  std::size_t artifact_bytes = 0;  // 生成的 .cpp 大小；>0 才说明外部进程真的跑过
 };
 
 // 造一个输入目录并跑生成器。other_files 用来补齐生成器要求的另外三个文件。
@@ -191,12 +256,20 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
   const fs::path output = root / "out.cpp";
 
-  std::string command = quote_path(fs::path(DEVCARD_CMAKE_COMMAND)) + " -DINPUT_DIR=" +
-                        quote_path(input) + " -DOUTPUT=" + quote_path(output) +
-                        " -P " + quote_path(fs::path(script_path()));
-  result.code = run(command, &result.output);
+  const std::vector<std::string> args = {
+      DEVCARD_CMAKE_COMMAND,
+      "-DINPUT_DIR=" + input.string(),
+      "-DOUTPUT=" + output.string(),
+      "-P",
+      script_path(),
+  };
+  result.code = run_process(args, &result.output);
   if (result.code == 0) {
-    result.index = parse_array(read_bytes(output), "kIndexHtml");
+    const std::string generated = read_bytes(output);
+    result.artifact_bytes = generated.size();
+    if (!generated.empty()) {
+      result.index = parse_array(generated, "kIndexHtml");
+    }
   }
   fs::remove_all(root);
   return result;
@@ -211,6 +284,8 @@ void check_case(const std::string& name, const std::string& payload,
     ++failures;
     return;
   }
+  // 先证明外部进程真的运行过：产物存在且非空。
+  CHECK(got.artifact_bytes > 0);
   CHECK(got.index.utf8);
   CHECK(got.index.content == payload);
   CHECK(got.index.bytes == payload.size());
