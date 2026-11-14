@@ -106,7 +106,11 @@ function(emit_text_literal out_var path)
       set(max_chunk ${take})
     endif()
     string(SUBSTRING "${content}" ${offset} ${take} chunk)
-    string(APPEND parts "R\"DEVCARD(${chunk})DEVCARD\"\n")
+    # 换行不能以字面 LF 写进生成文件：Windows 上 CMake 以文本模式写文件，正文里的 LF
+    # 会变成 CRLF，嵌入字节与源文件就不一致（运行期 SHA256 自检会失败，编译期看不出来）。
+    # 切成相邻字面量：R"DEVCARD(段)DEVCARD" "\n" R"DEVCARD(段)DEVCARD"，编译期拼回原字节。
+    string(REPLACE "\n" ")DEVCARD\" \"\\n\" R\"DEVCARD(" chunk_parts "${chunk}")
+    string(APPEND parts "R\"DEVCARD(${chunk_parts})DEVCARD\"\n")
     string(APPEND joined "${chunk}")
     math(EXPR offset "${offset} + ${take}")
     math(EXPR blocks "${blocks} + 1")

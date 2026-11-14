@@ -55,6 +55,13 @@ std::string script_path() {
                                                     : DEVCARD_EMBED_SCRIPT;
 }
 
+// 定义在后面，但 _WIN32 分支要先用；不声明的话 MSVC 报 C3861（POSIX 侧靠隐式声明侥幸过了）。
+std::string read_bytes(const fs::path& path);
+
+// 生成器把正文换行写成相邻字面量 `" "\n" "`（见 embed_web.cmake）：
+// Windows 上 CMake 以文本模式写文件，正文字面 LF 会变成 CRLF，只有这种写法能保住原始字节。
+const std::string kNewlineToken = " \"\\n\" ";
+
 // 起一个外部进程并连 stderr 一起收回来；返回退出码。
 // 两条路径共用同一份「参数数组」，只有最后的落地方式不同：
 //   Windows 走 CreateProcessW，不经过 cmd.exe —— 整行以引号开头时 cmd 会按另一套规则剥引号，
@@ -231,6 +238,13 @@ Literal parse_array(const std::string& generated, const std::string& name) {
     }
     result.content += block;
     cursor = end + close.size();
+    // 生成器把正文换行写成了相邻字面量 `"\n"`（见 embed_web.cmake）：
+    // Windows 上文本模式写文件会把 LF 变成 CRLF，只有这种写法能保住原始字节。
+    while (generated.compare(cursor, kNewlineToken.size(), kNewlineToken) == 0) {
+      result.content += '\n';
+      result.bytes += 1;
+      cursor += kNewlineToken.size();
+    }
   }
   return result;
 }
