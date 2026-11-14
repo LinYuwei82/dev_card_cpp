@@ -31,6 +31,7 @@ add_custom_command(
 
 add_library(devcard_server STATIC
     src/server.cpp
+    src/apply_update.cpp
     src/platform_paths.cpp
     src/config.cpp
     src/instance_lock.cpp
@@ -51,8 +52,9 @@ target_compile_definitions(devcard_server PRIVATE
 )
 target_link_libraries(devcard_server PUBLIC devcard_core)
 if(WIN32)
-    # ws2_32: sockets（httplib / inet_ntop）；iphlpapi: 枚举本机私有 IPv4。
-    target_link_libraries(devcard_server PUBLIC ws2_32 iphlpapi)
+    # ws2_32: sockets（httplib / inet_ntop）；iphlpapi: 枚举本机私有 IPv4；
+    # version: 读 PE 版本资源；shell32: CommandLineToArgvW（重启时沿用原参数）。
+    target_link_libraries(devcard_server PUBLIC ws2_32 iphlpapi version shell32)
 endif()
 
 add_executable(devcard-server src/main.cpp)

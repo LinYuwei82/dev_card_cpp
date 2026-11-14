@@ -52,6 +52,8 @@
     updateDownload: document.getElementById('update-download'),
     updateDownloadPackage: document.getElementById('update-download-package'),
     updateProgress: document.getElementById('update-progress'),
+    updateInstall: document.getElementById('update-install'),
+    updateInstallResult: document.getElementById('update-install-result'),
     updateLater: document.getElementById('update-later'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
@@ -604,6 +606,13 @@
     } else {
       setUpdateProgress('');
     }
+    // 阶段二：只有 Windows 安装版的管理员能看到「安装并重启」。
+    // 按钮先禁用，下载并通过校验后才放开。
+    var isWindows = /Windows/i.test(navigator.userAgent || '');
+    el.updateInstall.hidden = !(isWindows && isAdmin);
+    el.updateInstall.disabled = true;
+    state.updateInstalling = false;
+    loadInstallResult();
     el.updateModal.hidden = false;
   }
 
@@ -612,6 +621,45 @@
     el.updateProgress.textContent = text || '';
     el.updateProgress.classList.toggle('is-error', !!isError);
   }
+
+  // 安装结果由新进程读回。只有「退出码为 0 且版本确实变了」才算成功：
+  // 静默失败（安装器非 0、版本没换）一律按失败显示，不给「升级成功」四个字。
+  function loadInstallResult() {
+    el.updateInstallResult.hidden = true;
+    el.updateInstallResult.textContent = '';
+    el.updateInstallResult.classList.remove('is-error');
+    if (!state.user || state.user.role !== 'admin') return;
+    api('GET', '/api/update/install-result').then(function (data) {
+      if (!data || data.state !== 'done') return;
+      var code = Number(data.exit_code);
+      var before = data.version_before || '?';
+      var after = data.version_after || '?';
+      var ok = code === 0 && !!data.version_after &&
+        data.version_after !== data.version_before;
+      var text = (ok ? '上次安装成功：' : '上次安装未成功：') +
+        '安装器退出码 ' + code + '｜版本 ' + before + ' → ' + after;
+      if (data.error) text += '（' + data.error + '）';
+      el.updateInstallResult.hidden = false;
+      el.updateInstallResult.textContent = text;
+      el.updateInstallResult.classList.toggle('is-error', !ok);
+    }).catch(function () {
+      // 读不到结果不影响手动升级，也不弹错误。
+    });
+  }
+
+  el.updateInstall.addEventListener('click', function () {
+    if (state.updateInstalling) return;
+    state.updateInstalling = true;
+    el.updateInstall.disabled = true;
+    setUpdateProgress('正在启动安装程序，服务即将停止…');
+    api('POST', '/api/update/install', {}).then(function () {
+      setUpdateProgress('安装程序已启动：服务正在停止，装完会自动打开新版本。');
+    }).catch(function (error) {
+      state.updateInstalling = false;
+      el.updateInstall.disabled = false;
+      setUpdateProgress('安装未启动：' + error.message, true);
+    });
+  });
 
   function closeUpdateModal() {
     el.updateModal.hidden = true;
@@ -669,8 +717,9 @@
           state.updateDownloading = false;
           state.updateTimer = null;
           el.updateDownloadPackage.disabled = true;
+          if (!el.updateInstall.hidden) el.updateInstall.disabled = false;
           setUpdateProgress('已下载并通过 SHA256 + 字节数校验：' + data.path);
-          toast('更新包已下载并通过校验（未安装）');
+          toast('更新包已下载并通过校验');
           return;
         }
         if (data.state === 'failed') {

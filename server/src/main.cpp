@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifndef _WIN32
 #include <termios.h>
@@ -13,6 +14,7 @@
 #endif
 
 #include "config.h"
+#include "apply_update.h"
 #include "devcard/backup.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
@@ -188,6 +190,7 @@ void print_usage() {
       << "  --set-password USER    重置本机账号密码后退出（密码从标准输入读取）\n"
       << "  --backup               立即备份后退出\n"
       << "  --restore NAME         从 backups/ 下的备份恢复后退出\n"
+      << "  --apply-update PATH    内部：以更新协助进程运行（配合 --wait-pid/--result/--relaunch）\n"
       << "  --version              输出版本\n"
       << "  --help                 显示本帮助\n";
 }
@@ -215,6 +218,12 @@ int main(int argc, char** argv) {
   bool backup_only = false;
   bool show_version = false;
   bool server_mode = false;
+  // 自更新阶段二：协助器模式（由 --apply-update 进入），不解析运行配置。
+  std::string apply_update_path;
+  unsigned long apply_wait_pid = 0;
+  std::string apply_result;
+  std::string apply_relaunch;
+  std::vector<std::string> apply_relaunch_args;
 
   try {
     for (int i = 1; i < argc; ++i) {
@@ -246,6 +255,22 @@ int main(int argc, char** argv) {
         restore_name = next("--restore");
       } else if (arg == "--backup") {
         backup_only = true;
+      } else if (arg == "--apply-update") {
+        apply_update_path = next("--apply-update");
+      } else if (arg == "--wait-pid") {
+        const std::string text = next("--wait-pid");
+        char* end = nullptr;
+        apply_wait_pid = std::strtoul(text.c_str(), &end, 10);
+        if (!end || *end != '\0') {
+          throw devcard::AppError("bad_config",
+                                  "--wait-pid 必须是整数，收到: " + text);
+        }
+      } else if (arg == "--result") {
+        apply_result = next("--result");
+      } else if (arg == "--relaunch") {
+        apply_relaunch = next("--relaunch");
+      } else if (arg == "--relaunch-arg") {
+        apply_relaunch_args.push_back(next("--relaunch-arg"));
       } else if (arg == "--version") {
         show_version = true;
       } else if (arg == "--help" || arg == "-h") {
@@ -260,6 +285,17 @@ int main(int argc, char** argv) {
     if (show_version) {
       std::cout << DEVCARD_VERSION << std::endl;
       return 0;
+    }
+
+    // 协助器模式：本进程不起服务，只等旧进程退出、跑安装器、写结果、拉起新版本。
+    if (!apply_update_path.empty()) {
+      devcard::ApplyUpdateOptions options;
+      options.setup = devcard::path_from_utf8(apply_update_path);
+      options.wait_pid = apply_wait_pid;
+      options.result = devcard::path_from_utf8(apply_result);
+      options.relaunch = devcard::path_from_utf8(apply_relaunch);
+      options.relaunch_args = apply_relaunch_args;
+      return devcard::run_apply_update(options);
     }
 
     const devcard::ServerConfig config = devcard::resolve_config(cli);
@@ -382,7 +418,11 @@ int main(int argc, char** argv) {
     }
     std::cout.flush();
 
-    while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
+    while (!server->stop_requested()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    // 安装接口已回 202：这里只负责把服务停干净，让协助进程接过程序目录。
+    std::cout << "服务已停止，交由安装程序重启" << std::endl;
   } catch (const devcard::AppError& error) {
     // 机器码要单独打出来：判据靠它认「哪一类启动失败」，只有人读的说明没法断言。
     std::cerr << "启动失败[" << error.code() << "]: " << error.what()

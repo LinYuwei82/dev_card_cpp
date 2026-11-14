@@ -351,11 +351,13 @@
     <p class="hint" id="update-notes" hidden></p>
     <ol class="update-steps" id="update-steps"></ol>
     <p class="hint" id="update-progress" hidden></p>
-    <p class="hint">本程序只下载并校验更新包（SHA256 + 字节数），不会自动替换或安装；升级仍按上面的步骤手动完成。</p>
+    <p class="hint" id="update-install-result" hidden></p>
+    <p class="hint">本程序只下载并校验更新包（SHA256 + 字节数）；Windows 安装版可点「安装并重启」交给安装器完成替换，绿色版与 macOS 仍按上面的步骤手动完成。</p>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="update-later" type="button">稍后</button>
       <button class="btn btn-ghost" id="update-download" type="button">打开下载页</button>
       <button class="btn btn-primary" id="update-download-package" type="button">下载更新包</button>
+      <button class="btn btn-primary" id="update-install" type="button" hidden>安装并重启</button>
     </div>
   </div>
 </div>

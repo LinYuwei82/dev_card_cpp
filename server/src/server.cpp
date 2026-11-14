@@ -39,6 +39,7 @@
 #include "devcard/settings.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
+#include "apply_update.h"
 #include "config.h"
 #include "heartbeat.h"
 #include "instance_lock.h"
@@ -95,6 +96,7 @@ struct ServerState {
   struct UpdateDownload {
     std::mutex mutex;
     std::string state = "idle";  // idle / running / done / failed
+    bool installing = false;
     std::uint64_t total = 0;
     std::uint64_t received = 0;
     std::filesystem::path part_path;
@@ -104,6 +106,11 @@ struct ServerState {
     std::string error;
   };
   std::shared_ptr<UpdateDownload> update = std::make_shared<UpdateDownload>();
+
+  // 自更新阶段二：安装接口回完 202 后置位，main 轮询到就退出，交由安装器接管。
+  // 用 shared_ptr 是因为置位发生在 detached 线程里，不能碰已析构的 ServerState。
+  std::shared_ptr<std::atomic<bool>> stop_requested =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 std::string json_body(const json& value) { return value.dump(); }
@@ -405,6 +412,12 @@ const StatusTable& error_status_table() {
       {"manifest_invalid", 502},
       {"download_failed", 502},
       {"checksum_mismatch", 502},
+      // 自更新阶段二（仅 Windows 安装版）
+      {"update_package_missing", 400},
+      {"install_package_invalid", 400},
+      {"install_busy", 409},
+      {"install_failed", 500},
+      {"install_unsupported", 501},
       // 路由可达，但属于服务端 / 磁盘故障：显式写出来，别靠「没登记就 500」兜着。
       {"backup_failed", 500},
       {"io_error", 500},
@@ -598,6 +611,8 @@ const std::vector<std::string>& route_error_codes() {
       "logo_write",       "endpoint_not_allowed",
       "no_update",        "update_disabled",  "update_busy",
       "manifest_invalid", "download_failed",  "checksum_mismatch",
+      "update_package_missing", "install_package_invalid",
+      "install_busy",     "install_failed",   "install_unsupported",
       "backup_failed",    "io_error",         "db_error",
       "xlsx_write_failed", "legacy_read",
       "bad_version",      "bad_request",
@@ -636,6 +651,10 @@ ServerHandle::~ServerHandle() {
 }
 
 const std::string& ServerHandle::local_token() const { return impl_->local_token; }
+
+bool ServerHandle::stop_requested() const {
+  return impl_ && impl_->stop_requested->load();
+}
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
@@ -946,6 +965,162 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                    {"sha256", download->sha256},
                                    {"code", download->code},
                                    {"error", download->error}});
+                   });
+
+  // 自更新阶段二（仅 Windows 安装版）：把已下载并校验过的 Inno 安装包交给
+  // 独立的协助进程去装。本进程先回 202，约 300ms 后停服退出；安装器负责
+  // 关掉还占着程序文件的实例。退出码与版本变化由新进程从 install-result.json 回读。
+  state.server.Post("/api/update/install",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+#ifndef _WIN32
+                      // mac 侧只有下载（阶段一），替换与重启未实现。
+                      throw AppError("install_unsupported",
+                                     "自动安装目前只有 Windows 安装版支持");
+#else
+                      if (!is_installed_layout()) {
+                        throw AppError(
+                            "install_unsupported",
+                            "绿色版不提供自动安装：请退出后手动替换程序目录。");
+                      }
+                      const json body = parse_body(request.body);
+                      const std::filesystem::path updates_dir =
+                          state.data_dir / "updates";
+                      std::filesystem::path package;
+                      std::string expected_sha;
+                      std::uint64_t expected_size = 0;
+                      const std::string requested =
+                          body.value("path", std::string{});
+                      if (!requested.empty()) {
+                        // 显式指定：仅用于重试已落盘的包；仍要自带 SHA256 与字节数复核。
+                        package = path_from_utf8(requested);
+                        expected_sha = body.value("sha256", std::string{});
+                        expected_size =
+                            body.value("size", static_cast<std::uint64_t>(0));
+                        if (!is_valid_sha256(expected_sha) ||
+                            expected_size == 0) {
+                          throw AppError("manifest_invalid",
+                                         "指定安装包时必须同时给出 sha256 与字节数");
+                        }
+                      } else {
+                        std::lock_guard<std::mutex> lock(state.update->mutex);
+                        if (state.update->state != "done") {
+                          throw AppError("update_package_missing",
+                                         "还没有已下载并校验的更新包");
+                        }
+                        package = path_from_utf8(state.update->path);
+                        expected_sha = state.update->sha256;
+                        expected_size = state.update->total;
+                      }
+
+                      std::error_code ec;
+                      const std::filesystem::path base =
+                          std::filesystem::weakly_canonical(updates_dir, ec);
+                      if (ec || base.empty()) {
+                        throw AppError("install_failed",
+                                       "数据目录 updates/ 路径不可用");
+                      }
+                      const std::filesystem::path full =
+                          std::filesystem::weakly_canonical(package, ec);
+                      if (ec || full.empty()) {
+                        throw AppError("update_package_missing",
+                                       "安装包路径不可用：" +
+                                           path_to_utf8(package));
+                      }
+                      // 只认 updates/ 下的 .exe：这个接口不能变成「跑任意程序」。
+                      const std::filesystem::path relative =
+                          full.lexically_relative(base);
+                      if (relative.empty() ||
+                          path_to_utf8(relative).rfind("..", 0) == 0) {
+                        throw AppError("install_package_invalid",
+                                       "安装包必须位于数据目录 updates/ 下");
+                      }
+                      if (full.extension() != L".exe") {
+                        throw AppError("install_package_invalid",
+                                       "只接受 .exe 安装包");
+                      }
+                      if (!std::filesystem::is_regular_file(full, ec)) {
+                        throw AppError("update_package_missing",
+                                       "安装包不存在：" + path_to_utf8(full));
+                      }
+                      // 触发时再校验一次：下载完成到点安装之间文件可能已被换掉。
+                      const UpdateVerification checked =
+                          verify_update_file(full, expected_size, expected_sha);
+                      if (!checked.ok) {
+                        throw AppError(checked.code, checked.error);
+                      }
+
+                      {
+                        std::lock_guard<std::mutex> lock(state.update->mutex);
+                        if (state.update->installing) {
+                          throw AppError("install_busy", "已在安装中，请稍候");
+                        }
+                        state.update->installing = true;
+                      }
+
+                      const std::filesystem::path helper =
+                          updates_dir / "devcard-updater.exe";
+                      std::filesystem::copy_file(
+                          current_executable(), helper,
+                          std::filesystem::copy_options::overwrite_existing, ec);
+                      if (ec) {
+                        throw AppError("install_failed",
+                                       "无法准备更新协助程序：" + ec.message());
+                      }
+                      // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
+                      std::filesystem::remove(updates_dir / "install-result.json",
+                                              ec);
+                      ApplyUpdateOptions options;
+                      options.setup = full;
+                      options.wait_pid = current_process_id();
+                      options.result = updates_dir / "install-result.json";
+                      options.relaunch = current_executable();
+                      options.relaunch_args = current_arguments();
+                      spawn_apply_update(helper, options);
+
+                      set_json(response,
+                               json{{"state", "installing"},
+                                    {"setup", path_to_utf8(full)}},
+                               202);
+                      // 先让 202 的响应写回浏览器，再让 main 退出；
+                      // 用 shared_ptr 捕获，避免 detached 线程碰到已析构的状态。
+                      const std::shared_ptr<std::atomic<bool>> stop =
+                          state.stop_requested;
+                      std::thread([stop]() {
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(300));
+                        stop->store(true);
+                      }).detach();
+#endif
+                    });
+
+  // 安装结果：新进程启动后由界面读回，显示「安装器退出码 X｜版本 A → B」。
+  state.server.Get("/api/update/install-result",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     require_admin(state, request);
+                     const std::filesystem::path file =
+                         state.data_dir / "updates" / "install-result.json";
+                     std::error_code ec;
+                     if (!std::filesystem::is_regular_file(file, ec)) {
+                       set_json(response, json{{"state", "none"}});
+                       return;
+                     }
+                     std::ifstream in(file, std::ios::binary);
+                     if (!in) {
+                       throw AppError("io_error", "无法读取安装结果文件");
+                     }
+                     const std::string text(
+                         (std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+                     const json doc = json::parse(text, nullptr, false);
+                     if (doc.is_discarded() || !doc.is_object()) {
+                       throw AppError("io_error", "安装结果文件不是合法 JSON");
+                     }
+                     json out = doc;
+                     out["state"] = "done";
+                     set_json(response, out);
                    });
 
   state.server.Post("/api/session/logout",
