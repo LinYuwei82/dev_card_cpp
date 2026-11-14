@@ -333,6 +333,26 @@ std::vector<unsigned char> parse_hex_array(const std::string& generated,
   return bytes;
 }
 
+// cmake 的 message() 会按控制台宽度折行，路径一长就把「含 CR」拆成「含\n  CR」。
+// 断言前先把换行折成单空格，否则判定结果取决于路径长度而不是内容。
+std::string compact(const std::string& text) {
+  std::string joined;
+  bool space = false;
+  for (char c : text) {
+    if (c == '\n' || c == '\r') {
+      c = ' ';
+    }
+    if (c == ' ') {
+      if (!space) joined += c;
+      space = true;
+    } else {
+      joined += c;
+      space = false;
+    }
+  }
+  return joined;
+}
+
 struct RunResult {
   int code = -1;
   std::string output;
@@ -454,7 +474,8 @@ int main() {
     const std::string crlf = "line1\r\nline2\r\nline3\r\n";
     const RunResult got = generate("newline-crlf", crlf);
     CHECK(got.code != 0);
-    CHECK(got.output.find("含 CR") != std::string::npos);
+    CHECK(!got.output.empty());  // 先保证读到过输出，否则下一条会静默通过
+    CHECK(compact(got.output).find("含 CR") != std::string::npos);
   }
 
   // 4) CR 检测（负向）：.gitattributes 锁了 LF 之后正常检出走不到这条路径，
@@ -462,7 +483,16 @@ int main() {
   {
     const RunResult bad = generate("reject-cr", "a\r\nb\n");
     CHECK(bad.code != 0);
-    CHECK(bad.output.find("含 CR") != std::string::npos);
+    CHECK(!bad.output.empty());
+    if (bad.output.find("含 CR") == std::string::npos) {
+      std::cerr << "  reject-cr: code=" << bad.code << " 输出=" << bad.output
+                << "\n";
+    }
+    if (bad.output.find("CR") == std::string::npos) {
+      std::cerr << "  reject-cr: code=" << bad.code << " 输出=" << bad.output
+                << "\n";
+    }
+    CHECK(compact(bad.output).find("含 CR") != std::string::npos);
     if (bad.code == 0) {
       std::cerr << "  期望失败，实际成功\n";
     }
@@ -490,8 +520,9 @@ int main() {
     // CR 必须报出字节偏移，而不是只说「有 CR」。
     const RunResult cr = generate("big-crlf", big + "\r\n");
     CHECK(cr.code != 0);
-    CHECK(cr.output.find("含 CR") != std::string::npos);
-    CHECK(cr.output.find("第 " + std::to_string(big.size()) + " 字节") !=
+    CHECK(!cr.output.empty());
+    CHECK(compact(cr.output).find("含 CR") != std::string::npos);
+    CHECK(compact(cr.output).find("第 " + std::to_string(big.size()) + " 字节") !=
           std::string::npos);
 
     // 对抗输入：反复 20 d1 的 hex 是 20d120d1…，"0d" 每次都在奇数位。
