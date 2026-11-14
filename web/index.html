@@ -116,6 +116,32 @@
 
       <div class="section-head">
         <div>
+          <h2>打印设置</h2>
+          <p>卡片头部的公司名与图标；只影响之后打印或导出的卡片。公司名留空保存即恢复默认。</p>
+        </div>
+        <button class="btn btn-primary" id="save-company" type="button">保存公司名</button>
+      </div>
+      <div class="settings-box">
+        <label>公司名称
+          <input id="company-name" type="text" autocomplete="off" maxlength="60"
+                 placeholder="深圳市安业物业管理有限公司">
+        </label>
+        <p class="hint" id="company-hint">已用 0 / 13（汉字算 1，字母数字算 0.5）</p>
+        <p class="hint is-over" id="company-over" hidden>最多 13 个汉字，超出部分不会印出</p>
+        <div class="logo-row">
+          <img id="company-logo-preview" src="/company-logo" alt="当前图标">
+          <div class="logo-actions">
+            <button class="btn btn-ghost" id="pick-logo" type="button">更换图标</button>
+            <button class="btn btn-ghost" id="reset-logo" type="button">恢复默认图标</button>
+            <span class="hint" id="logo-hint">PNG / JPEG，≤ 2 MB，接近方形；建议 ≥ 104×104 像素（8.8mm @ 300dpi）</span>
+            <span class="hint" id="logo-time"></span>
+          </div>
+        </div>
+        <input id="logo-file" type="file" accept="image/png,image/jpeg" hidden>
+      </div>
+
+      <div class="section-head">
+        <div>
           <h2>数据维护</h2>
           <p>备份使用 SQLite 一致性快照；恢复前会自动再备份一次当前库。</p>
         </div>
@@ -152,8 +178,7 @@
             </select>
           </label>
           <button class="btn btn-ghost" id="print-back" type="button">返回台账</button>
-          <button class="btn btn-ghost" id="print-export" type="button" disabled>导出 PDF</button>
-          <button class="btn btn-primary" id="print-print" type="button" disabled>直接打印</button>
+          <button class="btn btn-ghost" id="print-export" type="button" disabled>导出 PDF</button>          <button class="btn btn-primary" id="print-print" type="button" disabled>直接打印</button>
         </div>
       </div>
       <p class="print-hint" id="print-hint"></p>

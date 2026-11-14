@@ -19,7 +19,10 @@
     forcedPassword: false,
     printItems: [],
     printTruncated: false,
-    printBusy: false
+    printBusy: false,
+    companyName: '',
+    companyNamePrint: '',
+    companyNameMaxWidth: 13
   };
 
   var el = {
@@ -113,6 +116,15 @@
     backupNow: document.getElementById('backup-now'),
 
     gotoPrint: document.getElementById('goto-print'),
+    saveCompany: document.getElementById('save-company'),
+    companyName: document.getElementById('company-name'),
+    companyHint: document.getElementById('company-hint'),
+    companyOver: document.getElementById('company-over'),
+    companyLogoPreview: document.getElementById('company-logo-preview'),
+    pickLogo: document.getElementById('pick-logo'),
+    resetLogo: document.getElementById('reset-logo'),
+    logoFile: document.getElementById('logo-file'),
+    logoTime: document.getElementById('logo-time'),
     viewPrint: document.getElementById('view-print'),
     printScope: document.getElementById('print-scope'),
     printHint: document.getElementById('print-hint'),
@@ -216,6 +228,13 @@
     el.navUsers.hidden = data.user.role !== 'admin';
     el.version.textContent = 'v' + data.version;
     el.health.textContent = '服务正常 · schema ' + data.schema_version;
+    state.companyName = data.company_name || '';
+    state.companyNamePrint = data.company_name_print || state.companyName;
+    state.companyNameMaxWidth = data.company_name_max_width || 13;
+    el.companyName.value = state.companyName;
+    el.companyLogoPreview.src = data.company_logo_url || '/company-logo';
+    updateCompanyHint();
+    updateLogoTime(data.company_logo_updated_at);
     renderLegacyNotice(data.legacy);
     if (data.user.must_change_password) {
       openPasswordModal(true);
@@ -598,6 +617,123 @@
       })
       .then(function () {
         el.importBtn.disabled = false;
+      });
+  });
+
+  // ---------- 打印设置：公司名与图标 ----------
+
+  // 显示宽度：汉字算 1，ASCII 字母/数字/符号算 0.5。
+  function companyNameWidth(value) {
+    var width = 0;
+    Array.from(value).forEach(function (ch) {
+      width += ch.codePointAt(0) < 0x80 ? 0.5 : 1;
+    });
+    return width;
+  }
+
+  function truncateCompanyName(value) {
+    var width = 0;
+    var out = '';
+    Array.from(value).forEach(function (ch) {
+      var w = ch.codePointAt(0) < 0x80 ? 0.5 : 1;
+      if (width + w > state.companyNameMaxWidth + 1e-9) return;
+      width += w;
+      out += ch;
+    });
+    return out;
+  }
+
+  function updateCompanyHint() {
+    var value = el.companyName.value;
+    var width = companyNameWidth(value);
+    var over = width > state.companyNameMaxWidth + 1e-9;
+    el.companyHint.textContent = '已用 ' + width + ' / ' + state.companyNameMaxWidth +
+      '（汉字算 1，字母数字算 0.5）';
+    el.companyHint.classList.toggle('is-over', over);
+    el.companyOver.hidden = !over;
+    if (over) {
+      el.companyOver.textContent = '最多 ' + state.companyNameMaxWidth +
+        ' 个汉字，超出部分不会印出（将打印：' + truncateCompanyName(value) + '）';
+    }
+  }
+
+  function updateLogoTime(value) {
+    el.logoTime.textContent = value ? '图标更新时间：' + value
+                                    : '当前使用内置默认图标';
+  }
+
+  el.companyName.addEventListener('input', updateCompanyHint);
+
+  el.saveCompany.addEventListener('click', function () {
+    el.saveCompany.disabled = true;
+    api('PUT', '/api/system/company', { company_name: el.companyName.value.trim() })
+      .then(function (data) {
+        state.companyName = data.company_name;
+        state.companyNamePrint = data.company_name_print;
+        state.companyNameMaxWidth = data.company_name_max_width || 13;
+        el.companyName.value = data.company_name;
+        updateCompanyHint();
+        if (state.view === 'print') renderPrint();
+        toast(data.company_name_width > state.companyNameMaxWidth
+          ? '已保存；超出 ' + state.companyNameMaxWidth + ' 个字宽度的部分不会印出'
+          : '公司名已保存');
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.saveCompany.disabled = false;
+      });
+  });
+
+  el.pickLogo.addEventListener('click', function () {
+    el.logoFile.click();
+  });
+
+  el.logoFile.addEventListener('change', function () {
+    var file = el.logoFile.files && el.logoFile.files[0];
+    el.logoFile.value = '';
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast('图标不能超过 2 MB', 'error');
+      return;
+    }
+    if (file.type !== 'image/png' && file.type !== 'image/jpeg') {
+      toast('只接受 PNG 或 JPEG 图片（不支持 SVG）', 'error');
+      return;
+    }
+    fetch('/api/system/company-logo', {
+      method: 'POST',
+      headers: { 'Content-Type': file.type, 'X-Requested-With': 'DevCard' },
+      body: file
+    })
+      .then(function (response) {
+        return response.json().then(function (body) {
+          if (!response.ok) throw new Error(body.message || '上传失败');
+          return body;
+        });
+      })
+      .then(function (data) {
+        el.companyLogoPreview.src = data.logo_url + '?t=' + Date.now();
+        updateLogoTime(data.updated_at);
+        toast(data.message || '图标已更新');
+      })
+      .catch(function (error) {
+        toast(error.message, 'error');
+      });
+  });
+
+  el.resetLogo.addEventListener('click', function () {
+    api('DELETE', '/api/system/company-logo')
+      .then(function () {
+        el.companyLogoPreview.src = '/company-logo?t=' + Date.now();
+        updateLogoTime('');
+        toast('已恢复默认图标');
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
       });
   });
 
@@ -1006,8 +1142,8 @@
   function cardHtml(device) {
     return (
       '<article class="card">' +
-      '<img class="card-logo" src="/logo.jpg" alt="">' +
-      '<div class="card-company">深圳市安业物业管理有限公司</div>' +
+      '<span class="card-logo"><img src="/company-logo" alt=""></span>' +
+      '<div class="card-company">' + escapeHtml(state.companyNamePrint) + '</div>' +
       '<div class="card-title">设备管理卡</div>' +
       fieldHtml(1, '设备名称：', device.dev_name) +
       fieldHtml(2, '位　　置：', device.location) +
@@ -1076,6 +1212,7 @@
       .then(function (data) {
         state.printItems = data.items || [];
         state.printTruncated = !!data.truncated;
+        if (data.company_name) state.companyNamePrint = data.company_name;
         state.printBusy = false;
         renderPrint();
         el.printHint.textContent = hasNativeBridge()

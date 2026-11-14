@@ -7,6 +7,7 @@ add_library(devcard_core STATIC
     src/service/user_service.cpp
     src/backup.cpp
     src/legacy.cpp
+    src/image_meta.cpp
     src/password.cpp
     src/settings.cpp
     src/sha256.cpp

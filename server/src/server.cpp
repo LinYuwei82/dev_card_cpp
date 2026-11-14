@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -19,11 +22,13 @@
 #include "devcard/backup.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
+#include "devcard/image_meta.h"
 #include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/models.h"
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
+#include "devcard/settings.h"
 #include "devcard/xlsx.h"
 #include "web_assets.h"
 
@@ -135,6 +140,37 @@ DeviceQuery query_from(const httplib::Request& request) {
   return query;
 }
 
+std::string trim_copy(const std::string& value) {
+  const std::size_t begin = value.find_first_not_of(" \t\r\n");
+  if (begin == std::string::npos) return {};
+  const std::size_t end = value.find_last_not_of(" \t\r\n");
+  return value.substr(begin, end - begin + 1);
+}
+
+// 按 UTF-8 起始字节计数，一个汉字/符号算一个字。
+std::size_t utf8_length(const std::string& value) {
+  std::size_t count = 0;
+  for (unsigned char ch : value) {
+    if ((ch & 0xC0) != 0x80) ++count;
+  }
+  return count;
+}
+
+constexpr std::string_view kLogoSettingKey = "company_logo_path";
+
+// 只接受服务端自己写的相对路径，防路径穿越。
+bool safe_logo_relative(const std::string& path) {
+  return !path.empty() && path.find("..") == std::string::npos &&
+         path.front() != '/' && path.front() != '\\';
+}
+
+std::string read_file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  return std::string(std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>());
+}
+
 int hex_digit(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -142,8 +178,7 @@ int hex_digit(char c) {
   return 0;
 }
 
-const std::string& logo_jpeg() {
-  static const std::string bytes = [] {
+const std::string& logo_jpeg() {  static const std::string bytes = [] {
     const std::string hex = embedded_logo_jpg_hex();
     std::string out;
     out.reserve(hex.size() / 2);
@@ -168,7 +203,9 @@ int status_for(const AppError& error) {
   if (code == "invalid_device" || code == "invalid_user" ||
       code == "weak_password" || code == "bad_field" || code == "bad_json" ||
       code == "bad_header" || code == "bad_xlsx" || code == "not_legacy" ||
-      code == "bad_backup" || code == "old_password_required")
+      code == "bad_backup" || code == "old_password_required" ||
+      code == "bad_logo" || code == "logo_too_large" ||
+      code == "bad_company_name" || code == "logo_write")
     return 400;
   return 500;
 }
@@ -312,6 +349,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.devices = std::make_unique<DeviceService>(*state.db);
   state.users = std::make_unique<UserService>(*state.db);
   state.local_token = random_token();
+  state.server.set_payload_max_length(8 * 1024 * 1024);
 
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;
@@ -387,6 +425,14 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                             {"version", version},
                             {"schema_version", schema},
                             {"data_dir", state.data_dir.string()},
+                            {"company_name", company_name(*state.db)},
+                            {"company_name_print", company_print_name(*state.db)},
+                            {"company_name_is_default",
+                             get_setting(*state.db, "print_company_name").empty()},
+                            {"company_name_max_width", kCompanyNameMaxWidth},
+                            {"company_logo_url", "/company-logo"},
+                            {"company_logo_updated_at",
+                             get_setting(*state.db, "company_logo_updated_at")},
                             {"legacy", legacy}});
   });
 
@@ -535,7 +581,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      }
                      set_json(response, json{{"items", array},
                                              {"total", total},
-                                             {"truncated", truncated}});
+                                             {"truncated", truncated},
+                                             {"company_name", company_print_name(*state.db)}});
                    });
 
   state.server.Get(R"(/api/devices/(\d+))",
@@ -634,6 +681,126 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       set_json(response, json{{"ok", true}, {"user_name", target}});
                     });
 
+  // 打印卡片头部公司名：仅管理员可改；空值表示恢复默认。
+  state.server.Put("/api/system/company",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     require_admin(state, request);
+                     const json body = json::parse(request.body, nullptr, false);
+                     if (body.is_discarded() || !body.is_object()) {
+                       throw AppError("bad_json", "请求体必须是 JSON 对象");
+                     }
+                     const std::string value =
+                         trim_copy(body.value("company_name", std::string{}));
+                     if (utf8_length(value) > kCompanyNameInputMaxLength) {
+                       throw AppError("bad_company_name",
+                                      "公司名称过长（最多 60 个字符）");                     }
+                     state.db->write([&](sqlite3* conn) {
+                       set_setting(conn, "print_company_name", value);
+                     });
+                     set_json(response,
+                              json{{"company_name", company_name(*state.db)},
+                                   {"company_name_print",
+                                    company_print_name(*state.db)},
+                                   {"company_name_width",
+                                    company_name_width(company_name(*state.db))},
+                                   {"company_name_max_width", kCompanyNameMaxWidth},
+                                   {"is_default",
+                                    get_setting(*state.db, "print_company_name")
+                                        .empty()}});
+                   });
+
+  // 自定义图标：只收 PNG/JPEG，文件落在数据目录 assets/ 下，app_setting 只存相对路径。
+  state.server.Post("/api/system/company-logo",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+                      constexpr std::size_t kMaxBytes = 2 * 1024 * 1024;
+                      if (request.body.empty()) {
+                        throw AppError("bad_logo", "请选择要上传的图片");
+                      }
+                      if (request.body.size() > kMaxBytes) {
+                        throw AppError("logo_too_large", "图标不能超过 2 MB");
+                      }
+                      const ImageInfo info = inspect_image(request.body);
+                      if (info.format == ImageFormat::kUnknown) {
+                        throw AppError("bad_logo",
+                                       "只接受 PNG 或 JPEG 图片（不支持 SVG）");
+                      }
+                      const double ratio =
+                          static_cast<double>(info.width) / info.height;
+                      const bool aspect_warning =
+                          ratio < kLogoMinAspect || ratio > kLogoMaxAspect;
+
+                      const bool png = info.format == ImageFormat::kPng;
+                      const std::string relative =
+                          std::string("assets/company-logo.") + (png ? "png" : "jpg");
+                      std::error_code ec;
+                      std::filesystem::create_directories(state.data_dir / "assets",
+                                                          ec);
+                      {
+                        std::ofstream out(state.data_dir / relative,
+                                          std::ios::binary | std::ios::trunc);
+                        if (!out) {
+                          throw AppError("logo_write",
+                                         "图标写入失败，请检查数据目录权限");
+                        }
+                        out.write(request.body.data(),
+                                  static_cast<std::streamsize>(request.body.size()));
+                      }
+                      // 换格式时清掉旧文件，避免两份并存。
+                      std::filesystem::remove(
+                          state.data_dir /
+                              (std::string("assets/company-logo.") +
+                               (png ? "jpg" : "png")),
+                          ec);
+                      state.db->write([&](sqlite3* conn) {
+                        set_setting(conn, kLogoSettingKey, relative);
+                        set_setting(conn, "company_logo_updated_at", now_text());
+                      });
+
+                      const bool low_resolution =
+                          info.width < kLogoMinPixels ||
+                          info.height < kLogoMinPixels;
+                      std::string message = "图标已更新";
+                      if (low_resolution) {
+                        message += "；分辨率低于 104×104 像素，300 dpi 打印可能发虚";
+                      }
+                      if (aspect_warning) {
+                        message +=
+                            "；图片偏扁或偏窄，缩放后会显得很小，建议换成接近方形的图";
+                      }
+                      set_json(response,
+                               json{{"logo_url", "/company-logo"},
+                                    {"format", png ? "png" : "jpeg"},
+                                    {"width", info.width},
+                                    {"height", info.height},
+                                    {"low_resolution", low_resolution},
+                                    {"aspect_warning", aspect_warning},
+                                    {"updated_at",
+                                     get_setting(*state.db,
+                                                 "company_logo_updated_at")},
+                                    {"message", message}});
+                    });
+
+  state.server.Delete("/api/system/company-logo",
+                      [&state](const httplib::Request& request,
+                               httplib::Response& response) {
+                        require_admin(state, request);
+                        state.db->write([&](sqlite3* conn) {
+                          set_setting(conn, kLogoSettingKey, "");
+                          set_setting(conn, "company_logo_updated_at", "");
+                        });
+                        std::error_code ec;
+                        std::filesystem::remove(
+                            state.data_dir / "assets/company-logo.png", ec);
+                        std::filesystem::remove(
+                            state.data_dir / "assets/company-logo.jpg", ec);
+                        set_json(response, json{{"logo_url", "/company-logo"},
+                                                {"is_default", true},
+                                                {"updated_at", ""}});
+                      });
+
   state.server.Get("/api/system/backups",
                    [&state](const httplib::Request& request,
                             httplib::Response& response) {
@@ -690,6 +857,29 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Get("/app.js", [](const httplib::Request&, httplib::Response& response) {
     set_asset(response, embedded_app_js(), "application/javascript; charset=utf-8");
   });
+  // 打印图标：优先数据目录下的自定义文件，缺失时回落内嵌默认 logo。
+  state.server.Get("/company-logo",
+                   [&state](const httplib::Request&, httplib::Response& response) {
+                     const std::string relative =
+                         get_setting(*state.db, kLogoSettingKey);
+                     if (safe_logo_relative(relative)) {
+                       const std::filesystem::path path = state.data_dir / relative;
+                       std::string bytes = read_file_bytes(path);
+                       if (!bytes.empty()) {
+                         const bool png = path.extension() == ".png";
+                         response.status = 200;
+                         response.set_header("Content-Type",
+                                             png ? "image/png" : "image/jpeg");
+                         response.set_header("Cache-Control", "no-store");
+                         response.body = std::move(bytes);
+                         return;
+                       }
+                     }
+                     response.status = 200;
+                     response.set_header("Content-Type", "image/jpeg");
+                     response.set_header("Cache-Control", "no-store");
+                     response.body = logo_jpeg();
+                   });
   state.server.Get("/logo.jpg", [](const httplib::Request&, httplib::Response& response) {
     response.status = 200;
     response.set_header("Content-Type", "image/jpeg");

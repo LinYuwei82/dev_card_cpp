@@ -503,6 +503,36 @@ int main() {
   }
 
   {
+    // 公司名：默认值回落；自定义按 13 个显示宽度截断（汉字 1，ASCII 0.5）。
+    const std::filesystem::path dir = temp_db().parent_path();
+    devcard::Db db(dir / "devicedb.db");
+    devcard::migrate(db);
+
+    CHECK(devcard::company_name(db) ==
+          std::string(devcard::kDefaultCompanyName));
+    CHECK(devcard::company_print_name(db) ==
+          std::string(devcard::kDefaultCompanyName));
+    CHECK(devcard::company_name_width("安业AB") == 3.0);
+    CHECK(devcard::company_name_width("") == 0.0);
+
+    db.write([](sqlite3* conn) {
+      devcard::set_setting(conn, "print_company_name",
+                           "深圳市安业物业管理有限公司南山分公司");
+    });
+    CHECK(devcard::company_name_width(devcard::company_name(db)) == 18.0);
+    CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
+
+    db.write([](sqlite3* conn) {
+      devcard::set_setting(conn, "print_company_name",
+                           "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    });
+    CHECK(devcard::company_name_width(devcard::company_name(db)) == 13.0);
+    CHECK(devcard::company_print_name(db) == "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+
+    std::filesystem::remove_all(dir);
+  }
+
+  {
     // 导入模板：第一个工作表只有表头，且与导入校验共用同一份常量。
     const std::filesystem::path dir = temp_db().parent_path();
     const std::filesystem::path file = dir / "devicedb.db";
