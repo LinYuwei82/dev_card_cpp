@@ -82,7 +82,7 @@ void DeviceDao::bind_filters(Stmt& stmt, const DeviceQuery& query, int start) {
   if (!query.location.empty()) stmt.bind(index++, query.location);
 }
 
-std::vector<Device> DeviceDao::list(Db& db, const DeviceQuery& query) const {
+std::vector<Device> DeviceDao::list(const Db& db, const DeviceQuery& query) const {
   const std::string sort = is_sortable(query.sort) ? query.sort : "id";
   const int page = std::max(0, query.page);
   const int page_size = std::clamp(query.page_size, 1, 1000);
@@ -94,9 +94,7 @@ std::vector<Device> DeviceDao::list(Db& db, const DeviceQuery& query) const {
                             (query.desc ? " DESC" : " ASC") +
                             " LIMIT ? OFFSET ?";
     Stmt stmt(conn, sql);
-    int index = 1;
-    bind_filters(stmt, query, index);
-    index += 0;
+    bind_filters(stmt, query, 1);
     // 绑定参数个数必须与 where_clause 一致，单独计算偏移。
     int used = 0;
     if (!query.keyword.empty()) used += query.field.empty() ? 4 : 1;
@@ -112,7 +110,7 @@ std::vector<Device> DeviceDao::list(Db& db, const DeviceQuery& query) const {
   return devices;
 }
 
-std::int64_t DeviceDao::count(Db& db, const DeviceQuery& query) const {
+std::int64_t DeviceDao::count(const Db& db, const DeviceQuery& query) const {
   std::int64_t total = 0;
   db.read([&](sqlite3* conn) {
     Stmt stmt(conn, "SELECT COUNT(*) FROM device" + where_clause(query));
@@ -122,7 +120,7 @@ std::int64_t DeviceDao::count(Db& db, const DeviceQuery& query) const {
   return total;
 }
 
-bool DeviceDao::find(Db& db, std::int64_t id, Device& out) const {
+bool DeviceDao::find(const Db& db, std::int64_t id, Device& out) const {
   bool found = false;
   db.read([&](sqlite3* conn) {
     Stmt stmt(conn, std::string("SELECT ") + kColumns + " FROM device WHERE id = ?");
@@ -179,7 +177,17 @@ void DeviceDao::erase(sqlite3* conn, std::int64_t id) const {
 
 void DeviceDao::erase_all(sqlite3* conn) const { exec_sql(conn, "DELETE FROM device"); }
 
-std::vector<std::string> DeviceDao::distinct_names(Db& db) const {
+bool DeviceDao::exists_triplet(sqlite3* conn, std::string_view name,
+                               std::string_view location,
+                               std::string_view control_range) const {
+  Stmt stmt(conn,
+            "SELECT 1 FROM device WHERE dev_name = ? AND location = ? "
+            "AND control_range = ? LIMIT 1");
+  stmt.bind(1, name).bind(2, location).bind(3, control_range);
+  return stmt.step();
+}
+
+std::vector<std::string> DeviceDao::distinct_names(const Db& db) const {
   std::vector<std::string> values;
   db.read([&](sqlite3* conn) {
     Stmt stmt(conn, "SELECT DISTINCT dev_name FROM device ORDER BY dev_name");
@@ -188,7 +196,7 @@ std::vector<std::string> DeviceDao::distinct_names(Db& db) const {
   return values;
 }
 
-std::vector<std::string> DeviceDao::distinct_locations(Db& db) const {
+std::vector<std::string> DeviceDao::distinct_locations(const Db& db) const {
   std::vector<std::string> values;
   db.read([&](sqlite3* conn) {
     Stmt stmt(conn, "SELECT DISTINCT location FROM device ORDER BY location");

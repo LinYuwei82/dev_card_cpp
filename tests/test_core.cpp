@@ -7,6 +7,7 @@
 #include "devcard/db.h"
 #include "devcard/error.h"
 #include "devcard/migrations.h"
+#include "devcard/service/device_service.h"
 
 namespace {
 
@@ -100,6 +101,108 @@ int main() {
   {
     devcard::Db db(file);
     CHECK(db.schema_version() == devcard::target_schema_version());
+  }
+
+  {
+    const std::filesystem::path service_file = temp_db();
+    {
+      devcard::Db db(service_file);
+      devcard::migrate(db);
+      devcard::DeviceService service(db);
+
+      auto make = [](std::string name, std::string location,
+                     std::string range, std::string phone) {
+        devcard::Device device;
+        device.dev_name = std::move(name);
+        device.location = std::move(location);
+        device.control_range = std::move(range);
+        device.phone = std::move(phone);
+        return device;
+      };
+
+      const devcard::Device first =
+          service.create(make(" 1号水泵 ", "B1栋", "1-3层", "13800000001"));
+      CHECK(first.dev_name == "1号水泵");
+      CHECK(first.id > 0);
+      service.create(make("2号水泵", "B1栋", "1-3层", "13800000002"));
+      service.create(make("排风机", "B1栋", "屋顶", "13800000003"));
+      service.create(make("空调机组", "A2栋", "2层", "13800000004"));
+      service.create(make("照明配电箱", "A2栋", "1层", "13800000005"));
+
+      bool duplicate = false;
+      try {
+        service.create(make("1号水泵", "B1栋", "1-3层", "13800000009"));
+      } catch (const devcard::AppError& error) {
+        duplicate = std::string(error.code()) == "duplicate";
+      }
+      CHECK(duplicate);
+
+      bool too_long = false;
+      try {
+        service.create(make(std::string(21, 'a'), "B1栋", "1层", "138"));
+      } catch (const devcard::AppError& error) {
+        too_long = std::string(error.code()) == "invalid_device";
+      }
+      CHECK(too_long);
+
+      bool empty_field = false;
+      try {
+        service.create(make("设备", "   ", "1层", "138"));
+      } catch (const devcard::AppError& error) {
+        empty_field = std::string(error.code()) == "invalid_device";
+      }
+      CHECK(empty_field);
+
+      const devcard::DeviceOptions options = service.options();
+      CHECK(options.locations.size() == 2);
+      CHECK(options.locations.front() == "A2栋");
+      CHECK(options.locations.back() == "B1栋");
+      CHECK(options.names.size() == 5);
+
+      devcard::DeviceQuery query;
+      query.page_size = 2;
+      const devcard::DevicePage page0 = service.list(query);
+      CHECK(page0.total == 5);
+      CHECK(page0.items.size() == 2);
+      query.page = 2;
+      const devcard::DevicePage page2 = service.list(query);
+      CHECK(page2.items.size() == 1);
+      CHECK(page2.page == 2);
+
+      devcard::DeviceQuery by_location;
+      by_location.location = "A2栋";
+      CHECK(service.list(by_location).total == 2);
+
+      devcard::DeviceQuery by_keyword;
+      by_keyword.keyword = "水泵";
+      by_keyword.field = "dev_name";
+      CHECK(service.list(by_keyword).total == 2);
+
+      devcard::Device edited = first;
+      edited.phone = "13900000000";
+      const devcard::Device saved = service.update(first.id, edited);
+      CHECK(saved.phone == "13900000000");
+      CHECK(service.get(first.id).phone == "13900000000");
+
+      bool missing_update = false;
+      try {
+        service.update(99999, make("不存在", "B1栋", "1层", "138"));
+      } catch (const devcard::AppError& error) {
+        missing_update = std::string(error.code()) == "not_found";
+      }
+      CHECK(missing_update);
+
+      service.remove(first.id);
+      CHECK(service.list(devcard::DeviceQuery{}).total == 4);
+      bool missing_remove = false;
+      try {
+        service.remove(first.id);
+      } catch (const devcard::AppError& error) {
+        missing_remove = std::string(error.code()) == "not_found";
+      }
+      CHECK(missing_remove);
+    }
+    std::filesystem::remove_all(service_file.parent_path());
   }
 
   {

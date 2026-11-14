@@ -1,14 +1,17 @@
 set(WEB_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/web_assets.cpp")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
+set(WEB_DIR "${CMAKE_SOURCE_DIR}/web")
 add_custom_command(
     OUTPUT "${WEB_ASSETS_CPP}"
     COMMAND ${CMAKE_COMMAND}
-            -DINPUT=${CMAKE_SOURCE_DIR}/web/index.html
+            -DINPUT_DIR=${WEB_DIR}
             -DOUTPUT=${WEB_ASSETS_CPP}
-            -P ${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake
-    DEPENDS "${CMAKE_SOURCE_DIR}/web/index.html"
-            "${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake"
+            -P ${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake
+    DEPENDS "${WEB_DIR}/index.html"
+            "${WEB_DIR}/styles.css"
+            "${WEB_DIR}/app.js"
+            "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
     VERBATIM
 )
 

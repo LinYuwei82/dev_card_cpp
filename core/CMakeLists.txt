@@ -2,6 +2,7 @@ add_library(devcard_core STATIC
     src/db.cpp
     src/migrations.cpp
     src/dao/device_dao.cpp
+    src/service/device_service.cpp
     src/sha256.cpp
     "${CMAKE_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100/sqlite3.c"
 )
