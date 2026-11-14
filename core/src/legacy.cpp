@@ -19,7 +19,7 @@
 #include "devcard/models.h"
 #include "devcard/password.h"
 #include "devcard/settings.h"
-#include "sha256.h"
+#include "devcard/sha256.h"
 
 namespace devcard {
 namespace {

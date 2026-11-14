@@ -405,6 +405,13 @@ ServerHandle::~ServerHandle() {
 const std::string& ServerHandle::local_token() const { return impl_->local_token; }
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
+  // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
+  // 这里比对的是「直读 web/ 源文件」的字节数与 SHA256，不是生成出来的 .cpp。
+  const std::string asset_error = embedded_assets_error();
+  if (!asset_error.empty()) {
+    throw AppError("web_assets", "内嵌前端与源文件不一致：" + asset_error);
+  }
+
   auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
   ServerState& state = *handle->impl_;
   state.data_dir = options.data_dir;
@@ -435,6 +442,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.users = std::make_unique<UserService>(*state.db);
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
+
 
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;

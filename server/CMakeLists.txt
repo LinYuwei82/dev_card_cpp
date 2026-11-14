@@ -19,6 +19,7 @@ add_custom_command(
 add_library(devcard_server STATIC
     src/server.cpp
     src/platform_paths.cpp
+    src/web_assets_check.cpp
     "${WEB_ASSETS_CPP}"
 )
 target_include_directories(devcard_server PUBLIC

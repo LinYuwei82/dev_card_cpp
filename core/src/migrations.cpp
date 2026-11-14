@@ -3,7 +3,7 @@
 #include <string>
 
 #include "devcard/error.h"
-#include "sha256.h"
+#include "devcard/sha256.h"
 
 namespace devcard {
 namespace {
