@@ -52,6 +52,14 @@ build.bat
 
 > 数据库已改存到用户数据目录（Windows：`%LOCALAPPDATA%\Anye\DevCard\devicedb.db`），构建不再触碰运行期数据。旧版留在 `bin\devicedb.db` 的文件会在构建前备份到 `%LOCALAPPDATA%\Anye\DevCard\legacy\`，程序首次启动时自动迁移。
 
+绿色版打包（Windows，先完成上一步）：
+
+```bat
+powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
+```
+
+脚本从 `dev_card.pro` 读取版本，输出 `dist\DevCard-<版本>-portable.zip`，自动排除数据库/示例 xlsx/日志，并打印实际大小与 SHA256。
+
 ### 2.3 手动 qmake
 
 ```bat
