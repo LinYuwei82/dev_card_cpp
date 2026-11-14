@@ -111,6 +111,18 @@ int run_curl_stub(int argc, char** argv) {
   }
   const char* payload = std::getenv("DEVCARD_PROBE_PAYLOAD");
   if (output.empty() || !payload) return 2;
+  // 工作目录是这条设计里唯一承载非 ASCII 的地方，对不上就直接报 3，
+  // 免得「文件碰巧写到了别处」被当成通过。
+  const char* expect_cwd = std::getenv("DEVCARD_PROBE_EXPECT_CWD");
+  if (expect_cwd) {
+    std::error_code cwd_ec;
+    const std::filesystem::path expected = devcard::path_from_utf8(expect_cwd);
+    if (!std::filesystem::equivalent(std::filesystem::current_path(cwd_ec),
+                                     expected, cwd_ec) ||
+        cwd_ec) {
+      return 3;
+    }
+  }
   std::error_code ec;
   // 环境变量里给的是 UTF-8（curl_fetch 那边就是这么约定的），这里必须按 UTF-8
   // 还原成 path；直接用 path(const char*) 会按 ACP 再解释一次。
@@ -386,9 +398,24 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
   const std::filesystem::path db_file = dir / "devicedb.db";
   std::filesystem::path direct_wal = db_file;
   direct_wal += "-wal";
-  const std::filesystem::path legacy_wal =
-      std::filesystem::path(db_file.string() + "-wal");
-  CHECK(legacy_wal == direct_wal);
+  // 旧写法在非 ASCII 路径上有两种退化：POSIX 上返回错误字节，Windows 上
+  // .string() 直接抛「目标代码页无法表示的字符」。两种都算旧写法不可用，
+  // 不能让它把整个用例打崩，更不能把「抛错」当成「通过」。
+  bool legacy_threw = false;
+  std::filesystem::path legacy_wal;
+  try {
+    legacy_wal = std::filesystem::path(db_file.string() + "-wal");
+  } catch (const std::exception&) {
+    // MSVC 的窄转换失败抛的是 system_error 一系，不是 filesystem_error；
+    // 按 std::exception 兜住，免得整条用例 fail-fast 成 0xC0000409。
+    legacy_threw = true;
+  }
+  if (legacy_threw) {
+    std::cout << "宽→窄→宽：Windows 上 path::string() 对非 ASCII 路径直接抛错，"
+                 "旧写法不可用" << std::endl;
+  } else {
+    CHECK(legacy_wal == direct_wal);
+  }
   CHECK(direct_wal.parent_path() == db_file.parent_path());
   CHECK(devcard::path_to_utf8(direct_wal.parent_path()) ==
         devcard::path_to_utf8(db_file.parent_path()));
@@ -443,10 +470,12 @@ void run_update_download_landing_case(const std::filesystem::path& dir) {
   // 环境变量本身也要按 UTF-8 给：curl_fetch 取出来后会再 widen(CP_UTF8)。
   set_env("DEVCARD_CURL", path_to_utf8(self_executable()));
   set_env("DEVCARD_PROBE_PAYLOAD", path_to_utf8(payload));
+  set_env("DEVCARD_PROBE_EXPECT_CWD", path_to_utf8(updates));
 
   const UpdateDownloadOutcome outcome = download_update_package(updates, spec);
   set_env("DEVCARD_CURL", "");
   set_env("DEVCARD_PROBE_PAYLOAD", "");
+  set_env("DEVCARD_PROBE_EXPECT_CWD", "");
 
   CHECK(outcome.ok);
   if (!outcome.ok) std::cerr << "  下载失败：" << outcome.error << "\n";
@@ -529,7 +558,7 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   CHECK(report.devices_skipped == 0);
   CHECK(report.users_imported == 3);
   CHECK(!report.backup.empty());
-  CHECK(std::filesystem::exists(report.backup));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(report.backup)));
   CHECK(report.source_sha256.size() == 64);
   CHECK(!report.warnings.empty());  // 超长字段截断告警
 
@@ -570,7 +599,7 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   // 备份与恢复：删除一条后可从备份恢复。
   const devcard::BackupEntry backup =
       devcard::create_backup(db, dir, "test");
-  CHECK(std::filesystem::exists(backup.path));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(backup.path)));
   CHECK(backup.bytes > 0);
   devcard::DeviceService service(db);
   service.remove(1, service.get(1).version);
@@ -654,11 +683,7 @@ void run_xlsx_template_case(const std::filesystem::path& dir) {
 
 }
 
-int main(int argc, char** argv) {
-  // 被 curl_fetch 当作 curl 调起来时，先走替身分支。
-  if (argc > 1 && std::string(argv[1]) == "--fail") {
-    return run_curl_stub(argc, argv);
-  }
+int run_all_tests() {
   const std::filesystem::path file = temp_db();
   {
     devcard::Db db(file);
@@ -1033,4 +1058,19 @@ int main(int argc, char** argv) {
   }
   std::cout << "core tests passed\n";
   return 0;
+}
+
+int main(int argc, char** argv) {
+  // 被 curl_fetch 当作 curl 调起来时，先走替身分支。
+  if (argc > 1 && std::string(argv[1]) == "--fail") {
+    return run_curl_stub(argc, argv);
+  }
+  // 未捕获的异常在这里落成一行可读输出：否则 0xC0000409 的 fail-fast
+  // 只会留下一个退出码，看不出坏在哪条路径上。
+  try {
+    return run_all_tests();
+  } catch (const std::exception& error) {
+    std::cerr << "未捕获异常：" << error.what() << "\n";
+    return 1;
+  }
 }
