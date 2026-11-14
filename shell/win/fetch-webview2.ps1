@@ -1,4 +1,4 @@
-# 下载并校验 WebView2 SDK（M5 Windows 壳构建用）。
+﻿# 下载并校验 WebView2 SDK（M5 Windows 壳构建用）。
 #
 # 为什么不用「装了 VS 就有」：WebView2 SDK 是 NuGet 包，不作为 Windows SDK 的一部分，
 # 也不入库（二进制大件 + Microsoft 许可）。这里按固定版本 + 固定 SHA256 取一次，
