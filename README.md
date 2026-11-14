@@ -3,7 +3,7 @@
 物业设备台账与设备管理卡打印工具：维护设备名称 / 位置 / 控制范围 / 维护电话，按条件筛选后把结果排成 A4 版面（每页 3 列 × 4 行，共 12 张卡片）导出 PDF 打印。
 
 > **当前状态（重要）**
-> 本仓库现在仍是 **Qt 6 / C++17 版 v1.1.2，仅面向 Windows**。
+> 本仓库现在仍是 **Qt 6 / C++17 版 v1.1.3，仅面向 Windows**。
 > 去 Qt、改 B/S 内核（单机版 + 网络版一体化）的改造**只完成了方案与决策，代码尚未开始迁移**。
 > 下文凡标注「目标形态」的内容都是计划，不代表仓库已有该能力；判断现状请看 [现状技术方案](docs/现状技术方案.md)。
 
@@ -48,9 +48,9 @@
 build.bat
 ```
 
-脚本会：检查 qmake 与第三方头文件 → 清理 `build/` 与 `bin/` → `qmake dev_card.pro` → 编译 → `windeployqt` 部署 Qt 依赖。
+脚本会：检查 qmake 与第三方头文件 → 备份旧的 `bin/devicedb.db`（若有）→ 清理 `build/` 与 `bin/` → `qmake dev_card.pro` → 编译 → `windeployqt` → 复制 `resources/` 到 `bin/`。
 
-> **警告**：`build.bat` 会删除整个 `bin/`，而 `bin/devicedb.db` 是业务数据库。**构建前请先备份 `devicedb.db`**。
+> 数据库已改存到用户数据目录（Windows：`%LOCALAPPDATA%\Anye\DevCard\devicedb.db`），构建不再触碰运行期数据。旧版留在 `bin\devicedb.db` 的文件会在构建前备份到 `%LOCALAPPDATA%\Anye\DevCard\legacy\`，程序首次启动时自动迁移。
 
 ### 2.3 手动 qmake
 
@@ -73,8 +73,11 @@ cmake --build build-cmake
 ### 2.5 运行
 
 - 直接运行 `bin/DevCard.exe`（或构建产物目录中的可执行文件）。
-- 程序在**可执行文件同目录**读 `resources/`（字体、Logo、图标）并创建/读写 `devicedb.db`。
-- 因此该目录必须可写；不要放在 `C:\Program Files` 等只读位置。
+- 程序从**可执行文件同目录**读取 `resources/`（字体、Logo、图标）；`build.bat` 会自动把它复制进 `bin/`。
+- 数据库存放在用户数据目录，不再放在程序目录：
+  - Windows：`%LOCALAPPDATA%\Anye\DevCard\devicedb.db`
+  - macOS：`~/Library/Application Support/Anye/DevCard/devicedb.db`
+- 首次启动时，如果程序目录或 `…\DevCard\legacy\` 下存在旧的 `devicedb.db`，会先复制并校验，成功后才切换为正式库；**原文件保留作为备份**。迁移失败会弹窗说明并退出，不会静默创建空库。
 - 现状内置账号：`root / 123456`、`安业物业 / 123456`（明文存储，属待改造项）。
 - 现状仅面向 Windows；macOS 可构建属改造目标，尚未实现。
 
@@ -126,8 +129,8 @@ dev_card_cpp/
 以下均为**现状**，不是目标形态：
 
 - 仅 Windows 可运行；界面用固定像素坐标，缩放/字体缺失时排版会变。
-- 数据库放在程序目录，构建脚本会连同 `bin/` 一起删除；安装在只读目录时写入会静默失败。
 - 口令明文存储，默认账号每次启动自动补回。
-- `resources/` 未由构建脚本复制到 `bin/`，全新环境构建后可能缺字体/图标。
 - 无测试、无 CI、无许可证声明。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
+
+v1.1.3 已修复：数据库迁出程序目录（构建不再删库、只读安装目录可写用户数据）、`build.bat` 构建后自动复制 `resources/` 到 `bin/`。详见 [v1.1.3 变更说明](docs/变更说明-v1.1.3.md)。
