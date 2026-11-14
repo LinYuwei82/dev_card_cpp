@@ -1,0 +1,83 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "macos-release",
+      "displayName": "macOS Release（新架构）",
+      "description": "本机出 DMG 用的配置；构建目录与 tools/package/make_dmg.sh 一致",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-new",
+      "cacheVariables": {
+        "DEVCARD_NEW_ARCH": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "macos-dev",
+      "displayName": "macOS Debug/迭代",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-new-dev",
+      "cacheVariables": {
+        "DEVCARD_NEW_ARCH": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows Release（新架构）",
+      "description": "Ninja + MSVC；必须先在 x64 Native Tools 终端（已跑 vcvars64.bat）里使用",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-win",
+      "cacheVariables": {
+        "DEVCARD_NEW_ARCH": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-dev",
+      "displayName": "Windows Debug/迭代",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-win-dev",
+      "cacheVariables": {
+        "DEVCARD_NEW_ARCH": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-ci",
+      "displayName": "Linux 静态检查（不产出发布物）",
+      "description": "仅供 CI 做 lint 与编译检查；本方案不支持 Linux 发布",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux",
+      "cacheVariables": {
+        "DEVCARD_NEW_ARCH": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos-release", "configurePreset": "macos-release" },
+    { "name": "macos-dev", "configurePreset": "macos-dev" },
+    { "name": "windows-release", "configurePreset": "windows-release" },
+    { "name": "windows-dev", "configurePreset": "windows-dev" },
+    { "name": "linux-ci", "configurePreset": "linux-ci" }
+  ],
+  "testPresets": [
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
