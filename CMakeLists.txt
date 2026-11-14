@@ -27,6 +27,11 @@ if(DEVCARD_NEW_ARCH)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" DEVCARD_VERSION_STRING)
     string(STRIP "${DEVCARD_VERSION_STRING}" DEVCARD_VERSION_STRING)
     message(STATUS "DevCard 新架构版本：${DEVCARD_VERSION_STRING}")
+    # SQLite 的唯一入口：两个平台都编译仓库自带的 amalgamation，不链接系统 libsqlite3。
+    # 带版本号的目录只在这里出现一次；升级到 3.4x 时改这一行即可，
+    # 理由不是「怕漏了只有某个平台报错」——统一之后两边一样会编不过——而是
+    # 版本号本来就不该散落在多处，散一处就是一处将来的不一致。
+    set(DEVCARD_SQLITE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100")
     # Windows 版本资源与 macOS bundle 版本都从 VERSION.txt 取值。
     string(REPLACE "." "," DEVCARD_VERSION_COMMA "${DEVCARD_VERSION_STRING}")
     set(DEVCARD_VERSION_COMMA "${DEVCARD_VERSION_COMMA},0")

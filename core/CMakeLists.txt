@@ -19,7 +19,7 @@ add_library(devcard_core STATIC
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/thread.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/blake2/blake2b.c"
     "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
-    "${CMAKE_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100/sqlite3.c"
+    "${DEVCARD_SQLITE_DIR}/sqlite3.c"
 )
 
 target_include_directories(devcard_core
@@ -27,6 +27,8 @@ target_include_directories(devcard_core
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_SOURCE_DIR}/third_party"
         "${CMAKE_SOURCE_DIR}/third_party/argon2/include"
+        # db.h 是公开头，直接 #include <sqlite3.h>；两个平台都用仓库这份。
+        "${DEVCARD_SQLITE_DIR}"
     PRIVATE
         "${CMAKE_SOURCE_DIR}/third_party/miniz"
         "${CMAKE_SOURCE_DIR}/third_party/argon2/src"
@@ -39,7 +41,7 @@ target_compile_definitions(devcard_core PRIVATE
 )
 
 set_source_files_properties(
-    "${CMAKE_SOURCE_DIR}/3rdparty/sqlite-amalgamation-3460100/sqlite3.c"
+    "${DEVCARD_SQLITE_DIR}/sqlite3.c"
     "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/argon2.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/core.c"
