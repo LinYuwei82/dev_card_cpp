@@ -320,29 +320,43 @@ const std::string& logo_jpeg() {  static const std::string bytes = [] {
 }
 
 int status_for(const AppError& error) {
-  const std::string& code = error.code();
-  if (code == "duplicate" || code == "last_admin" || code == "self_delete" ||
-      code == "no_user")
-    return 409;
-  if (code == "not_found") return 404;
-  if (code == "legacy_db") return 409;
-  if (code == "invalid_credentials") return 401;
-  if (code == "locked") return 423;
-  if (code == "forbidden" || code == "must_change_password") return 403;
-  if (code == "invalid_device" || code == "invalid_user" ||
-      code == "weak_password" || code == "bad_field" || code == "bad_json" ||
-      code == "bad_header" || code == "bad_xlsx" || code == "not_legacy" ||
-      code == "bad_backup" || code == "old_password_required" ||
-      code == "bad_logo" || code == "logo_too_large" ||
-      code == "bad_company_name" || code == "logo_write" ||
-      code == "endpoint_not_allowed" || code == "no_update")
-    return 400;
-  if (code == "update_disabled") return 403;
-  if (code == "update_busy") return 409;
-  if (code == "manifest_invalid" || code == "download_failed" ||
-      code == "checksum_mismatch")
-    return 502;
-  return 500;
+  // 单张表：错误码 → HTTP。新增码只加一行，不再套 if 链。
+  static const std::map<std::string, int> kStatus = {
+      {"duplicate", 409},
+      {"last_admin", 409},
+      {"self_delete", 409},
+      {"no_user", 409},
+      {"not_found", 404},
+      {"legacy_db", 409},
+      {"invalid_credentials", 401},
+      {"locked", 423},
+      {"forbidden", 403},
+      {"must_change_password", 403},
+      {"invalid_device", 400},
+      {"invalid_user", 400},
+      {"weak_password", 400},
+      {"bad_field", 400},
+      {"bad_json", 400},
+      {"bad_header", 400},
+      {"bad_xlsx", 400},
+      {"not_legacy", 400},
+      {"bad_backup", 400},
+      {"old_password_required", 400},
+      {"bad_logo", 400},
+      {"logo_too_large", 400},
+      {"bad_company_name", 400},
+      {"logo_write", 400},
+      // 自更新闸门与下载
+      {"endpoint_not_allowed", 400},
+      {"no_update", 400},
+      {"update_disabled", 403},
+      {"update_busy", 409},
+      {"manifest_invalid", 502},
+      {"download_failed", 502},
+      {"checksum_mismatch", 502},
+  };
+  const auto found = kStatus.find(error.code());
+  return found == kStatus.end() ? 500 : found->second;
 }
 
 std::string random_token() {
@@ -607,9 +621,16 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 下载器走系统 curl：TLS 与证书校验由系统提供，服务端只负责白名单、
   // 落盘到数据目录 updates/、以及校验；任何失败都删残件并回到「只提示」。
   state.server.Post("/api/update/download",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
+                    [&state, version](const httplib::Request& request,
+                                      httplib::Response& response) {
                       require_admin(state, request);
+                      // 前端不给入口不算闸门：检查关闭时服务端也要拒绝。
+                      const UpdateManifest manifest =
+                          read_update_manifest(state.data_dir);
+                      if (!manifest.check_enabled) {
+                        throw AppError("update_disabled",
+                                       "更新检查已关闭，不提供下载");
+                      }
                       const json body = parse_body(request.body);
                       UpdatePackageSpec spec;
                       spec.version = body.value("version", "");
@@ -621,6 +642,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       const std::string invalid = validate_update_spec(spec);
                       if (!invalid.empty()) {
                         throw AppError(validate_update_spec_code(spec), invalid);
+                      }
+                      // 没有比当前版本更新的版本时，不允许借下载接口落盘。
+                      if (compare_version(spec.version, version) <= 0) {
+                        throw AppError("no_update", "没有可用的新版本");
                       }
 
                       const std::filesystem::path updates_dir =

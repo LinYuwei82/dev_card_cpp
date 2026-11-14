@@ -140,6 +140,122 @@ int check_csp() {
   return failures;
 }
 
+std::string seed_password(const std::filesystem::path& data_dir,
+                          const std::string& user) {
+  std::ifstream in(data_dir / "初始账号密码.txt", std::ios::binary);
+  const std::string prefix = user + "：";
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind(prefix, 0) == 0) return line.substr(prefix.size());
+  }
+  return {};
+}
+
+// 服务端闸门：检查关闭 → 403 update_disabled；请求的版本不比当前新 → 400 no_update。
+// 两条都在下载线程启动前返回，因此不需要 curl，也不会联网。
+int check_update_guards() {
+  namespace fs = std::filesystem;
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path data_dir =
+      fs::temp_directory_path() / ("devcard_guard_" + std::to_string(stamp));
+  std::unique_ptr<devcard::ServerHandle> server;
+  std::string last_error;
+  for (int port = 18340; port <= 18360 && !server; ++port) {
+    devcard::ServerOptions options;
+    options.data_dir = data_dir;
+    options.port = port;
+    try {
+      server = devcard::start_server(options);
+    } catch (const std::exception& error) {
+      last_error = error.what();
+    }
+  }
+  if (!server) {
+    std::cerr << "[失败] 起服务失败，无法校验更新闸门：" << last_error << std::endl;
+    fs::remove_all(data_dir);
+    return 1;
+  }
+
+  int failures = 0;
+  {
+    httplib::Client client("127.0.0.1", server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(10, 0);
+    const std::string password = seed_password(data_dir, "root");
+    if (password.empty()) {
+      std::cerr << "[失败] 找不到 root 初始密码，无法建立会话" << std::endl;
+      failures = 1;
+    } else {
+      const std::string login_body =
+          "{\"username\":\"root\",\"password\":\"" + password + "\"}";
+      const auto login = client.Post("/api/session/login", login_body,
+                                     "application/json");
+      std::string cookie;
+      if (login && login->status == 200) {
+        cookie = login->get_header_value("Set-Cookie");
+        cookie = cookie.substr(0, cookie.find(';'));
+      }
+      if (cookie.empty()) {
+        std::cerr << "[失败] 登录失败，取不到会话 cookie" << std::endl;
+        failures = 1;
+      } else {
+        client.set_default_headers({{"Cookie", cookie},
+                                    {"X-Requested-With", "DevCard"}});
+        const auto change = client.Post(
+            "/api/users/password", R"({"new_password":"GuardTest123"})",
+            "application/json");
+        if (!change || change->status != 200) {
+          std::cerr << "[失败] 首次改密失败，无法继续校验下载闸门" << std::endl;
+          failures = 1;
+        }
+        const std::string sha(64, 'a');
+        auto payload = [&sha](const std::string& version) {
+          return "{\"version\":\"" + version +
+                 "\",\"file_name\":\"pkg.bin\",\"url\":"
+                 "\"https://github.com/example/pkg.bin\",\"sha256\":\"" + sha +
+                 "\",\"size\":10}";
+        };
+
+        const auto no_update = client.Post("/api/update/download",
+                                           payload("0.0.1"), "application/json");
+        if (!no_update || no_update->status != 400 ||
+            no_update->body.find("no_update") == std::string::npos) {
+          std::cerr << "[失败] 旧版本下载未被拒（期望 400 no_update）："
+                    << (no_update ? no_update->status : -1) << " "
+                    << (no_update ? no_update->body : "") << std::endl;
+          failures = 1;
+        }
+
+        {
+          std::ofstream out(data_dir / "update.json", std::ios::binary);
+          out << R"({"latest":"9.9.9","check_enabled":false})";
+        }
+        const auto disabled = client.Post("/api/update/download",
+                                          payload("9.9.9"), "application/json");
+        if (!disabled || disabled->status != 403 ||
+            disabled->body.find("update_disabled") == std::string::npos) {
+          std::cerr << "[失败] 检查关闭时仍可下载（期望 403 update_disabled）："
+                    << (disabled ? disabled->status : -1) << " "
+                    << (disabled ? disabled->body : "") << std::endl;
+          failures = 1;
+        }
+
+        if (fs::exists(data_dir / "updates")) {
+          std::cerr << "[失败] 被拒绝的下载请求仍然创建了 updates 目录" << std::endl;
+          failures = 1;
+        }
+      }
+    }
+  }
+  server.reset();
+  fs::remove_all(data_dir);
+  if (failures == 0) {
+    std::cout << "更新闸门自检通过：更新检查关闭返回 403、无新版本返回 400"
+              << std::endl;
+  }
+  return failures;
+}
+
 }  // namespace
 
 int main() {
@@ -158,6 +274,9 @@ int main() {
     code = 1;
   }
   if (check_csp() != 0) {
+    code = 1;
+  }
+  if (check_update_guards() != 0) {
     code = 1;
   }
   return code;
