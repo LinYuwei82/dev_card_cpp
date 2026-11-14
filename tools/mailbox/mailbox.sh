@@ -12,14 +12,19 @@
 # 环境变量：
 #   DEVCARD_MAILBOX_DIR  信箱目录，默认 /Volumes/share/devcard-mailbox
 #   DEVCARD_SIDE         本机身份 mac|win，默认按 uname 判断
+#
+# 节奏约定：两边每 3 分钟 poll 一次（由外部定时任务执行，脚本本身不睡眠），
+# 离线判据 45 分钟。轮询间隔不等于回复延迟，只有心跳能证明对方在。
 
 set -u
 
 MAILBOX_DIR="${DEVCARD_MAILBOX_DIR:-/Volumes/share/devcard-mailbox}"
 INBOX="$MAILBOX_DIR/inbox"
+READING="$MAILBOX_DIR/reading"
 ARCHIVE="$MAILBOX_DIR/archive"
 PRESENCE="$MAILBOX_DIR/presence"
-PEER_OFFLINE_SECONDS=$((30 * 60))
+# 离线判据 45 分钟 = 3 × 15 分钟轮询间隔，避免两边节奏错位导致持续误报。
+PEER_OFFLINE_SECONDS=$((45 * 60))
 MAX_BODY_BYTES=8192
 
 if [ -n "${DEVCARD_SIDE:-}" ]; then
@@ -50,9 +55,11 @@ fail() {
 require_mailbox() {
   [ -d "$MAILBOX_DIR" ] || fail "目录不存在 ${MAILBOX_DIR}（共享盘没挂上？）"
   [ -d "$INBOX" ] || fail "缺少 $INBOX"
+  [ -d "$READING" ] || fail "缺少 $READING（v2 协议新增：已读待回）"
   [ -d "$ARCHIVE" ] || fail "缺少 $ARCHIVE"
   [ -d "$PRESENCE" ] || fail "缺少 $PRESENCE"
   [ -w "$INBOX" ] || fail "$INBOX 不可写（挂载只读或权限不足）"
+  [ -w "$READING" ] || fail "$READING 不可写（挂载只读或权限不足）"
   [ -w "$ARCHIVE" ] || fail "$ARCHIVE 不可写（挂载只读或权限不足）"
 }
 
@@ -77,7 +84,7 @@ write_heartbeat() {
 
 next_seq() {
   local max=0 n
-  for f in "$INBOX" "$ARCHIVE"; do
+  for f in "$INBOX" "$READING" "$ARCHIVE"; do
     [ -d "$f" ] || continue
     for name in "$f"/*-"$SIDE"-*.md; do
       [ -e "$name" ] || continue
@@ -167,8 +174,9 @@ cmd_poll() {
     echo "===== $name ====="
     cat "$INBOX/$name"
     echo
-    if ! move_file "$INBOX/$name" "$ARCHIVE/$name"; then
-      echo "（归档失败，消息仍在 inbox，下次 poll 会再读到）" >&2
+    # 读过但没回：移到 reading/，发送方据此能区分「没读」和「读了没回」。
+    if ! move_file "$INBOX/$name" "$READING/$name"; then
+      echo "（移动失败，消息仍在 inbox，下次 poll 会再读到）" >&2
     fi
   done <<EOF
 $(ls -1 "$INBOX" 2>/dev/null | sort)
@@ -176,8 +184,24 @@ EOF
   if [ "$count" -eq 0 ]; then
     echo "没有待读消息（inbox 为空，或只有自己发的）"
   else
-    echo "共 $count 条，已归档到 archive/"
+    echo "共 $count 条，已移入 reading/（回了之后用 ack 归档）"
   fi
+}
+
+# reading/ → archive/：回复发出后调用，只移动不改内容。
+cmd_ack() {
+  local name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file) [ $# -ge 2 ] || { echo "--file 缺少参数" >&2; exit 2; }; name="$2"; shift 2 ;;
+      *) echo "未知参数：$1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$name" ] || { echo "缺少 --file <文件名>" >&2; exit 2; }
+  require_mailbox
+  [ -f "$READING/$name" ] || { echo "reading/ 里没有 $name（先 poll 读过才能 ack）" >&2; exit 2; }
+  move_file "$READING/$name" "$ARCHIVE/$name" || exit 1
+  echo "已归档：$name"
 }
 
 cmd_peek() {
@@ -202,7 +226,7 @@ EOF
 cmd_status() {
   require_mailbox
   write_heartbeat
-  local now self_ts peer_ts age_min unread name
+  local now self_ts peer_ts age_min unread reading name
   now="$(to_epoch "$(now_utc)")"
 
   echo "信箱：${MAILBOX_DIR}（可写）"
@@ -210,7 +234,13 @@ cmd_status() {
 
   if [ -f "$PRESENCE/$SIDE.txt" ]; then
     self_ts="$(tr -d '\r\n' <"$PRESENCE/$SIDE.txt")"
-    echo "本机心跳：$self_ts"
+    local self_epoch
+    self_epoch="$(to_epoch "$self_ts")"
+    if [ -n "$self_epoch" ]; then
+      echo "本机心跳：$self_ts（$(((now - self_epoch) / 60)) 分钟前）"
+    else
+      echo "本机心跳：$self_ts（无法解析）"
+    fi
   fi
 
   if [ -f "$PRESENCE/$PEER.txt" ]; then
@@ -219,10 +249,11 @@ cmd_status() {
     peer_epoch="$(to_epoch "$peer_ts")"
     if [ -n "$peer_epoch" ]; then
       age_min=$(((now - peer_epoch) / 60))
+      # 不只给在线/离线：差多少分钟要能一眼看出来。
       if [ $((now - peer_epoch)) -gt "$PEER_OFFLINE_SECONDS" ]; then
-        echo "对方（${PEER}）离线：最后一次心跳 ${peer_ts}，已 ${age_min} 分钟未更新"
+        echo "对方（${PEER}）离线：上次心跳 ${age_min} 分钟前（${peer_ts}）"
       else
-        echo "对方（${PEER}）在线：最后一次心跳 ${peer_ts}（${age_min} 分钟前）"
+        echo "对方（${PEER}）在线：上次心跳 ${age_min} 分钟前（${peer_ts}）"
       fi
     else
       echo "对方（${PEER}）心跳无法解析：${peer_ts}"
@@ -232,6 +263,7 @@ cmd_status() {
   fi
 
   unread=0
+  reading=0
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     case "$name" in
@@ -241,17 +273,27 @@ cmd_status() {
   done <<EOF
 $(ls -1 "$INBOX" 2>/dev/null)
 EOF
-  echo "未读消息：$unread 条"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      .tmp-*) continue ;;
+    esac
+    reading=$((reading + 1))
+  done <<EOF
+$(ls -1 "$READING" 2>/dev/null)
+EOF
+  echo "未读消息：$unread 条，已读待回：$reading 条"
 }
 
 usage() {
   cat <<'EOF'
 用法：
   mailbox.sh send --subject <标题> --body <文件|-> [--re <对方文件名>]
-  mailbox.sh poll      读取并归档未读消息
+  mailbox.sh poll      读取未读并移入 reading/（已读待回）
   mailbox.sh peek      只列出未读，不移动
+  mailbox.sh ack --file <文件名>  回复发出后把 reading/ 里的消息归档
   mailbox.sh heartbeat 刷新 presence/<side>.txt
-  mailbox.sh status    信箱可用性、双方心跳、未读条数
+  mailbox.sh status    信箱可用性、双方心跳、未读与待回条数
 EOF
 }
 
@@ -261,6 +303,7 @@ case "$cmd" in
   send) cmd_send "$@" ;;
   poll) cmd_poll ;;
   peek) cmd_peek ;;
+  ack) cmd_ack "$@" ;;
   heartbeat) require_mailbox; write_heartbeat; echo "心跳已更新：$PRESENCE/$SIDE.txt" ;;
   status) cmd_status ;;
   ""|-h|--help|help) usage ;;

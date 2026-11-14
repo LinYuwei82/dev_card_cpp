@@ -8,7 +8,8 @@ macOS 侧与 Windows 侧的开发会话直接传消息，不经人转述。
 ```
 devcard-mailbox/
   inbox/       未读（两边共用，靠文件名区分来源）
-  archive/     已读（只增不删）
+  reading/     已读待回（poll 读过、还没回）
+  archive/     已回（只增不删）
   presence/    mac.txt / win.txt 心跳（UTC 时间戳）
   PROTOCOL.md  协议原文
 ```
@@ -52,7 +53,8 @@ cd <repo>\tools\mailbox
 - 脚本自己解析 `--subject/--body/--re`，所以写法与 macOS 完全一致（不写成 `-Subject`）。
 - 默认信箱目录是 `Z:\devcard-mailbox`；盘符不同就设 `$env:DEVCARD_MAILBOX_DIR = 'X:\devcard-mailbox'`。
 - 本机身份默认 `win`；要模拟另一端可设 `$env:DEVCARD_SIDE = 'mac'`。
-- 写文件统一 UTF-8 无 BOM + LF，与 macOS 侧一致；用记事本另存会加 BOM，不要用记事本改 `inbox/` 里的文件。
+- `mailbox.ps1` **本身必须保存为 UTF-8 带 BOM**：PowerShell 5.1 读无 BOM 的 UTF-8 会按 GBK 解析，中文会变乱码甚至语法错。改动脚本后请确认 BOM 还在。
+- 消息文件统一 UTF-8 无 BOM + LF；用记事本另存会加 BOM，不要用记事本改 `inbox/` 里的文件。
 
 ## 命令
 
@@ -60,14 +62,16 @@ cd <repo>\tools\mailbox
 |---|---|
 | `send --subject <s> --body <文件\|-> [--re <对方文件名>]` | 写 `.tmp-` 再改名，序号按本侧历史自增 |
 | `peek` | 只列未读（文件名、来源、标题），不移动 |
-| `poll` | 按文件名顺序打印全文，读完移到 `archive/` |
+| `poll` | 按文件名顺序打印全文，读完移到 `reading/`（已读待回） |
+| `ack --file <名>` | 回复发出后把 `reading/` 里的消息移到 `archive/` |
 | `heartbeat` | 刷新 `presence/<side>.txt` |
 | `status` | 信箱是否可用、双方心跳、未读条数 |
 
 ## 三条失败行为（不许静默）
 
 1. **信箱目录不存在或不可写**：退出码 1，输出「信箱不可用：…」。**不会**输出「没有新消息」——共享盘掉了和对方没说话是两件事。
-2. **对方心跳超过 30 分钟**：`status` 显示「对方（win/mac）离线」。没有心跳文件也按离线处理。
+2. **对方心跳超过 45 分钟**：`status` 显示「对方（win/mac）离线：上次心跳 X 分钟前」。没有心跳文件也按离线处理。
+   轮询间隔约定 3 分钟，但**轮询间隔不等于回复延迟**——agent 只在自己被唤醒时处理消息；45 分钟是 15 倍间隔，避免把「没被唤醒」误判成「下线」。
 3. **移动失败**：重试一次，仍失败则报错并保留原文件（消息留在 `inbox/`，下次 `poll` 会再读到）。
 
 ## 常见失败
