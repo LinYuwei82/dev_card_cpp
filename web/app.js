@@ -47,6 +47,8 @@
     updateNotes: document.getElementById('update-notes'),
     updateSteps: document.getElementById('update-steps'),
     updateDownload: document.getElementById('update-download'),
+    updateDownloadPackage: document.getElementById('update-download-package'),
+    updateProgress: document.getElementById('update-progress'),
     updateLater: document.getElementById('update-later'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
@@ -357,8 +359,48 @@
     return {
       version: version,
       url: /^https?:\/\//i.test(String(url)) ? String(url) : '',
-      notes: typeof notes === 'string' ? notes.slice(0, 300) : ''
+      notes: typeof notes === 'string' ? notes.slice(0, 300) : '',
+      assets: parseAssets(doc.assets)
     };
+  }
+
+  // 只认带 sha256 摘要与字节数的资产；两者缺一不可，缺了就不提供下载入口。
+  function parseAssets(list) {
+    if (!Array.isArray(list)) return [];
+    var assets = [];
+    list.forEach(function (item) {
+      if (!item || typeof item !== 'object') return;
+      var link = String(item.browser_download_url || item.download_url || '');
+      if (!/^https:\/\//i.test(link)) return;
+      var digest = String(item.digest || item.sha256 || '');
+      var match = /^sha256:([0-9a-f]{64})$/i.exec(digest);
+      var size = Number(item.size);
+      assets.push({
+        name: String(item.name || ''),
+        url: link,
+        size: isFinite(size) && size > 0 ? size : 0,
+        sha256: match ? match[1].toLowerCase() : ''
+      });
+    });
+    return assets;
+  }
+
+  function pickUpdateAsset(assets) {
+    var prefer = /Windows/i.test(navigator.userAgent) ? ['.zip', '.exe'] : ['.dmg'];
+    for (var i = 0; i < prefer.length; i++) {
+      for (var j = 0; j < assets.length; j++) {
+        var name = String(assets[j].name || '').toLowerCase();
+        if (name.slice(-prefer[i].length) === prefer[i]) return assets[j];
+      }
+    }
+    return null;
+  }
+
+  function formatBytes(value) {
+    var bytes = Number(value) || 0;
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return bytes + ' B';
   }
 
   // 一次远端检查。永远 resolve，不抛：失败路径要和「没有新版本」在界面上不可区分。
@@ -496,20 +538,20 @@
     var ua = navigator.userAgent || '';
     if (/Macintosh|Mac OS X/i.test(ua)) {
       return [
-        '点「打开下载页」，下载新版 DMG。',
+        '点「下载更新包」把 DMG 下载到数据目录并校验（只下载，不安装）；也可打开下载页手动下载。',
         '双击打开 DMG，把 DevCard 拖进「应用程序」，选「替换」覆盖旧版本。',
         '退出并重新打开 DevCard。台账数据在用户数据目录，覆盖安装不会动它。'
       ];
     }
     if (/Windows/i.test(ua)) {
       return [
-        '点「打开下载页」，下载新版安装包。',
+        '点「下载更新包」把安装包下载到数据目录并校验（只下载，不安装）；也可打开下载页手动下载。',
         '先退出 DevCard，再运行安装包，装到原来的目录覆盖旧版本。',
         '重新打开 DevCard。台账数据在用户数据目录，覆盖安装不会动它。'
       ];
     }
     return [
-      '点「打开下载页」，按页面说明下载对应平台的安装包。',
+      '点「下载更新包」下载并校验，或按下载页说明手动下载对应平台的安装包。',
       '在运行服务的机器上替换旧版本并重启服务；台账数据在服务端数据目录，不会随升级丢失。'
     ];
   }
@@ -534,7 +576,37 @@
       el.updateSteps.appendChild(item);
     });
     el.updateDownload.disabled = !state.updateUrl;
+
+    // 阶段一：只下载 + 校验。按钮是否可用取决于清单里有没有「带 SHA256 与
+    // 字节数」的当前平台资产；缺任一条件就退回只提示，不给下载入口。
+    var assets = (release && release.assets) || [];
+    state.updateAsset = pickUpdateAsset(assets);
+    state.updateAssetVersion = release ? release.version : '';
+    state.updateDownloading = false;
+    if (state.updateTimer) {
+      clearTimeout(state.updateTimer);
+      state.updateTimer = null;
+    }
+    var asset = state.updateAsset;
+    var isAdmin = state.user && state.user.role === 'admin';
+    el.updateDownloadPackage.disabled =
+      !(asset && asset.sha256 && asset.size && isAdmin);
+    if (!asset) {
+      setUpdateProgress('发布清单里没有当前平台的安装包，请用下载页手动更新。');
+    } else if (!asset.sha256 || !asset.size) {
+      setUpdateProgress('发布清单缺少 SHA256 或字节数，无法校验，已退回只提示；请用下载页手动更新。');
+    } else if (!isAdmin) {
+      setUpdateProgress('只有管理员可以下载更新包，请用下载页手动更新。');
+    } else {
+      setUpdateProgress('');
+    }
     el.updateModal.hidden = false;
+  }
+
+  function setUpdateProgress(text, isError) {
+    el.updateProgress.hidden = !text;
+    el.updateProgress.textContent = text || '';
+    el.updateProgress.classList.toggle('is-error', !!isError);
   }
 
   function closeUpdateModal() {
@@ -561,6 +633,65 @@
     openUpdateUrl(state.updateUrl);
     closeUpdateModal();
   });
+
+  el.updateDownloadPackage.addEventListener('click', function () {
+    var asset = state.updateAsset;
+    if (!asset || !asset.sha256 || !asset.size || state.updateDownloading) return;
+    state.updateDownloading = true;
+    el.updateDownloadPackage.disabled = true;
+    setUpdateProgress('正在准备下载…');
+    api('POST', '/api/update/download', {
+      version: state.updateAssetVersion,
+      file_name: asset.name,
+      url: asset.url,
+      sha256: asset.sha256,
+      size: asset.size
+    }).then(function () {
+      pollUpdateDownload();
+    }).catch(function (error) {
+      state.updateDownloading = false;
+      el.updateDownloadPackage.disabled = false;
+      setUpdateProgress('下载未开始：' + error.message +
+        '（可用下载页手动更新）', true);
+    });
+  });
+
+  // 轮询本地服务拿进度；失败一律回到「只提示」，不禁用台账，也不自动替换。
+  function pollUpdateDownload() {
+    if (state.updateTimer) clearTimeout(state.updateTimer);
+    state.updateTimer = setTimeout(function () {
+      api('GET', '/api/update/download').then(function (data) {
+        if (data.state === 'done') {
+          state.updateDownloading = false;
+          state.updateTimer = null;
+          el.updateDownloadPackage.disabled = true;
+          setUpdateProgress('已下载并通过 SHA256 + 字节数校验：' + data.path);
+          toast('更新包已下载并通过校验（未安装）');
+          return;
+        }
+        if (data.state === 'failed') {
+          state.updateDownloading = false;
+          state.updateTimer = null;
+          el.updateDownloadPackage.disabled = false;
+          setUpdateProgress('下载失败：' + (data.error || '未知原因') +
+            '；已删除残件，可用下载页手动更新。', true);
+          return;
+        }
+        var total = Number(data.total) || 0;
+        var received = Number(data.received) || 0;
+        setUpdateProgress('正在下载更新包：' + formatBytes(received) +
+          (total ? ' / ' + formatBytes(total) +
+            '（' + Math.floor(received * 100 / total) + '%）' : ''));
+        pollUpdateDownload();
+      }).catch(function (error) {
+        state.updateDownloading = false;
+        state.updateTimer = null;
+        el.updateDownloadPackage.disabled = false;
+        setUpdateProgress('无法获取下载进度：' + error.message +
+          '（可用下载页手动更新）', true);
+      });
+    }, 800);
+  }
 
   // ---------- 会话 ----------
 

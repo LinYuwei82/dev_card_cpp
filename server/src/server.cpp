@@ -33,6 +33,7 @@
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
+#include "devcard/update_package.h"
 #include "devcard/xlsx.h"
 #include "web_assets.h"
 #include "font_coverage.h"
@@ -65,6 +66,20 @@ struct ServerState {
 
   std::mutex sessions_mutex;
   std::map<std::string, Session> sessions;
+
+  // 自更新阶段一：同一时间只允许一个下载任务；状态由后台线程更新。
+  struct UpdateDownload {
+    std::mutex mutex;
+    std::string state = "idle";  // idle / running / done / failed
+    std::uint64_t total = 0;
+    std::uint64_t received = 0;
+    std::filesystem::path part_path;
+    std::string path;
+    std::string sha256;
+    std::string code;
+    std::string error;
+  };
+  std::shared_ptr<UpdateDownload> update = std::make_shared<UpdateDownload>();
 };
 
 std::string json_body(const json& value) { return value.dump(); }
@@ -319,8 +334,14 @@ int status_for(const AppError& error) {
       code == "bad_header" || code == "bad_xlsx" || code == "not_legacy" ||
       code == "bad_backup" || code == "old_password_required" ||
       code == "bad_logo" || code == "logo_too_large" ||
-      code == "bad_company_name" || code == "logo_write")
+      code == "bad_company_name" || code == "logo_write" ||
+      code == "endpoint_not_allowed" || code == "no_update")
     return 400;
+  if (code == "update_disabled") return 403;
+  if (code == "update_busy") return 409;
+  if (code == "manifest_invalid" || code == "download_failed" ||
+      code == "checksum_mismatch")
+    return 502;
   return 500;
 }
 
@@ -450,6 +471,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   if (ec) {
     throw AppError("data_dir", "无法创建数据目录: " + ec.message());
   }
+  // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
+  cleanup_update_partials(options.data_dir / "updates");
 
   // 旧库自动探测：先备份、再只读导入，成功后旧库改名 *.migrated-<时间戳>。
   state.legacy = auto_import_if_needed(options.data_dir);
@@ -579,6 +602,95 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                          create_session(state, user.user_name));
                       set_json(response, json{{"user", user_json(user)}});
                     });
+
+  // 自更新阶段一：下载 + 双校验（SHA256 与字节数），不做替换。
+  // 下载器走系统 curl：TLS 与证书校验由系统提供，服务端只负责白名单、
+  // 落盘到数据目录 updates/、以及校验；任何失败都删残件并回到「只提示」。
+  state.server.Post("/api/update/download",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+                      const json body = parse_body(request.body);
+                      UpdatePackageSpec spec;
+                      spec.version = body.value("version", "");
+                      spec.file_name = body.value("file_name", "");
+                      spec.url = body.value("url", "");
+                      spec.sha256 = body.value("sha256", "");
+                      spec.size =
+                          body.value("size", static_cast<std::uint64_t>(0));
+                      const std::string invalid = validate_update_spec(spec);
+                      if (!invalid.empty()) {
+                        throw AppError(validate_update_spec_code(spec), invalid);
+                      }
+
+                      const std::filesystem::path updates_dir =
+                          state.data_dir / "updates";
+                      const std::filesystem::path part =
+                          updates_dir /
+                          (sanitize_update_file_name(spec.file_name) + ".part");
+                      const std::shared_ptr<ServerState::UpdateDownload> download =
+                          state.update;
+                      {
+                        std::lock_guard<std::mutex> lock(download->mutex);
+                        if (download->state == "running") {
+                          throw AppError("update_busy",
+                                         "已有更新包正在下载，请稍候");
+                        }
+                        download->state = "running";
+                        download->total = spec.size;
+                        download->received = 0;
+                        download->part_path = part;
+                        download->path.clear();
+                        download->sha256.clear();
+                        download->code.clear();
+                        download->error.clear();
+                      }
+                      std::thread([download, updates_dir, spec]() {
+                        const UpdateDownloadOutcome outcome =
+                            download_update_package(updates_dir, spec);
+                        std::lock_guard<std::mutex> lock(download->mutex);
+                        download->part_path.clear();
+                        if (outcome.ok) {
+                          download->state = "done";
+                          download->path = outcome.path;
+                          download->sha256 = outcome.sha256;
+                          download->received = outcome.bytes;
+                          download->total = outcome.bytes;
+                        } else {
+                          download->state = "failed";
+                          download->code = outcome.error_code;
+                          download->error = outcome.error;
+                        }
+                      }).detach();
+                      set_json(response,
+                               json{{"state", "running"}, {"total", spec.size}},
+                               202);
+                    });
+
+  state.server.Get("/api/update/download",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     require_admin(state, request);
+                     const std::shared_ptr<ServerState::UpdateDownload> download =
+                         state.update;
+                     std::lock_guard<std::mutex> lock(download->mutex);
+                     std::uint64_t received = download->received;
+                     if (download->state == "running" &&
+                         !download->part_path.empty()) {
+                       std::error_code ec;
+                       const auto size =
+                           std::filesystem::file_size(download->part_path, ec);
+                       if (!ec) received = static_cast<std::uint64_t>(size);
+                     }
+                     set_json(response,
+                              json{{"state", download->state},
+                                   {"received", received},
+                                   {"total", download->total},
+                                   {"path", download->path},
+                                   {"sha256", download->sha256},
+                                   {"code", download->code},
+                                   {"error", download->error}});
+                   });
 
   state.server.Post("/api/session/logout",
                     [&state](const httplib::Request& request,

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -15,6 +16,8 @@
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
+#include "devcard/sha256.h"
+#include "devcard/update_package.h"
 #include "devcard/xlsx.h"
 
 namespace {
@@ -52,6 +55,103 @@ void check_db_closed(const std::filesystem::path& dir) {
   CHECK(!std::filesystem::exists(db + "-shm"));
 }
 }  // namespace
+
+// 自更新阶段一：白名单、文件名清洗、SHA256 + 字节数双校验、失败删残件。
+void run_update_package_case(const std::filesystem::path& dir) {
+  using namespace devcard;
+  const std::string good_sha = std::string(64, 'a');
+
+  CHECK(is_trusted_update_url(
+      "https://github.com/LinYuwei82/dev_card_cpp/releases/download/v1/DevCard.dmg"));
+  CHECK(is_trusted_update_url("https://objects.githubusercontent.com/pkg"));
+  CHECK(!is_trusted_update_url("http://github.com/x"));
+  CHECK(!is_trusted_update_url("https://evil.example/x"));
+  CHECK(!is_trusted_update_url("https://github.com.evil.example/x"));
+  CHECK(!is_trusted_update_url("https://user@github.com/x"));
+  CHECK(!is_trusted_update_url("https://github.com:8443/x"));
+  CHECK(!is_trusted_update_url("https://github.com"));
+
+  CHECK(sanitize_update_file_name("../../a:b?.dmg") == "a_b_.dmg");
+  CHECK(sanitize_update_file_name("C:\\tmp\\pkg.zip") == "pkg.zip");
+  CHECK(sanitize_update_file_name("..") == "update.bin");
+  CHECK(is_valid_sha256(good_sha));
+  CHECK(!is_valid_sha256("abc"));
+
+  const std::filesystem::path fixture = dir / "fixture.bin";
+  {
+    std::ofstream out(fixture, std::ios::binary);
+    out << "devcard-update-fixture";
+  }
+  const std::string hash = sha256_file(fixture);
+  const std::uint64_t size =
+      static_cast<std::uint64_t>(std::filesystem::file_size(fixture));
+  CHECK(verify_update_file(fixture, size, hash).ok);
+  CHECK(!verify_update_file(fixture, size + 1, hash).ok);
+  const auto wrong_hash = verify_update_file(fixture, size, good_sha);
+  CHECK(!wrong_hash.ok);
+  CHECK(wrong_hash.error.find("SHA256") != std::string::npos);
+
+  UpdatePackageSpec spec;
+  spec.version = "1.2.3";
+  spec.file_name = "../DevCard-1.2.3.zip";
+  spec.url =
+      "https://github.com/example/releases/download/v1.2.3/DevCard-1.2.3.zip";
+  spec.sha256 = hash;
+  spec.size = size;
+  CHECK(validate_update_spec(spec).empty());
+  {
+    UpdatePackageSpec insecure = spec;
+    insecure.url = "http://github.com/example/pkg.zip";
+    CHECK(!validate_update_spec(insecure).empty());
+  }
+
+  const std::filesystem::path updates = dir / "updates";
+  auto copy_fetcher = [&fixture](const std::string&,
+                                 const std::filesystem::path& target,
+                                 std::string*) {
+    std::filesystem::copy_file(fixture, target,
+                               std::filesystem::copy_options::overwrite_existing);
+    return true;
+  };
+  const UpdateDownloadOutcome ok =
+      download_update_package(updates, spec, copy_fetcher);
+  CHECK(ok.ok);
+  CHECK(ok.path == (updates / "DevCard-1.2.3.zip").string());
+  CHECK(std::filesystem::exists(ok.path));
+  CHECK(!std::filesystem::exists(updates / "DevCard-1.2.3.zip.part"));
+  CHECK(ok.sha256 == hash);
+  CHECK(ok.bytes == size);
+
+  const std::filesystem::path failed_dir = dir / "updates-failed";
+  auto offline_fetcher = [](const std::string&,
+                            const std::filesystem::path& target,
+                            std::string* error) {
+    std::ofstream out(target, std::ios::binary);
+    out << "partial";
+    if (error) *error = "模拟断网";
+    return false;
+  };
+  const UpdateDownloadOutcome offline =
+      download_update_package(failed_dir, spec, offline_fetcher);
+  CHECK(!offline.ok);
+  CHECK(offline.error.find("模拟断网") != std::string::npos);
+  CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip.part"));
+  CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip"));
+
+  auto corrupt_fetcher = [](const std::string&,
+                            const std::filesystem::path& target,
+                            std::string*) {
+    std::ofstream out(target, std::ios::binary);
+    out << "corrupted";
+    return true;
+  };
+  const UpdateDownloadOutcome corrupt =
+      download_update_package(failed_dir, spec, corrupt_fetcher);
+  CHECK(!corrupt.ok);
+  CHECK(corrupt.error.find("校验失败") != std::string::npos);
+  CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip.part"));
+  CHECK(!std::filesystem::exists(failed_dir / "DevCard-1.2.3.zip"));
+}
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_user_service_case(const std::filesystem::path& dir) {
@@ -611,6 +711,14 @@ int main() {
     const std::filesystem::path dir = temp_db().parent_path();
     run_company_name_case(dir);
     check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 自更新阶段一：地址白名单、文件名清洗、双校验与失败清理。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_update_package_case(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
   }

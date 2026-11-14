@@ -11,6 +11,7 @@ add_library(devcard_core STATIC
     src/password.cpp
     src/settings.cpp
     src/sha256.cpp
+    src/update_package.cpp
     src/xlsx.cpp
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/argon2.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/core.c"
