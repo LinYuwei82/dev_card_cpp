@@ -34,6 +34,8 @@ $Peer       = if ($Side -eq 'mac') { 'win' } elseif ($Side -eq 'win') { 'mac' } 
 $OfflineSeconds = 45 * 60
 $MaxBodyBytes   = 8192
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+# --dry-run：演练身份用。不写心跳、不移动文件，绝不碰 presence/<对方>.txt。
+$DryRun = $false
 
 if (-not $Peer) {
   Write-Error "DEVCARD_SIDE 只能是 mac 或 win（当前：$Side）"
@@ -121,6 +123,7 @@ function Invoke-Send {
       '--subject' { $i++; $subject = [string]$args[$i] }
       '--body'    { $i++; $body = [string]$args[$i] }
       '--re'      { $i++; $re = [string]$args[$i] }
+      '--dry-run' { $DryRun = $true }
       default {
         if ($args[$i]) { [Console]::Error.WriteLine("未知参数：$($args[$i])"); exit 2 }
       }
@@ -154,13 +157,19 @@ function Invoke-Send {
   } catch {
     Stop-MailboxUnavailable "写入 $tmp 失败：$($_.Exception.Message)"
   }
+  if ($DryRun) {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    Write-Output "（dry-run）将发送：$name（未写入）"
+    return
+  }
   if (-not (Move-WithRetry $tmp (Join-Path $Inbox $name))) { exit 1 }
   Write-Output "已发送：$name"
 }
 
 function Invoke-Poll {
+  if ($args -contains '--dry-run') { $DryRun = $true }
   Assert-Mailbox
-  Write-Heartbeat
+  if (-not $DryRun) { Write-Heartbeat }
   $items = Get-PeerMessages
   $count = 0
   foreach ($item in $items) {
@@ -168,7 +177,9 @@ function Invoke-Poll {
     Write-Output ('===== ' + $item.Name + ' =====')
     Write-Output ([System.IO.File]::ReadAllText($item.FullName, $Utf8NoBom))
     # 读过但没回：移到 reading/，发送方据此能区分「没读」和「读了没回」。
-    if (-not (Move-WithRetry $item.FullName (Join-Path $Reading $item.Name))) {
+    if ($DryRun) {
+      Write-Output "（dry-run）不会移动 $($item.Name)"
+    } elseif (-not (Move-WithRetry $item.FullName (Join-Path $Reading $item.Name))) {
       [Console]::Error.WriteLine('（移动失败，消息仍在 inbox，下次 poll 会再读到）')
     }
   }
@@ -177,8 +188,9 @@ function Invoke-Poll {
 }
 
 function Invoke-Peek {
+  if ($args -contains '--dry-run') { $DryRun = $true }
   Assert-Mailbox
-  Write-Heartbeat
+  if (-not $DryRun) { Write-Heartbeat }
   $items = Get-PeerMessages
   foreach ($item in $items) {
     Write-Output $item.Name
@@ -198,6 +210,7 @@ function Invoke-Ack {
   while ($i -lt $args.Count) {
     switch ($args[$i]) {
       '--file' { $i++; $file = [string]$args[$i] }
+      '--dry-run' { $DryRun = $true }
       default {
         if ($args[$i]) { [Console]::Error.WriteLine("未知参数：$($args[$i])"); exit 2 }
       }
@@ -211,13 +224,18 @@ function Invoke-Ack {
     [Console]::Error.WriteLine("reading/ 里没有 $file（先 poll 读过才能 ack）")
     exit 2
   }
+  if ($DryRun) {
+    Write-Output "（dry-run）将归档：$file"
+    return
+  }
   if (-not (Move-WithRetry $source (Join-Path $Archive $file))) { exit 1 }
   Write-Output "已归档：$file"
 }
 
 function Invoke-Status {
+  if ($args -contains '--dry-run') { $DryRun = $true }
   Assert-Mailbox
-  Write-Heartbeat
+  if (-not $DryRun) { Write-Heartbeat }
   Write-Output "信箱：$MailboxDir（可写）"
   Write-Output "本机：$Side"
 
@@ -272,11 +290,11 @@ $rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
 
 switch ($command) {
   'send'      { Invoke-Send @rest }
-  'poll'      { Invoke-Poll }
-  'peek'      { Invoke-Peek }
+  'poll'      { Invoke-Poll @rest }
+  'peek'      { Invoke-Peek @rest }
   'ack'       { Invoke-Ack @rest }
   'heartbeat' { Assert-Mailbox; Write-Heartbeat; Write-Output "心跳已更新：$(Join-Path $Presence ($Side + '.txt'))" }
-  'status'    { Invoke-Status }
+  'status'    { Invoke-Status @rest }
   ''          { Get-Help $PSCommandPath -Detailed }
   default     { [Console]::Error.WriteLine("未知命令：$command"); exit 2 }
 }

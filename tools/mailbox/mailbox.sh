@@ -26,6 +26,8 @@ PRESENCE="$MAILBOX_DIR/presence"
 # 离线判据 45 分钟 = 3 × 15 分钟轮询间隔，避免两边节奏错位导致持续误报。
 PEER_OFFLINE_SECONDS=$((45 * 60))
 MAX_BODY_BYTES=8192
+# --dry-run：演练身份用。不写心跳、不移动文件，绝不碰 presence/<对方>.txt。
+DRY_RUN=0
 
 if [ -n "${DEVCARD_SIDE:-}" ]; then
   SIDE="$DEVCARD_SIDE"
@@ -116,6 +118,7 @@ cmd_send() {
       --subject) [ $# -ge 2 ] || { echo "--subject 缺少参数" >&2; exit 2; }; subject="$2"; shift 2 ;;
       --body) [ $# -ge 2 ] || { echo "--body 缺少参数" >&2; exit 2; }; body="$2"; shift 2 ;;
       --re) [ $# -ge 2 ] || { echo "--re 缺少参数" >&2; exit 2; }; re="$2"; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
       *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
   done
@@ -153,6 +156,11 @@ cmd_send() {
   } >"$tmp" || { [ "$body" = "-" ] && rm -f "$body_file"; fail "写入 $tmp 失败"; }
   [ "$body" = "-" ] && rm -f "$body_file"
 
+  if [ "$DRY_RUN" -eq 1 ]; then
+    rm -f "$tmp"
+    echo "（dry-run）将发送：$name（未写入）"
+    return 0
+  fi
   if ! move_file "$tmp" "$INBOX/$name"; then
     exit 1
   fi
@@ -160,8 +168,9 @@ cmd_send() {
 }
 
 cmd_poll() {
+  for a in "$@"; do [ "$a" = "--dry-run" ] && DRY_RUN=1; done
   require_mailbox
-  write_heartbeat
+  [ "$DRY_RUN" -eq 1 ] || write_heartbeat
   local count=0 name
   # 文件名排序即时间排序；.tmp- 是没写完的半截文件，跳过。
   while IFS= read -r name; do
@@ -175,7 +184,9 @@ cmd_poll() {
     cat "$INBOX/$name"
     echo
     # 读过但没回：移到 reading/，发送方据此能区分「没读」和「读了没回」。
-    if ! move_file "$INBOX/$name" "$READING/$name"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      echo "（dry-run）不会移动 $name"
+    elif ! move_file "$INBOX/$name" "$READING/$name"; then
       echo "（移动失败，消息仍在 inbox，下次 poll 会再读到）" >&2
     fi
   done <<EOF
@@ -194,19 +205,25 @@ cmd_ack() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --file) [ $# -ge 2 ] || { echo "--file 缺少参数" >&2; exit 2; }; name="$2"; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
       *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
   done
   [ -n "$name" ] || { echo "缺少 --file <文件名>" >&2; exit 2; }
   require_mailbox
   [ -f "$READING/$name" ] || { echo "reading/ 里没有 ${name}（先 poll 读过才能 ack）" >&2; exit 2; }
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "（dry-run）将归档：$name"
+    return 0
+  fi
   move_file "$READING/$name" "$ARCHIVE/$name" || exit 1
   echo "已归档：$name"
 }
 
 cmd_peek() {
+  for a in "$@"; do [ "$a" = "--dry-run" ] && DRY_RUN=1; done
   require_mailbox
-  write_heartbeat
+  [ "$DRY_RUN" -eq 1 ] || write_heartbeat
   local count=0 name
   while IFS= read -r name; do
     [ -n "$name" ] || continue
@@ -224,8 +241,9 @@ EOF
 }
 
 cmd_status() {
+  for a in "$@"; do [ "$a" = "--dry-run" ] && DRY_RUN=1; done
   require_mailbox
-  write_heartbeat
+  [ "$DRY_RUN" -eq 1 ] || write_heartbeat
   local now self_ts peer_ts age_min unread reading name
   now="$(to_epoch "$(now_utc)")"
 
@@ -294,6 +312,9 @@ usage() {
   mailbox.sh ack --file <文件名>  回复发出后把 reading/ 里的消息归档
   mailbox.sh heartbeat 刷新 presence/<side>.txt
   mailbox.sh status    信箱可用性、双方心跳、未读与待回条数
+
+任意命令可加 --dry-run：不写心跳、不移动文件（演练身份必须用它，
+不要靠改 DEVCARD_SIDE 去假装对方——那会污染 presence/<对方>.txt）。
 EOF
 }
 
@@ -301,11 +322,11 @@ cmd="${1:-}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
   send) cmd_send "$@" ;;
-  poll) cmd_poll ;;
-  peek) cmd_peek ;;
+  poll) cmd_poll "$@" ;;
+  peek) cmd_peek "$@" ;;
   ack) cmd_ack "$@" ;;
   heartbeat) require_mailbox; write_heartbeat; echo "心跳已更新：$PRESENCE/$SIDE.txt" ;;
-  status) cmd_status ;;
+  status) cmd_status "$@" ;;
   ""|-h|--help|help) usage ;;
   *) echo "未知命令：$cmd" >&2; usage >&2; exit 2 ;;
 esac
