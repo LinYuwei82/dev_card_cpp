@@ -306,90 +306,93 @@ int main() {
     const std::filesystem::path dir = temp_db().parent_path();
     const std::filesystem::path file = dir / "devicedb.db";
     devcard::Db db(file);
-    devcard::migrate(db);
+    {
+      // Db 先析构再删目录：Windows 不允许删打开中的库文件（含 WAL 的 -wal/-shm）。
+      devcard::migrate(db);
 
-    const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
-    CHECK(seed.seeded);
-    CHECK(seed.accounts.size() == 2);
-    CHECK(std::filesystem::exists(seed.password_file));
-    CHECK(!devcard::seed_default_users(db, dir).seeded);  // 幂等：已有账号不再重建
+      const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
+      CHECK(seed.seeded);
+      CHECK(seed.accounts.size() == 2);
+      CHECK(std::filesystem::exists(seed.password_file));
+      CHECK(!devcard::seed_default_users(db, dir).seeded);  // 幂等：已有账号不再重建
 
-    devcard::UserService users(db);
-    CHECK(users.count() == 2);
+      devcard::UserService users(db);
+      CHECK(users.count() == 2);
 
-    const std::string root_password = seed.accounts[0].second;
-    const devcard::User root = users.authenticate("root", root_password);
-    CHECK(root.must_change_password);
-    CHECK(users.local_user() == "root");
+      const std::string root_password = seed.accounts[0].second;
+      const devcard::User root = users.authenticate("root", root_password);
+      CHECK(root.must_change_password);
+      CHECK(users.local_user() == "root");
 
-    bool bad_login = false;
-    try {
-      users.authenticate("root", "definitely-wrong");
-    } catch (const devcard::AppError& error) {
-      bad_login = std::string(error.code()) == "invalid_credentials";
-    }
-    CHECK(bad_login);
-
-    for (int i = 0; i < 4; ++i) {
+      bool bad_login = false;
       try {
         users.authenticate("root", "definitely-wrong");
-      } catch (const devcard::AppError&) {
+      } catch (const devcard::AppError& error) {
+        bad_login = std::string(error.code()) == "invalid_credentials";
       }
+      CHECK(bad_login);
+
+      for (int i = 0; i < 4; ++i) {
+        try {
+          users.authenticate("root", "definitely-wrong");
+        } catch (const devcard::AppError&) {
+        }
+      }
+      bool locked = false;
+      try {
+        users.authenticate("root", root_password);
+      } catch (const devcard::AppError& error) {
+        locked = std::string(error.code()) == "locked";
+      }
+      CHECK(locked);
+
+      // 命令行恢复通道：重置后清锁、强制改密。
+      users.reset_password("root", "ResetPassw0rd");
+      const devcard::User reset = users.authenticate("root", "ResetPassw0rd");
+      CHECK(reset.must_change_password);
+
+      users.change_password("root", "ResetPassw0rd", "ChangedPassw0rd");
+      CHECK(!users.get("root").must_change_password);
+      bool old_rejected = false;
+      try {
+        users.authenticate("root", "ResetPassw0rd");
+      } catch (const devcard::AppError&) {
+        old_rejected = true;
+      }
+      CHECK(old_rejected);
+      CHECK(users.authenticate("root", "ChangedPassw0rd").user_name == "root");
+
+      bool weak = false;
+      try {
+        users.create("short", "123", "", "user");
+      } catch (const devcard::AppError& error) {
+        weak = std::string(error.code()) == "weak_password";
+      }
+      CHECK(weak);
+
+      const devcard::User normal =
+          users.create("tester", "TesterPassw0rd", "测试员", "user");
+      CHECK(normal.role == "user");
+      CHECK(normal.must_change_password);
+
+      bool last_admin = false;
+      try {
+        users.remove("root", "tester");
+      } catch (const devcard::AppError& error) {
+        last_admin = std::string(error.code()) == "last_admin";
+      }
+      CHECK(last_admin);
+
+      users.remove("tester", "root");
+      CHECK(users.count() == 2);
+
+      // 两个默认账号都改密后，一次性口令文件可删除。
+      users.change_password("安业物业", seed.accounts[1].second, "AnyePassw0rd");
+      CHECK(!users.any_must_change());
+      devcard::remove_seed_password_file(dir);
+      CHECK(!std::filesystem::exists(seed.password_file));
+
     }
-    bool locked = false;
-    try {
-      users.authenticate("root", root_password);
-    } catch (const devcard::AppError& error) {
-      locked = std::string(error.code()) == "locked";
-    }
-    CHECK(locked);
-
-    // 命令行恢复通道：重置后清锁、强制改密。
-    users.reset_password("root", "ResetPassw0rd");
-    const devcard::User reset = users.authenticate("root", "ResetPassw0rd");
-    CHECK(reset.must_change_password);
-
-    users.change_password("root", "ResetPassw0rd", "ChangedPassw0rd");
-    CHECK(!users.get("root").must_change_password);
-    bool old_rejected = false;
-    try {
-      users.authenticate("root", "ResetPassw0rd");
-    } catch (const devcard::AppError&) {
-      old_rejected = true;
-    }
-    CHECK(old_rejected);
-    CHECK(users.authenticate("root", "ChangedPassw0rd").user_name == "root");
-
-    bool weak = false;
-    try {
-      users.create("short", "123", "", "user");
-    } catch (const devcard::AppError& error) {
-      weak = std::string(error.code()) == "weak_password";
-    }
-    CHECK(weak);
-
-    const devcard::User normal =
-        users.create("tester", "TesterPassw0rd", "测试员", "user");
-    CHECK(normal.role == "user");
-    CHECK(normal.must_change_password);
-
-    bool last_admin = false;
-    try {
-      users.remove("root", "tester");
-    } catch (const devcard::AppError& error) {
-      last_admin = std::string(error.code()) == "last_admin";
-    }
-    CHECK(last_admin);
-
-    users.remove("tester", "root");
-    CHECK(users.count() == 2);
-
-    // 两个默认账号都改密后，一次性口令文件可删除。
-    users.change_password("安业物业", seed.accounts[1].second, "AnyePassw0rd");
-    CHECK(!users.any_must_change());
-    devcard::remove_seed_password_file(dir);
-    CHECK(!std::filesystem::exists(seed.password_file));
-
     std::filesystem::remove_all(dir);
   }
 
@@ -447,58 +450,61 @@ int main() {
     CHECK(!report.warnings.empty());  // 超长字段截断告警
 
     devcard::Db db(dir / "devicedb.db");
-    devcard::migrate(db);
-    devcard::DeviceDao devices;
-    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
-    devcard::Device sample;
-    CHECK(devices.find(db, 1, sample));
-    CHECK(sample.dev_name == "设备1");
-    CHECK(sample.location == "B1栋");
-    CHECK(devices.find(db, 13, sample));
-    CHECK(sample.phone.empty());  // NULL → ''
-    CHECK(sample.dev_name.size() <= 60);  // 已按 20 个字符截断
+    {
+      // Db 先析构再删目录：Windows 不允许删打开中的库文件（含 WAL 的 -wal/-shm）。
+      devcard::migrate(db);
+      devcard::DeviceDao devices;
+      CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+      devcard::Device sample;
+      CHECK(devices.find(db, 1, sample));
+      CHECK(sample.dev_name == "设备1");
+      CHECK(sample.location == "B1栋");
+      CHECK(devices.find(db, 13, sample));
+      CHECK(sample.phone.empty());  // NULL → ''
+      CHECK(sample.dev_name.size() <= 60);  // 已按 20 个字符截断
 
-    devcard::UserService users(db);
-    CHECK(users.count() == 3);
-    const devcard::User root = users.get("root");
-    CHECK(root.role == "admin");
-    CHECK(root.must_change_password);
-    CHECK(root.password_hash.rfind("$argon2id$", 0) == 0);
-    CHECK(root.password_hash.find("123456") == std::string::npos);
-    CHECK(users.get("安业物业").must_change_password);
-    CHECK(!users.get("operator").must_change_password);
-    CHECK(devcard::get_setting(db, "legacy_imported_from") == report.source);
-    CHECK(users.authenticate("root", "123456").must_change_password);
+      devcard::UserService users(db);
+      CHECK(users.count() == 3);
+      const devcard::User root = users.get("root");
+      CHECK(root.role == "admin");
+      CHECK(root.must_change_password);
+      CHECK(root.password_hash.rfind("$argon2id$", 0) == 0);
+      CHECK(root.password_hash.find("123456") == std::string::npos);
+      CHECK(users.get("安业物业").must_change_password);
+      CHECK(!users.get("operator").must_change_password);
+      CHECK(devcard::get_setting(db, "legacy_imported_from") == report.source);
+      CHECK(users.authenticate("root", "123456").must_change_password);
 
-    // 重复导入：按 dev_id / user_name 幂等跳过，不追加。
-    const devcard::LegacyImportReport again =
-        devcard::import_legacy(legacy_file, dir);
-    CHECK(again.performed);
-    CHECK(again.devices_imported == 0);
-    CHECK(again.devices_skipped == 13);
-    CHECK(again.users_imported == 0);
-    CHECK(again.users_skipped == 3);
-    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+      // 重复导入：按 dev_id / user_name 幂等跳过，不追加。
+      const devcard::LegacyImportReport again =
+          devcard::import_legacy(legacy_file, dir);
+      CHECK(again.performed);
+      CHECK(again.devices_imported == 0);
+      CHECK(again.devices_skipped == 13);
+      CHECK(again.users_imported == 0);
+      CHECK(again.users_skipped == 3);
+      CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
 
-    // 备份与恢复：删除一条后可从备份恢复。
-    const devcard::BackupEntry backup =
-        devcard::create_backup(db, dir, "test");
-    CHECK(std::filesystem::exists(backup.path));
-    CHECK(backup.bytes > 0);
-    devcard::DeviceService service(db);
-    service.remove(1);
-    CHECK(devices.count(db, devcard::DeviceQuery{}) == 12);
-    devcard::restore_backup(db, dir, backup.name);
-    CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+      // 备份与恢复：删除一条后可从备份恢复。
+      const devcard::BackupEntry backup =
+          devcard::create_backup(db, dir, "test");
+      CHECK(std::filesystem::exists(backup.path));
+      CHECK(backup.bytes > 0);
+      devcard::DeviceService service(db);
+      service.remove(1);
+      CHECK(devices.count(db, devcard::DeviceQuery{}) == 12);
+      devcard::restore_backup(db, dir, backup.name);
+      CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
 
-    bool bad_name = false;
-    try {
-      devcard::restore_backup(db, dir, "../devicedb.db");
-    } catch (const devcard::AppError& error) {
-      bad_name = std::string(error.code()) == "bad_backup";
+      bool bad_name = false;
+      try {
+        devcard::restore_backup(db, dir, "../devicedb.db");
+      } catch (const devcard::AppError& error) {
+        bad_name = std::string(error.code()) == "bad_backup";
+      }
+      CHECK(bad_name);
+
     }
-    CHECK(bad_name);
-
     std::filesystem::remove_all(dir);
   }
 
@@ -506,29 +512,32 @@ int main() {
     // 公司名：默认值回落；自定义按 13 个显示宽度截断（汉字 1，ASCII 0.5）。
     const std::filesystem::path dir = temp_db().parent_path();
     devcard::Db db(dir / "devicedb.db");
-    devcard::migrate(db);
+    {
+      // Db 先析构再删目录：Windows 不允许删打开中的库文件（含 WAL 的 -wal/-shm）。
+      devcard::migrate(db);
 
-    CHECK(devcard::company_name(db) ==
-          std::string(devcard::kDefaultCompanyName));
-    CHECK(devcard::company_print_name(db) ==
-          std::string(devcard::kDefaultCompanyName));
-    CHECK(devcard::company_name_width("安业AB") == 3.0);
-    CHECK(devcard::company_name_width("") == 0.0);
+      CHECK(devcard::company_name(db) ==
+            std::string(devcard::kDefaultCompanyName));
+      CHECK(devcard::company_print_name(db) ==
+            std::string(devcard::kDefaultCompanyName));
+      CHECK(devcard::company_name_width("安业AB") == 3.0);
+      CHECK(devcard::company_name_width("") == 0.0);
 
-    db.write([](sqlite3* conn) {
-      devcard::set_setting(conn, "print_company_name",
-                           "深圳市安业物业管理有限公司南山分公司");
-    });
-    CHECK(devcard::company_name_width(devcard::company_name(db)) == 18.0);
-    CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
+      db.write([](sqlite3* conn) {
+        devcard::set_setting(conn, "print_company_name",
+                             "深圳市安业物业管理有限公司南山分公司");
+      });
+      CHECK(devcard::company_name_width(devcard::company_name(db)) == 18.0);
+      CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
 
-    db.write([](sqlite3* conn) {
-      devcard::set_setting(conn, "print_company_name",
-                           "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-    });
-    CHECK(devcard::company_name_width(devcard::company_name(db)) == 13.0);
-    CHECK(devcard::company_print_name(db) == "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+      db.write([](sqlite3* conn) {
+        devcard::set_setting(conn, "print_company_name",
+                             "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+      });
+      CHECK(devcard::company_name_width(devcard::company_name(db)) == 13.0);
+      CHECK(devcard::company_print_name(db) == "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
 
+    }
     std::filesystem::remove_all(dir);
   }
 
@@ -537,29 +546,32 @@ int main() {
     const std::filesystem::path dir = temp_db().parent_path();
     const std::filesystem::path file = dir / "devicedb.db";
     devcard::Db db(file);
-    devcard::migrate(db);
-    devcard::DeviceService service(db);
+    {
+      // Db 先析构再删目录：Windows 不允许删打开中的库文件（含 WAL 的 -wal/-shm）。
+      devcard::migrate(db);
+      devcard::DeviceService service(db);
 
-    devcard::xlsx::Sheet data;
-    data.name = "设备台账";
-    data.rows.push_back(devcard::DeviceService::expected_header());
-    devcard::xlsx::Sheet help;
-    help.name = "填写说明";
-    help.rows = {{"设备名称", "必填"}, {"示例（假号码）", "13800000001"}};
+      devcard::xlsx::Sheet data;
+      data.name = "设备台账";
+      data.rows.push_back(devcard::DeviceService::expected_header());
+      devcard::xlsx::Sheet help;
+      help.name = "填写说明";
+      help.rows = {{"设备名称", "必填"}, {"示例（假号码）", "13800000001"}};
 
-    const std::string bytes = devcard::xlsx::write_workbook({data, help});
-    CHECK(!bytes.empty());
-    const auto rows = devcard::xlsx::read(bytes);
-    CHECK(rows.size() == 1);
-    CHECK(rows[0] == devcard::DeviceService::expected_header());
+      const std::string bytes = devcard::xlsx::write_workbook({data, help});
+      CHECK(!bytes.empty());
+      const auto rows = devcard::xlsx::read(bytes);
+      CHECK(rows.size() == 1);
+      CHECK(rows[0] == devcard::DeviceService::expected_header());
 
-    // 模板原样上传 = 0 行导入，不会带入假数据。
-    const devcard::ImportReport report = service.import_rows(rows);
-    CHECK(report.imported == 0);
-    CHECK(report.skipped_empty == 0);
-    CHECK(report.duplicates == 0);
-    CHECK(service.export_rows().size() == 1);  // 只剩表头
+      // 模板原样上传 = 0 行导入，不会带入假数据。
+      const devcard::ImportReport report = service.import_rows(rows);
+      CHECK(report.imported == 0);
+      CHECK(report.skipped_empty == 0);
+      CHECK(report.duplicates == 0);
+      CHECK(service.export_rows().size() == 1);  // 只剩表头
 
+    }
     std::filesystem::remove_all(dir);
   }
 
