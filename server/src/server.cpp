@@ -380,6 +380,7 @@ const StatusTable& error_status_table() {
       {"forbidden", 403},
       {"must_change_password", 403},
       {"conflict", 409},
+      {"bad_request", 400},
       {"bad_version", 400},
       {"invalid_device", 400},
       {"invalid_user", 400},
