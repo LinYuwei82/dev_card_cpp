@@ -1,4 +1,4 @@
-# check_bootstrap.ps1 —— 中文数据目录下 /api/bootstrap 实跑（Windows 入口）
+﻿# check_bootstrap.ps1 —— 中文数据目录下 /api/bootstrap 实跑（Windows 入口）
 #
 # 用法：    powershell -ExecutionPolicy Bypass -File tools\verify\check_bootstrap.ps1
 #           [-Server PATH] [-DataDir PATH] [-BuildDir PATH]
@@ -15,13 +15,15 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script = Join-Path $here "check_bootstrap.py"
 
 $python = $null
-foreach ($candidate in @("python3", "python")) {
-    $found = Get-Command $candidate -ErrorAction SilentlyContinue
-    if ($found) { $python = @($found.Source); break }
-}
-if (-not $python) {
-    $py = Get-Command "py" -ErrorAction SilentlyContinue
-    if ($py) { $python = @($py.Source, "-3") }
+# Windows 的 WindowsApps 里有 python3.exe 的应用执行别名，Get-Command 能找到它，
+# 但运行起来直接 9009。所以候选必须真跑一次 --version 才算数。
+foreach ($candidate in @(@("python"), @("python3"), @("py", "-3"))) {
+    $found = Get-Command $candidate[0] -ErrorAction SilentlyContinue
+    if (-not $found) { continue }
+    $pre = @()
+    if ($candidate.Length -gt 1) { $pre = @($candidate[1..($candidate.Length - 1)]) }
+    & $found.Source @($pre + @("--version")) *> $null
+    if ($LASTEXITCODE -eq 0) { $python = @($found.Source) + $pre; break }
 }
 if (-not $python) {
     Write-Error "需要 Python 3（python3 / python / py -3）"
@@ -32,5 +34,8 @@ $arguments = @($script)
 if ($Server) { $arguments += @("--server", $Server) }
 if ($DataDir) { $arguments += @("--data-dir", $DataDir) }
 if ($BuildDir) { $arguments += @("--build-dir", $BuildDir) }
-& $python[0] @($python[1..($python.Length - 1)] + $arguments)
+# $python 只有一个元素时（最常见）$python[1..0] 会取到 $null，命令直接 9009。
+$prefix = @()
+if ($python.Length -gt 1) { $prefix = @($python[1..($python.Length - 1)]) }
+& $python[0] @($prefix + $arguments)
 exit $LASTEXITCODE
