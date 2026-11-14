@@ -23,8 +23,16 @@
 #include <string>
 #include <vector>
 
+#include "devcard/paths.h"
+
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
 #endif
 
 #ifndef DEVCARD_CMAKE_COMMAND
@@ -70,7 +78,10 @@ const std::string kNewlineToken = " \"\\n\" ";
 //       ACP 窄命令行 → exit 0、有产物；UTF-8 窄命令行 → exit 1、file() 打不开；
 //       宽命令行 → exit 0、有产物。emoji 目录（D:\work\😀\三向）下 ACP 连编码都失败，
 //       宽命令行仍 exit 0。所以正确解是「不产生窄 argv」，不是选一种窄编码。
-//   POSIX 走 popen，参数逐个加单引号，不依赖字符串拼接的正确性。
+//   POSIX 走 posix_spawn，argv 原样交给 exec，不经过 shell 解析：
+//     走 shell 等于把引号与编码交给别人的解析器，路径里有空格、单引号、换行就变形。
+//   两侧共用同一套语义：输出重定向到临时文件，进程结束再整块读回来；
+//   退出码单独拿，所以「进程失败」与「输出内容不对」是两条可区分的判据。
 #ifdef _WIN32
 std::wstring widen_utf8(const std::string& text) {
   if (text.empty()) return std::wstring();
@@ -84,26 +95,23 @@ std::wstring widen_utf8(const std::string& text) {
 }
 #endif
 
-std::string quote_arg(const std::string& arg) {
+// 夹具目录与日志共用的唯一后缀：进程号 + 进程内自增。
+// 原先是 `std::rand()`（未播种）：同机并行的两个测试进程拿到同一串数，
+// 目录与日志会互相覆盖——读到别人的输出，判据就假绿或假红。
+std::string unique_suffix() {
+  static unsigned long long seq = 0;
 #ifdef _WIN32
-  return "\"" + arg + "\"";
+  const unsigned long pid = GetCurrentProcessId();
 #else
-  std::string quoted = "'";
-  for (char c : arg) {
-    if (c == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += c;
-    }
-  }
-  return quoted + "'";
+  const unsigned long pid = static_cast<unsigned long>(::getpid());
 #endif
+  return std::to_string(pid) + "-" + std::to_string(++seq);
 }
 
 int run_process(const std::vector<std::string>& args, std::string* output) {
 #ifdef _WIN32
-  const fs::path log = fs::temp_directory_path() /
-                       ("devcard-spawn-" + std::to_string(std::rand()) + ".log");
+  const fs::path log =
+      fs::temp_directory_path() / ("devcard-spawn-" + unique_suffix() + ".log");
   SECURITY_ATTRIBUTES inherit = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
   HANDLE sink = CreateFileW(log.wstring().c_str(), GENERIC_WRITE,
                             FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
@@ -146,26 +154,39 @@ int run_process(const std::vector<std::string>& args, std::string* output) {
   fs::remove(log);
   return code;
 #else
-  std::string command;
-  for (const auto& arg : args) {
-    if (!command.empty()) {
-      command += ' ';
-    }
-    command += quote_arg(arg);
-  }
-  command += " 2>&1";
-  FILE* pipe = popen(command.c_str(), "r");
-  if (pipe == nullptr) {
+  const fs::path log =
+      fs::temp_directory_path() / ("devcard-spawn-" + unique_suffix() + ".log");
+  FILE* sink = std::fopen(log.c_str(), "wb");
+  if (sink == nullptr) {
     return -1;
   }
-  char buffer[512];
-  while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    if (output != nullptr) {
-      *output += buffer;
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& arg : args) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_adddup2(&actions, fileno(sink), STDOUT_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, fileno(sink), STDERR_FILENO);
+  pid_t pid = 0;
+  const int spawned =
+      posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  std::fclose(sink);
+  int code = -1;
+  if (spawned == 0) {
+    int status = 0;
+    if (waitpid(pid, &status, 0) == pid) {
+      code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
   }
-  const int status = pclose(pipe);
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  if (output != nullptr) {
+    *output = read_bytes(log);
+  }
+  fs::remove(log);
+  return code;
 #endif
 }
 
@@ -365,8 +386,7 @@ struct RunResult {
 RunResult generate(const std::string& name, const std::string& index_html) {
   RunResult result;
   const fs::path root = fs::temp_directory_path() /
-                        ("devcard-embed-" + name + "-" +
-                         std::to_string(std::rand()));
+                        ("devcard-embed-" + name + "-" + unique_suffix());
   fs::create_directories(root / "in");
   const fs::path input = root / "in";
   write_bytes(input / "index.html", index_html);
@@ -375,12 +395,14 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
   const fs::path output = root / "out.cpp";
 
-  // argv 的编码归属由 Windows 侧统一收口（宽命令行 + 工作目录），本文件先保持原样，
-  // 等 win-m5 的版本落地后按它对齐；不要在这里再造第三份转换。
+  // argv 一律 UTF-8：路径走 path_to_utf8，不用 `.string()`。
+  //    `.string()` 走 ACP：中文目录会给出 GBK 字节（再按 UTF-8 解码就是乱码，
+  //    cmake 报 file failed to open）；emoji 目录更直接——ACP 表达不了，
+  //    `.string()` 抛 std::system_error，未接住会把整个二进制带崩。
   const std::vector<std::string> args = {
       DEVCARD_CMAKE_COMMAND,
-      "-DINPUT_DIR=" + input.string(),
-      "-DOUTPUT=" + output.string(),
+      "-DINPUT_DIR=" + devcard::path_to_utf8(input),
+      "-DOUTPUT=" + devcard::path_to_utf8(output),
       "-P",
       script_path(),
   };
@@ -484,11 +506,7 @@ int main() {
     const RunResult bad = generate("reject-cr", "a\r\nb\n");
     CHECK(bad.code != 0);
     CHECK(!bad.output.empty());
-    if (bad.output.find("含 CR") == std::string::npos) {
-      std::cerr << "  reject-cr: code=" << bad.code << " 输出=" << bad.output
-                << "\n";
-    }
-    if (bad.output.find("CR") == std::string::npos) {
+    if (compact(bad.output).find("含 CR") == std::string::npos) {
       std::cerr << "  reject-cr: code=" << bad.code << " 输出=" << bad.output
                 << "\n";
     }
