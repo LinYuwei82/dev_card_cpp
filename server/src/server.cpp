@@ -32,6 +32,7 @@
 #include "devcard/settings.h"
 #include "devcard/xlsx.h"
 #include "web_assets.h"
+#include "font_coverage.h"
 
 namespace devcard {
 namespace {
@@ -54,6 +55,7 @@ struct ServerState {
   std::filesystem::path data_dir;
   std::filesystem::path font_dir;
   std::map<std::string, std::string> fonts;
+  FontCoverage coverage;
   std::string local_token;
   LegacyImportReport legacy;
   bool seeded = false;
@@ -458,6 +460,15 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
       state.fonts[name] = std::move(bytes);
     }
   }
+  // 「哪些字能印」的唯一判据取自随包字体的 cmap，不做手写清单：
+  // 换字体或换字符集时，它自动跟着变。
+  const auto regular = state.fonts.find("NotoSansSC-Regular.subset.ttf");
+  if (regular != state.fonts.end()) {
+    state.coverage = FontCoverage::parse(regular->second);
+    if (!state.coverage.error().empty()) {
+      std::cerr << "警告：解析子集字体 cmap 失败：" << state.coverage.error() << std::endl;
+    }
+  }
 
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;
@@ -653,10 +664,23 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      response.body = body;
                    });
 
+  // 打印字体覆盖范围：前端据此在录入与预览时提示「这些字不在打印字体范围内」。
+  // 清单来自随包字体 cmap，不是手写表格，换字体会自动跟着变。
+  state.server.Get("/api/fonts/coverage",
+                   [&state](const httplib::Request&, httplib::Response& response) {
+                     json ranges = json::array();
+                     for (const auto& range : state.coverage.ranges()) {
+                       ranges.push_back({range.first, range.second});
+                     }
+                     set_json(response,
+                              json{{"available", !state.coverage.empty()},
+                                   {"count", state.coverage.count()},
+                                   {"ranges", ranges}});
+                   });
+
   // 打印数据快照：与台账共用筛选条件，一次取全量（不分页），供前端排版。
   // 前端导出 PDF 与直接打印复用同一份返回，不再二次请求。
-  state.server.Get("/api/print/cards",
-                   [&state](const httplib::Request& request,
+  state.server.Get("/api/print/cards", [&state](const httplib::Request& request,
                             httplib::Response& response) {
                      DeviceQuery query = query_from(request);
                      query.page = 0;

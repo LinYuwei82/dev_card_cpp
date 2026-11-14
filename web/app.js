@@ -15,6 +15,9 @@
     version: '',
     schemaVersion: '',
     dataDir: '',
+    // 打印字体能覆盖的码位区间 [[start,end], ...]，来自 /api/fonts/coverage，
+    // 也就是随包字体 cmap 的真实内容，不是手写表。
+    fontRanges: null,
     view: 'devices',
     users: [],
     backups: [],
@@ -126,6 +129,8 @@
     companyName: document.getElementById('company-name'),
     companyHint: document.getElementById('company-hint'),
     companyOver: document.getElementById('company-over'),
+    companyFontWarning: document.getElementById('company-font-warning'),
+    printFontWarning: document.getElementById('print-font-warning'),
     companyLogoPreview: document.getElementById('company-logo-preview'),
     pickLogo: document.getElementById('pick-logo'),
     resetLogo: document.getElementById('reset-logo'),
@@ -387,6 +392,7 @@
 
   function enterApp() {
     loadOptions();
+    loadFontCoverage();
     load();
     checkUpdate();
     if (state.view === 'users') {
@@ -750,6 +756,44 @@
   // ---------- 打印设置：公司名与图标 ----------
 
   // 显示宽度：汉字算 1，ASCII 字母/数字/符号算 0.5。
+  // 字体覆盖检查：区间来自服务端对随包字体 cmap 的解析结果。
+  // 用途是「知情」而不是拦截——名字是真实的，拒绝保存只会逼用户去删字。
+  function loadFontCoverage() {
+    return api('GET', '/api/fonts/coverage').then(function (data) {
+      state.fontRanges = (data && data.available && data.ranges) ? data.ranges : null;
+    }).catch(function () {
+      state.fontRanges = null;
+    });
+  }
+
+  function fontCovers(codepoint) {
+    var ranges = state.fontRanges;
+    if (!ranges) return true;  // 清单取不到时不误报
+    var low = 0;
+    var high = ranges.length;
+    while (low < high) {
+      var mid = (low + high) >> 1;
+      if (codepoint < ranges[mid][0]) high = mid;
+      else if (codepoint > ranges[mid][1]) low = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+
+  function uncoveredChars(text) {
+    var missing = [];
+    if (!text) return missing;
+    for (var i = 0; i < text.length; i++) {
+      var cp = text.codePointAt(i);
+      if (cp > 0xFFFF) i++;
+      if (cp < 0x20) continue;
+      if (!fontCovers(cp) && missing.indexOf(String.fromCodePoint(cp)) < 0) {
+        missing.push(String.fromCodePoint(cp));
+      }
+    }
+    return missing;
+  }
+
   function companyNameWidth(value) {
     var width = 0;
     Array.from(value).forEach(function (ch) {
@@ -781,6 +825,15 @@
     if (over) {
       el.companyOver.textContent = '最多 ' + state.companyNameMaxWidth +
         ' 个汉字，超出部分不会印出（将打印：' + truncateCompanyName(value) + '）';
+    }
+    // 字体覆盖是另一件事：字放得下，但打印字体里没有这个字，会回退系统字体。
+    // 不拦保存，只明确告知是哪几个字。
+    var missing = uncoveredChars(value);
+    el.companyFontWarning.hidden = missing.length === 0;
+    if (missing.length) {
+      el.companyFontWarning.textContent =
+        '这些字不在打印字体范围内：' + missing.join('、') +
+        '。保存不受影响，但它们会用系统字体渲染，macOS 与 Windows 字形不同、版式可能与预览有差异。';
     }
   }
 
@@ -942,6 +995,8 @@
       phone: el.devPhone.value.trim()
     };
     var editingId = state.editingId;
+    // 生僻字只提示、不拦截：设备名是真实的，拒绝保存只会让用户回去删字。
+    var missing = uncoveredChars(payload.dev_name + payload.location + payload.control_range);
     var request = editingId
       ? api('PUT', '/api/devices/' + editingId, payload)
       : api('POST', '/api/devices', payload);
@@ -950,6 +1005,10 @@
       .then(function () {
         closeDrawer();
         toast(editingId ? '已保存修改' : '已新增设备');
+        if (missing.length) {
+          toast('这些字不在打印字体范围内：' + missing.join('、') +
+                '，打印时会用系统字体渲染', 'error');
+        }
         return loadOptions().then(function () {
           if (!editingId) state.page = 0;
           return load();
@@ -1319,6 +1378,36 @@
     el.printStage.innerHTML = html;
     updatePrintControls();
     updatePrintScale();
+    updatePrintFontWarning();
+  }
+
+  // 预览里把「打印字体没有的字」集中标出来，避免用户在按下导出后才发现版式变了。
+  function updatePrintFontWarning() {
+    var missing = [];
+    var where = [];
+    function scan(text, label) {
+      var chars = uncoveredChars(text);
+      if (!chars.length) return;
+      chars.forEach(function (ch) {
+        if (missing.indexOf(ch) < 0) missing.push(ch);
+      });
+      if (where.indexOf(label) < 0) where.push(label);
+    }
+    scan(state.companyNamePrint, '公司名');
+    state.printItems.forEach(function (item) {
+      scan(item.dev_name, '设备名称');
+      scan(item.location, '位置');
+      scan(item.control_range, '控制范围');
+    });
+    el.printFontWarning.hidden = missing.length === 0;
+    if (!missing.length) {
+      el.printFontWarning.textContent = '';
+      return;
+    }
+    el.printFontWarning.textContent =
+      '以下字符不在打印字体范围内：' + missing.join('、') + '（出现于：' + where.join('、') +
+      '）。它们会用系统字体渲染，macOS 与 Windows 字形不同、版式可能与预览有差异；' +
+      '需要两平台一致请避免这些字，或扩展字体子集后重出样张。';
   }
 
   // 预览按容器宽度缩放；打印时 CSS 会还原成 1:1 的 A4。
