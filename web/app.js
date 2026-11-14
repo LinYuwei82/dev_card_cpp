@@ -30,7 +30,11 @@
     companyName: '',
     companyNamePrint: '',
     companyNameMaxWidth: 13,
-    update: null
+    update: null,
+    // 远端检查的原始结论（含接口原文），自检与核对用；
+    // 这层出过「拿假数据截图」的事，解析结果必须能对回原文。
+    updateCheck: null,
+    updateUrl: ''
   };
 
   var el = {
@@ -38,6 +42,12 @@
     health: document.getElementById('health'),
     version: document.getElementById('version-pill'),
     updatePill: document.getElementById('update-pill'),
+    updateModal: document.getElementById('update-modal'),
+    updateVersion: document.getElementById('update-version'),
+    updateNotes: document.getElementById('update-notes'),
+    updateSteps: document.getElementById('update-steps'),
+    updateDownload: document.getElementById('update-download'),
+    updateLater: document.getElementById('update-later'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
     navUsers: document.getElementById('nav-users'),
@@ -295,35 +305,259 @@
     }
   });
 
-  // ---------- 版本检查（M5）：只提示并跳下载页，不自动下载、不自动替换 ----------
+  // ---------- 版本检查（M6）：只查、只告知，不下载、不替换 ----------
+  //
+  // 不做自替换：安装包没有代码签名（Windows 不买 Authenticode、macOS 不公证），
+  // 静默下载后覆盖自身会被 SmartScreen / Gatekeeper / 杀软拦住，而且把未经系统信任的
+  // 二进制写进程序目录本身就不该做。所以这一层只有三件事：查、提示、给发布页地址。
+  //
+  // 联网放在页面侧而不是 C++ 侧：httplib 没编 OpenSSL，Windows 那边要为此多带
+  // libssl/libcrypto 两份 DLL；页面 fetch 在两个壳里都直接走系统 TLS 栈。
+  // 代价是检查地址必须允许跨域（GitHub/Gitee 的 Release 接口都带 CORS 头，
+  // 自建清单要在反代上加 Access-Control-Allow-Origin）。
+
+  var UPDATE_DELAY_MS = 4000;    // 启动后延迟，避开首屏
+  var UPDATE_TIMEOUT_MS = 3000;  // 内网客户连不上外网是常态：失败必须秒级返回
+  var UPDATE_LAST_KEY = 'devcard.update.lastCheckAt';
+  // 自检可替换传输层；正常运行时为 null，走真 fetch。
+  var updateTransport = null;
+
+  // 只认点分数字；GitHub/Gitee 的 tag 常带 v 前缀，剥掉再判。
+  function normalizeVersion(text) {
+    var value = String(text == null ? '' : text).trim().replace(/^[vV]/, '');
+    if (!/^\d+(\.\d+)*$/.test(value)) return '';
+    return value;
+  }
+
+  function compareVersion(left, right) {
+    var a = normalizeVersion(left);
+    var b = normalizeVersion(right);
+    if (!a || !b) return 0;
+    var pa = a.split('.').map(Number);
+    var pb = b.split('.').map(Number);
+    var count = Math.max(pa.length, pb.length);
+    for (var i = 0; i < count; i++) {
+      var l = i < pa.length ? pa[i] : 0;
+      var r = i < pb.length ? pb[i] : 0;
+      if (l !== r) return l > r ? 1 : -1;
+    }
+    return 0;
+  }
+
+  // 发布元数据两条来源都认：GitHub/Gitee Release（tag_name/html_url/body）
+  // 或自管清单（latest/download_url/notes）。版本号不合法就整条不认。
+  function parseRelease(doc) {
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+    var version = normalizeVersion(doc.tag_name || doc.latest || doc.version || '');
+    if (!version) return null;
+    var url = doc.html_url || doc.download_url || '';
+    var notes = doc.body || doc.notes || '';
+    return {
+      version: version,
+      url: /^https?:\/\//i.test(String(url)) ? String(url) : '',
+      notes: typeof notes === 'string' ? notes.slice(0, 300) : ''
+    };
+  }
+
+  // 一次远端检查。永远 resolve，不抛：失败路径要和「没有新版本」在界面上不可区分。
+  function remoteCheck(config) {
+    var endpoint = String((config && config.endpoint) || '');
+    if (!/^https?:\/\//i.test(endpoint)) {
+      return Promise.resolve({ status: 'disabled', endpoint: endpoint, raw: '', release: null });
+    }
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    // 超时不能只靠 abort：没有 AbortController（或传输层不认 signal）时，
+    // 那个请求会一直挂着，界面永远等不到结论。所以超时自己是竞速的一方。
+    var timer = null;
+    var timeout = new Promise(function (resolve) {
+      timer = setTimeout(function () {
+        if (controller) {
+          try { controller.abort(); } catch (error) { /* 已经结束就无所谓 */ }
+        }
+        resolve({ timedOut: true });
+      }, UPDATE_TIMEOUT_MS);
+    });
+    var options = {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json' }
+    };
+    if (controller) options.signal = controller.signal;
+    var transport = updateTransport || function (url, opts) { return fetch(url, opts); };
+    var request = transport(endpoint, options)
+      .then(function (response) {
+        if (!response || !response.ok) {
+          throw new Error('HTTP ' + (response ? response.status : '?'));
+        }
+        return response.text();
+      })
+      .then(function (text) {
+        var doc = null;
+        try {
+          doc = JSON.parse(text);
+        } catch (error) {
+          doc = null;
+        }
+        var release = parseRelease(doc);
+        return {
+          status: release ? 'parsed' : (doc ? 'invalid-version' : 'invalid-json'),
+          endpoint: endpoint,
+          raw: String(text || ''),
+          release: release
+        };
+      })
+      .catch(function (error) {
+        return {
+          status: 'unreachable',
+          endpoint: endpoint,
+          raw: '',
+          release: null,
+          detail: (error && error.message) || String(error)
+        };
+      });
+    return Promise.race([request, timeout]).then(function (result) {
+      clearTimeout(timer);
+      if (result && result.timedOut) {
+        return {
+          status: 'timeout',
+          endpoint: endpoint,
+          raw: '',
+          release: null,
+          detail: '超过 ' + UPDATE_TIMEOUT_MS + ' ms 没有响应'
+        };
+      }
+      return result;
+    });
+  }
+
+  // 频率：上次检查时间存本地（WebView 自己的存储），每 interval 小时最多查一次。
+  // 存不进（隐私模式/存储被清）就当作没查过，最坏是多打一次请求，不影响业务。
+  function updateThrottleAllows(intervalHours) {
+    try {
+      var last = Number(window.localStorage.getItem(UPDATE_LAST_KEY) || 0);
+      if (!last) return true;
+      return Date.now() - last >= intervalHours * 3600 * 1000;
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function updateThrottleMark() {
+    try {
+      window.localStorage.setItem(UPDATE_LAST_KEY, String(Date.now()));
+    } catch (error) { /* 存不下就不存，不为此报错 */ }
+  }
+
+  function setUpdatePill(version, notes) {
+    el.updatePill.textContent = '有新版本 v' + version;
+    el.updatePill.title = (notes ? notes + '；' : '') +
+      '点击查看手动更新步骤（不会自动下载或安装）';
+    el.updatePill.hidden = false;
+  }
 
   function checkUpdate() {
     return api('GET', '/api/version')
       .then(function (data) {
         state.update = data || null;
-        var available = !!(data && data.update_available && data.latest);
-        el.updatePill.hidden = !available;
-        if (!available) return;
-        el.updatePill.textContent = '有新版本 v' + data.latest;
-        el.updatePill.title = (data.notes ? data.notes + '；' : '') +
-          '点击打开下载页，不会自动下载或安装';
+        // 本地清单（M5 路径）仍然优先：运维可以直接投放 update.json 指定版本。
+        if (data && data.update_available && data.latest) {
+          setUpdatePill(data.latest, data.notes || '');
+        }
+        var check = (data && data.check) || {};
+        if (!check.enabled) return;
+        var hours = Number(check.interval_hours) > 0 ? Number(check.interval_hours) : 24;
+        if (!updateThrottleAllows(hours)) return;
+        // 延迟到首屏之后；查不到更新、超时、DNS 失败、返回不是 JSON、
+        // 版本号不合法，一律什么都不做——不弹窗、不改任何业务功能。
+        return new Promise(function (resolve) {
+          setTimeout(resolve, UPDATE_DELAY_MS);
+        }).then(function () {
+          return remoteCheck(check);
+        }).then(function (result) {
+          state.updateCheck = result;
+          updateThrottleMark();
+          if (result.status !== 'parsed' || !result.release) return;
+          var current = state.version || (data && data.version) || '';
+          if (compareVersion(result.release.version, current) <= 0) return;
+          setUpdatePill(result.release.version, result.release.notes || '');
+        });
       })
       .catch(function () {
         // 检查失败不打扰台账操作，也不保留上一次的提示。
         state.update = null;
-        el.updatePill.hidden = true;
+        if (!state.updateCheck) el.updatePill.hidden = true;
       });
   }
 
+  // 手动更新的步骤要按平台写清楚：只说「有新版本」等于没说。
+  function updateSteps() {
+    var ua = navigator.userAgent || '';
+    if (/Macintosh|Mac OS X/i.test(ua)) {
+      return [
+        '点「打开下载页」，下载新版 DMG。',
+        '双击打开 DMG，把 DevCard 拖进「应用程序」，选「替换」覆盖旧版本。',
+        '退出并重新打开 DevCard。台账数据在用户数据目录，覆盖安装不会动它。'
+      ];
+    }
+    if (/Windows/i.test(ua)) {
+      return [
+        '点「打开下载页」，下载新版安装包。',
+        '先退出 DevCard，再运行安装包，装到原来的目录覆盖旧版本。',
+        '重新打开 DevCard。台账数据在用户数据目录，覆盖安装不会动它。'
+      ];
+    }
+    return [
+      '点「打开下载页」，按页面说明下载对应平台的安装包。',
+      '在运行服务的机器上替换旧版本并重启服务；台账数据在服务端数据目录，不会随升级丢失。'
+    ];
+  }
+
+  function openUpdateModal() {
+    var manifest = state.update || {};
+    var result = state.updateCheck || null;
+    var release = result && result.release ? result.release : null;
+    var latest = release ? release.version : (manifest.latest || '');
+    var url = (release && release.url) || manifest.download_url ||
+      manifest.download_page || '';
+    state.updateUrl = /^https?:\/\//i.test(url) ? url : '';
+    el.updateVersion.textContent = '当前版本 v' + (state.version || '?') +
+      (latest ? '，最新版本 v' + latest : '');
+    var notes = (release && release.notes) || manifest.notes || '';
+    el.updateNotes.textContent = notes;
+    el.updateNotes.hidden = !notes;
+    el.updateSteps.innerHTML = '';
+    updateSteps().forEach(function (text) {
+      var item = document.createElement('li');
+      item.textContent = text;
+      el.updateSteps.appendChild(item);
+    });
+    el.updateDownload.disabled = !state.updateUrl;
+    el.updateModal.hidden = false;
+  }
+
+  function closeUpdateModal() {
+    el.updateModal.hidden = true;
+  }
+
+  function openUpdateUrl(url) {
+    if (!url) return;
+    if (sendToShell('openExternal', { url: url })) return;
+    window.open(url, '_blank', 'noopener');
+  }
+
   el.updatePill.addEventListener('click', function () {
-    var data = state.update;
-    var url = data && (data.download_url || data.download_page);
-    if (!url || !/^https?:\/\//i.test(url)) {
+    openUpdateModal();
+  });
+
+  el.updateLater.addEventListener('click', closeUpdateModal);
+
+  el.updateDownload.addEventListener('click', function () {
+    if (!state.updateUrl) {
       toast('未配置下载页地址', 'error');
       return;
     }
-    if (sendToShell('openExternal', { url: url })) return;
-    window.open(url, '_blank', 'noopener');
+    openUpdateUrl(state.updateUrl);
+    closeUpdateModal();
   });
 
   // ---------- 会话 ----------
@@ -1317,6 +1551,7 @@
     else if (el.drawer.classList.contains('is-open')) closeDrawer();
     else if (!el.userModal.hidden) el.userModal.hidden = true;
     else if (!el.resetModal.hidden) el.resetModal.hidden = true;
+    else if (!el.updateModal.hidden) el.updateModal.hidden = true;
   });
 
   // ---------- 卡片打印 ----------
@@ -1678,6 +1913,193 @@
     }
     window.print();
   });
+
+  // ---------- 自动更新自检（M6） ----------
+  //
+  // 四种失败路径（超时 / DNS 失败 / 返回非 JSON / 版本号格式不对）必须和
+  // 「没有新版本」在界面上不可区分：不弹窗、不显示提示、不抛异常。
+  // 另留一条正向对照：没有它，「永远不提示」也能让四条失败用例全绿。
+  // 只替换传输层，版本比较、状态判定仍是导出路径上的同一份代码。
+
+  window.__devcardUpdateState = function () {
+    return {
+      version: state.version,
+      pill: el.updatePill.hidden ? '' : el.updatePill.textContent,
+      check: state.updateCheck
+    };
+  };
+
+  // 回放：把已抓到的真实响应体（fixture）喂进同一条解析/比较/提示链路。
+  // 传输路径换成本地回放，响应体是原样的真值；输出里必须注明来源与抓取时间。
+  window.__devcardUpdateReplay = function (text) {
+    var raw = String(text == null ? '' : text);
+    var doc = null;
+    try {
+      doc = JSON.parse(raw);
+    } catch (error) {
+      doc = null;
+    }
+    var release = parseRelease(doc);
+    if (!release) {
+      return JSON.stringify({ ok: false, reason: 'parse', bytes: raw.length });
+    }
+    state.updateCheck = {
+      status: 'parsed',
+      endpoint: '(fixture)',
+      raw: raw,
+      release: release
+    };
+    var current = state.version || '';
+    var fresher = compareVersion(release.version, current) > 0;
+    if (fresher) setUpdatePill(release.version, release.notes || '');
+    // 字节数按 UTF-8 算：JS 的 length 是 UTF-16 码元，和文件字节数不是一回事。
+    var byte_length = raw.length;
+    if (typeof TextEncoder === 'function') {
+      byte_length = new TextEncoder().encode(raw).length;
+    }
+    return JSON.stringify({
+      ok: fresher,
+      current: current,
+      latest: release.version,
+      url: release.url,
+      bytes: byte_length,
+      pill: el.updatePill.hidden ? '' : el.updatePill.textContent
+    });
+  };
+
+  // 超时诊断：卡在登录、被节流、还是请求没发出去，三者的表现都是「没有结论」，
+  // 光看结果分不清，所以把中间状态一并吐出来。
+  window.__devcardUpdateDiag = function () {
+    var last = '';
+    try {
+      last = window.localStorage.getItem(UPDATE_LAST_KEY) || '';
+    } catch (error) {
+      last = 'unavailable';
+    }
+    return JSON.stringify({
+      user: (state.user && state.user.user_name) || '',
+      version: state.version || '',
+      manifest: state.update ? 'loaded' : 'missing',
+      check_config: (state.update && state.update.check) || null,
+      last_check_at: last,
+      status: (state.updateCheck && state.updateCheck.status) || ''
+    });
+  };
+
+  window.__devcardUpdateSelftestRun = function () {
+    function okJson(body) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: function () { return Promise.resolve(body); }
+      });
+    }
+    var cases = [
+      {
+        name: 'timeout',
+        expect: 'timeout',
+        stub: function (url, options) {
+          return new Promise(function (resolve, reject) {
+            var signal = options && options.signal;
+            if (signal && signal.addEventListener) {
+              signal.addEventListener('abort', function () {
+                var error = new Error('The operation was aborted.');
+                error.name = 'AbortError';
+                reject(error);
+              });
+            }
+          });
+        }
+      },
+      {
+        name: 'dns',
+        expect: 'unreachable',
+        stub: function () { return Promise.reject(new TypeError('Failed to fetch')); }
+      },
+      {
+        name: 'invalid-json',
+        expect: 'invalid-json',
+        stub: function () { return okJson('<html><body>502 Bad Gateway</body></html>'); }
+      },
+      {
+        name: 'invalid-version',
+        expect: 'invalid-version',
+        stub: function () {
+          return okJson('{"tag_name":"release-2026-11","html_url":"https://example.invalid/r"}');
+        }
+      },
+      {
+        name: 'control',
+        expect: 'parsed',
+        version: '9.9.9',
+        stub: function () {
+          return okJson('{"tag_name":"v9.9.9","html_url":"https://example.invalid/r","body":"自检对照"}');
+        }
+      }
+    ];
+
+    el.updatePill.hidden = true;
+    var results = [];
+    var chain = Promise.resolve();
+    cases.forEach(function (item) {
+      chain = chain.then(function () {
+        updateTransport = item.stub;
+        var started = Date.now();
+        return remoteCheck({ endpoint: 'https://selftest.invalid/releases/latest' })
+          .then(function (result) {
+            updateTransport = null;
+            var failures = [];
+            if (result.status !== item.expect) failures.push('status=' + result.status);
+            if (item.name !== 'control' && !el.updatePill.hidden) failures.push('显示了更新提示');
+            if (item.version && (!result.release || result.release.version !== item.version)) {
+              failures.push('version=' + (result.release && result.release.version));
+            }
+            // 正向对照还要证明比较方向对：确实比当前版本新，否则「永远不提示」也能过。
+            if (item.name === 'control' &&
+                compareVersion(result.release && result.release.version, '0.1.0') <= 0) {
+              failures.push('比较方向不对');
+            }
+            results.push({
+              case: item.name,
+              expected: item.expect,
+              actual: result.status,
+              raw: String(result.raw || '').slice(0, 120),
+              detail: result.detail || '',
+              pill: el.updatePill.hidden ? '' : el.updatePill.textContent,
+              ms: Date.now() - started,
+              ok: failures.length === 0,
+              failures: failures
+            });
+          }, function (error) {
+            updateTransport = null;
+            results.push({
+              case: item.name,
+              expected: item.expect,
+              actual: 'threw',
+              detail: String(error),
+              ms: Date.now() - started,
+              ok: false,
+              failures: ['抛异常']
+            });
+          });
+      });
+    });
+    window.__devcardUpdateSelftestResult = null;
+    chain.then(function () {
+      window.__devcardUpdateSelftestResult = results;
+    }, function (error) {
+      // 自检自身出错也要落地，否则壳层只能看到「没有结果」。
+      results.push({
+        case: 'selftest',
+        actual: 'threw',
+        detail: String((error && error.stack) || error),
+        ok: false,
+        failures: ['自检抛异常']
+      });
+      window.__devcardUpdateSelftestResult = results;
+    });
+    return 'started';
+  };
 
   // ---------- 启动 ----------
 

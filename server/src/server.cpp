@@ -164,11 +164,15 @@ std::size_t utf8_length(const std::string& value) {
   return count;
 }
 
-// 版本检查（M5）：只读取数据目录里的更新清单并比较版本，不下载、不替换。
+// 版本检查（M5/M6）：只读取数据目录里的更新清单并比较版本，不下载、不替换。
 // 清单由发布方投放；缺失或非法时接口照常返回，只是不给「有新版本」。
+// M6 起清单还承载「远端检查」的三个开关：是否联网查、查哪个地址、最快多久查一次。
 constexpr std::string_view kUpdateManifestName = "update.json";
 constexpr std::string_view kDefaultDownloadPage =
     "https://github.com/LinYuwei82/dev_card_cpp/releases";
+constexpr std::string_view kDefaultUpdateEndpoint =
+    "https://api.github.com/repos/LinYuwei82/dev_card_cpp/releases/latest";
+constexpr long kDefaultUpdateIntervalHours = 24;
 
 bool parse_version(const std::string& text, std::vector<long>* parts) {
   if (text.empty()) return false;
@@ -215,7 +219,16 @@ struct UpdateManifest {
   std::string download_url;
   std::string notes;
   std::string error;
+  // M6：远端检查的开关、地址与频率。清单不写就取默认值；
+  // 地址不是 http/https 时直接关掉检查，宁可查不了也不发一个奇怪的请求。
+  bool check_enabled = true;
+  std::string check_endpoint{std::string(kDefaultUpdateEndpoint)};
+  long check_interval_hours = kDefaultUpdateIntervalHours;
 };
+
+bool is_http_url(const std::string& value) {
+  return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
+}
 
 UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
   UpdateManifest result;
@@ -232,6 +245,15 @@ UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
   result.latest = trim_copy(doc.value("latest", std::string{}));
   result.download_url = trim_copy(doc.value("download_url", std::string{}));
   result.notes = trim_copy(doc.value("notes", std::string{}));
+  if (doc.contains("check_enabled") && doc["check_enabled"].is_boolean()) {
+    result.check_enabled = doc["check_enabled"].get<bool>();
+  }
+  const std::string endpoint = trim_copy(doc.value("check_endpoint", std::string{}));
+  if (!endpoint.empty()) result.check_endpoint = endpoint;
+  if (!is_http_url(result.check_endpoint)) result.check_enabled = false;
+  if (doc.contains("check_interval_hours") && doc["check_interval_hours"].is_number_integer()) {
+    result.check_interval_hours = std::max<long>(1, doc["check_interval_hours"].get<long>());
+  }
   std::vector<long> parts;
   if (result.latest.empty()) {
     result.error = "更新清单缺少 latest";
@@ -513,6 +535,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                   {"download_url", manifest.download_url},
                   {"download_page", download_page()},
                   {"notes", manifest.notes},
+                  // M6：远端检查的三个开关都来自同一份 update.json，前端不再写死地址。
+                  {"check", json{{"enabled", manifest.check_enabled},
+                                 {"endpoint", manifest.check_endpoint},
+                                 {"interval_hours", manifest.check_interval_hours}}},
                   {"manifest", manifest.found
                                    ? json((state.data_dir / kUpdateManifestName)
                                               .string())
@@ -1148,9 +1174,15 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
         response.set_header("X-Content-Type-Options", "nosniff");
         response.set_header("Referrer-Policy", "no-referrer");
         if (response.get_header_value("Content-Type").rfind("text/html", 0) == 0) {
+          // connect-src 必须显式放行：更新检查是页面侧 fetch 跑在壳里，
+          // 而 default-src 'self' 会把跨域连通性一并禁掉。WebKit 对 CSP 拦截
+          // 只报 "Load failed"，看起来像 DNS/TLS 故障，实际请求根本没发出去。
+          // 检查地址可由运维配置（含内网 http 清单），所以按 scheme 放行而不写死域名；
+          // 脚本仍然只允许 'self'，外部页面注入不进来。
           response.set_header(
               "Content-Security-Policy",
-              "default-src 'self'; img-src 'self' data:; style-src 'self'");
+              "default-src 'self'; connect-src 'self' https: http:; "
+              "img-src 'self' data:; style-src 'self'");
         }
       });
 
