@@ -384,7 +384,9 @@ int main(int argc, char** argv) {
 
     while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
   } catch (const devcard::AppError& error) {
-    std::cerr << "启动失败: " << error.what() << std::endl;
+    // 机器码要单独打出来：判据靠它认「哪一类启动失败」，只有人读的说明没法断言。
+    std::cerr << "启动失败[" << error.code() << "]: " << error.what()
+              << std::endl;
     if (error.code() == "instance_in_use") return 3;
     if (error.code() == "bad_config" || error.code() == "bad_listen") return 2;
     return 1;
