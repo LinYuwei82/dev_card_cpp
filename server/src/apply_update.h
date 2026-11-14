@@ -41,4 +41,36 @@ void spawn_apply_update(const std::filesystem::path& helper,
 // 返回进程退出码（安装成败写在 options.result 里，不靠本进程退出码表达）。
 int run_apply_update(const ApplyUpdateOptions& options);
 
+// 阶段二判据：apply-state.json 只记四态。interrupted 刻意不落盘——
+// 它是「启动时读到 installing 且超过阈值」推出来的，不是第五个状态。
+enum class ApplyState { Installing, Verifying, Done, Failed };
+
+constexpr int kApplyInterruptSeconds = 300;
+
+const char* apply_state_name(ApplyState state);
+
+// 写在 <数据目录>/updates/apply-state.json。失败返回 false 并填 error，
+// 调用方必须把失败当失败（静默吞掉会让「启动即崩」这条判据假绿）。
+bool write_apply_state(const std::filesystem::path& data_dir, ApplyState state,
+                       const std::string& detail, std::string* error);
+
+struct ApplyStateSnapshot {
+  bool present = false;
+  std::string state;
+  std::string detail;
+  std::string updated_at;
+  long long age_seconds = 0;
+};
+
+ApplyStateSnapshot read_apply_state(const std::filesystem::path& data_dir);
+
+// state 仍是 installing 且超过阈值 → 判为中断（协助器被杀 / 机器重启）。
+bool apply_state_interrupted(const ApplyStateSnapshot& snapshot,
+                             int threshold_seconds = kApplyInterruptSeconds);
+
+// 握手标记：数据库与字体初始化完成之后、HTTP 开始服务之前写。
+// 写失败必须让启动失败，否则「新版本启动即崩」判不出来。
+bool write_app_started_marker(const std::filesystem::path& data_dir,
+                              const std::string& version, std::string* error);
+
 }  // namespace devcard

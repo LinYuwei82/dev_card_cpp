@@ -456,6 +456,152 @@ int check_rate_limit() {
   return failures;
 }
 
+// 阶段二判据：app-started.marker 必须真落地；apply-state.json 停在 installing
+// 且超过阈值时，重启后的接口必须报 interrupted——「协助器被杀」在磁盘上留下的
+// 正是这两样证据（state=installing、没有 install-result.json），所以这条用例
+// 复现的是可复现的持久化条件，而不是手点一次。
+int check_apply_state() {
+  namespace fs = std::filesystem;
+#ifdef _WIN32
+  _putenv_s("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR);
+#else
+  setenv("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR, 1);
+#endif
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path data_dir =
+      fs::temp_directory_path() / ("devcard_applystate_" + std::to_string(stamp));
+
+  auto start = [&data_dir](int base) {
+    std::unique_ptr<devcard::ServerHandle> server;
+    for (int port = base; port <= base + 20 && !server; ++port) {
+      devcard::ServerOptions options;
+      options.data_dir = data_dir;
+      options.port = port;
+      try {
+        server = devcard::start_server(options);
+      } catch (const std::exception&) {
+      }
+    }
+    return server;
+  };
+
+  int failures = 0;
+  auto server = start(18440);
+  if (!server) {
+    std::cerr << "[失败] 起服务失败，无法校验阶段二判据" << std::endl;
+    fs::remove_all(data_dir);
+    return 1;
+  }
+  if (!fs::exists(data_dir / "app-started.marker")) {
+    std::cerr << "[失败] app-started.marker 未落盘：启动握手判据无法成立"
+              << std::endl;
+    ++failures;
+  }
+
+  // 登录并完成强制改密，后续接口才可达。
+  std::string password = seed_password(data_dir, "root");
+  auto login = [&](httplib::Client& client, const std::string& pwd,
+                   std::string* cookie) {
+    const auto response = client.Post(
+        "/api/session/login",
+        "{\"username\":\"root\",\"password\":\"" + pwd + "\"}", "application/json");
+    if (!response || response->status != 200) return false;
+    const std::string raw = response->get_header_value("Set-Cookie");
+    *cookie = raw.substr(0, raw.find(';'));
+    return !cookie->empty();
+  };
+
+  {
+    httplib::Client client("127.0.0.1", server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    std::string cookie;
+    if (!login(client, password, &cookie)) {
+      std::cerr << "[失败] 初始账号登录失败" << std::endl;
+      ++failures;
+    } else {
+      client.set_default_headers(
+          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
+      const auto change = client.Post(
+          "/api/users/password", R"({"new_password":"ApplyState123"})",
+          "application/json");
+      if (!change || change->status != 200) {
+        std::cerr << "[失败] 首次改密失败，无法继续校验安装状态" << std::endl;
+        ++failures;
+      }
+      password = "ApplyState123";
+
+      // 刚写入的 installing：不该被当成中断。
+      fs::create_directories(data_dir / "updates");
+      {
+        std::ofstream out(data_dir / "updates" / "apply-state.json",
+                          std::ios::binary | std::ios::trunc);
+        out << R"({"state":"installing","detail":"用例写入","updated_at":""})";
+      }
+      const auto fresh = client.Get("/api/update/install-result");
+      if (!fresh || fresh->status != 200 ||
+          fresh->body.find("\"installing\"") == std::string::npos) {
+        std::cerr << "[失败] 刚写入的 installing 未被识别为进行中："
+                  << (fresh ? fresh->status : -1) << " "
+                  << (fresh ? fresh->body : "") << std::endl;
+        ++failures;
+      }
+    }
+  }
+
+  // 把状态文件时间拨回 1 小时，模拟「协助器被杀、机器重启过后才起来」。
+  {
+    std::error_code ec;
+    const fs::path state_file = data_dir / "updates" / "apply-state.json";
+    fs::last_write_time(state_file,
+                        fs::file_time_type::clock::now() - std::chrono::hours(1),
+                        ec);
+    if (ec) {
+      std::cerr << "[失败] 无法回拨状态文件时间：" << ec.message() << std::endl;
+      ++failures;
+    }
+  }
+  server.reset();
+  server = start(18470);
+  if (!server) {
+    std::cerr << "[失败] 重启服务失败，无法校验中断判据" << std::endl;
+    fs::remove_all(data_dir);
+    return failures + 1;
+  }
+  {
+    httplib::Client client("127.0.0.1", server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    std::string cookie;
+    if (!login(client, password, &cookie)) {
+      std::cerr << "[失败] 重启后登录失败" << std::endl;
+      ++failures;
+    } else {
+      client.set_default_headers(
+          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
+      const auto result = client.Get("/api/update/install-result");
+      const bool interrupted =
+          result && result->status == 200 &&
+          result->body.find("\"interrupted\"") != std::string::npos;
+      if (!interrupted) {
+        std::cerr << "[失败] 停在 installing 且超阈值时未报 interrupted："
+                  << (result ? result->status : -1) << " "
+                  << (result ? result->body : "") << std::endl;
+        ++failures;
+      }
+    }
+  }
+  server.reset();
+  fs::remove_all(data_dir);
+
+  if (failures == 0) {
+    std::cout << "阶段二判据自检通过：app-started.marker 已落盘；"
+                 "installing 超阈值经重启后报 interrupted"
+              << std::endl;
+  }
+  return failures;
+}
+
 // 状态码表：路由会抛的每个错误码都必须有对应 HTTP 状态。
 // 缺一条的后果是 4xx 被渲染成 500（「打开数据目录」失败那次就是这么藏的），
 // 所以这里不只查表，还把 server.cpp 里真实的 AppError 字面量扫一遍——
@@ -528,7 +674,8 @@ int check_status_map() {
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
-                                              "port_in_use", "instance_in_use"};
+                                              "port_in_use", "instance_in_use",
+                                              "app_started_marker"};
   std::size_t pos = 0;
   while ((pos = source.find(needle, pos)) != std::string::npos) {
     pos += needle.size();
@@ -577,6 +724,9 @@ int main() {
     code = 1;
   }
   if (check_rate_limit() != 0) {
+    code = 1;
+  }
+  if (check_apply_state() != 0) {
     code = 1;
   }
   if (check_status_map() != 0) {

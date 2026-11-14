@@ -1214,6 +1214,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
                       std::filesystem::remove(updates_dir / "install-result.json",
                                               ec);
+                      // 先落 installing 再起协助器：没这一步，协助器被杀后
+                      // 磁盘上没有任何「升级曾经开始过」的证据。
+                      {
+                        std::string state_error;
+                        if (!write_apply_state(state.data_dir,
+                                               ApplyState::Installing,
+                                               "安装接口已受理，等待协助器接管",
+                                               &state_error)) {
+                          throw AppError("install_failed",
+                                         "无法写入安装状态：" + state_error);
+                        }
+                      }
                       ApplyUpdateOptions options;
                       options.setup = full;
                       options.wait_pid = current_process_id();
@@ -1247,6 +1259,23 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                          state.data_dir / "updates" / "install-result.json";
                      std::error_code ec;
                      if (!std::filesystem::is_regular_file(file, ec)) {
+                       // 没有结果文件时看状态文件：installing 且超阈值即中断，
+                       // 由「启动时还在 installing」推出来，不落第五个状态。
+                       const ApplyStateSnapshot snapshot =
+                           read_apply_state(state.data_dir);
+                       if (apply_state_interrupted(snapshot)) {
+                         set_json(response,
+                                  json{{"state", "interrupted"},
+                                       {"detail", "升级被中断：协助器未完成安装"},
+                                       {"updated_at", snapshot.updated_at},
+                                       {"age_seconds", snapshot.age_seconds}});
+                         return;
+                       }
+                       if (snapshot.present && snapshot.state == "installing") {
+                         set_json(response, json{{"state", "installing"},
+                                                 {"updated_at", snapshot.updated_at}});
+                         return;
+                       }
                        set_json(response, json{{"state", "none"}});
                        return;
                      }
@@ -2044,6 +2073,17 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
       set_json(response, json{{"error", "internal"}, {"message", "未知错误"}}, 500);
     }
   });
+
+  // 阶段二判据：握手标记写在数据库与字体初始化之后、HTTP 开始服务之前。
+  // 写失败必须让启动失败——静默跳过会让「新版本启动即崩」这条判据假绿。
+  {
+    std::string marker_error;
+    if (!write_app_started_marker(options.data_dir, DEVCARD_VERSION,
+                                  &marker_error)) {
+      throw AppError("app_started_marker",
+                     "无法写入启动标记 app-started.marker：" + marker_error);
+    }
+  }
 
   if (!state.server.bind_to_port(options.host, options.port)) {
     throw AppError(

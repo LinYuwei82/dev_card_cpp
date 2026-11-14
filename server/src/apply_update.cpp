@@ -142,6 +142,58 @@ bool write_json_atomic(const std::filesystem::path& target, const json& doc) {
 
 #endif  // _WIN32
 
+std::string now_iso_local() {
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+#ifdef _WIN32
+  localtime_s(&tm, &now);
+#else
+  localtime_r(&now, &tm);
+#endif
+  char buffer[32] = {};
+  std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &tm);
+  return buffer;
+}
+
+// 跨平台原子写：先写 .tmp 再替换。Windows 的 rename 不覆盖已存在文件，
+// 所以失败时删掉目标再试一次——两份状态文件都允许「后写覆盖先写」。
+bool write_json_file(const std::filesystem::path& target, const json& doc,
+                     std::string* error) {
+  std::error_code ec;
+  std::filesystem::create_directories(target.parent_path(), ec);
+  const std::filesystem::path temp = target.string() + ".tmp";
+  {
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      if (error) *error = "无法写入 " + path_to_utf8(temp);
+      return false;
+    }
+    out << doc.dump(2);
+    out.flush();
+    if (!out) {
+      if (error) *error = "写入失败 " + path_to_utf8(temp);
+      std::filesystem::remove(temp, ec);
+      return false;
+    }
+  }
+  std::filesystem::rename(temp, target, ec);
+  if (ec) {
+    std::error_code ignored;
+    std::filesystem::remove(target, ignored);
+    std::filesystem::rename(temp, target, ec);
+  }
+  if (ec) {
+    if (error) *error = "无法替换 " + path_to_utf8(target) + "：" + ec.message();
+    std::filesystem::remove(temp, ec);
+    return false;
+  }
+  return true;
+}
+
+std::filesystem::path apply_state_path(const std::filesystem::path& data_dir) {
+  return data_dir / "updates" / "apply-state.json";
+}
+
 }  // namespace
 
 std::filesystem::path current_executable() {
@@ -245,6 +297,68 @@ void spawn_apply_update(const std::filesystem::path& helper,
 #endif
 }
 
+const char* apply_state_name(ApplyState state) {
+  switch (state) {
+    case ApplyState::Installing:
+      return "installing";
+    case ApplyState::Verifying:
+      return "verifying";
+    case ApplyState::Done:
+      return "done";
+    case ApplyState::Failed:
+      return "failed";
+  }
+  return "failed";
+}
+
+bool write_apply_state(const std::filesystem::path& data_dir, ApplyState state,
+                       const std::string& detail, std::string* error) {
+  const json doc = {{"state", apply_state_name(state)},
+                    {"detail", detail},
+                    {"updated_at", now_iso_local()}};
+  return write_json_file(apply_state_path(data_dir), doc, error);
+}
+
+ApplyStateSnapshot read_apply_state(const std::filesystem::path& data_dir) {
+  ApplyStateSnapshot snapshot;
+  const std::filesystem::path file = apply_state_path(data_dir);
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(file, ec)) return snapshot;
+  snapshot.present = true;
+  const auto write_time = std::filesystem::last_write_time(file, ec);
+  if (!ec) {
+    snapshot.age_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::filesystem::file_time_type::clock::now() - write_time)
+            .count();
+  }
+  std::ifstream in(file, std::ios::binary);
+  if (!in) return snapshot;
+  const std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  const json doc = json::parse(text, nullptr, false);
+  if (doc.is_discarded() || !doc.is_object()) {
+    snapshot.state = "unknown";
+    return snapshot;
+  }
+  snapshot.state = doc.value("state", std::string{});
+  snapshot.detail = doc.value("detail", std::string{});
+  snapshot.updated_at = doc.value("updated_at", std::string{});
+  return snapshot;
+}
+
+bool apply_state_interrupted(const ApplyStateSnapshot& snapshot,
+                             int threshold_seconds) {
+  return snapshot.present && snapshot.state == "installing" &&
+         snapshot.age_seconds > threshold_seconds;
+}
+
+bool write_app_started_marker(const std::filesystem::path& data_dir,
+                              const std::string& version, std::string* error) {
+  const json doc = {{"version", version}, {"started_at", now_iso_local()}};
+  return write_json_file(data_dir / "app-started.marker", doc, error);
+}
+
 int run_apply_update(const ApplyUpdateOptions& options) {
 #ifndef _WIN32
   std::cerr << "协助更新仅支持 Windows" << std::endl;
@@ -273,6 +387,10 @@ int run_apply_update(const ApplyUpdateOptions& options) {
               {"finished_at", ""}};
 
   std::error_code ec;
+  // 协助器已接管：从这里起，中断只可能是协助器被杀或机器重启。
+  std::string state_error;
+  write_apply_state(options.result.parent_path(), ApplyState::Verifying,
+                    "协助器已接管，正在调用安装器", &state_error);
   if (options.setup.empty() || !std::filesystem::exists(options.setup, ec)) {
     doc["error"] = "安装包不存在：" + path_to_utf8(options.setup);
   } else {
@@ -293,6 +411,15 @@ int run_apply_update(const ApplyUpdateOptions& options) {
   }
   doc["finished_at"] = now_iso_utc();
 
+  // 四态闭环：安装器退出码 0 且没有启动失败才算 done，其余一律 failed。
+  const int exit_code = doc["exit_code"].get<int>();
+  const bool succeeded = exit_code == 0 && doc["error"].get<std::string>().empty();
+  write_apply_state(options.result.parent_path(),
+                    succeeded ? ApplyState::Done : ApplyState::Failed,
+                    succeeded ? "安装器退出码 0"
+                              : "安装器退出码 " + std::to_string(exit_code),
+                    &state_error);
+
   if (!write_json_atomic(options.result, doc)) {
     std::cerr << "警告：无法写入安装结果 " << path_to_utf8(options.result)
               << std::endl;
@@ -300,7 +427,6 @@ int run_apply_update(const ApplyUpdateOptions& options) {
 
   // 无论成败都拉起目标程序：失败时拉起的是旧版本（文件没被替换）。
   // 参数沿用原进程：--server / --port / --data-dir 必须原样回来。
-  const int exit_code = doc["exit_code"].get<int>();
   if (!options.relaunch.empty() && std::filesystem::exists(options.relaunch, ec)) {
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
