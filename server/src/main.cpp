@@ -68,6 +68,27 @@ OpenedDatabase open_database(const std::filesystem::path& data_dir) {
   return opened;
 }
 
+// 只读统计目标库的设备数：这道闸本身绝不能改动已有台账（连 WAL 检查点都不做），
+// 所以不用 Db（读写连接），直接 SQLITE_OPEN_READONLY。
+std::int64_t count_devices_readonly(const std::filesystem::path& file) {
+  sqlite3* conn = nullptr;
+  if (sqlite3_open_v2(file.string().c_str(), &conn, SQLITE_OPEN_READONLY,
+                      nullptr) != SQLITE_OK) {
+    if (conn) sqlite3_close(conn);
+    return -1;
+  }
+  std::int64_t total = -1;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(conn, "SELECT COUNT(*) FROM device", -1, &stmt,
+                         nullptr) == SQLITE_OK &&
+      stmt && sqlite3_step(stmt) == SQLITE_ROW) {
+    total = sqlite3_column_int64(stmt, 0);
+  }
+  if (stmt) sqlite3_finalize(stmt);
+  sqlite3_close(conn);
+  return total;
+}
+
 void print_legacy_report(const devcard::LegacyImportReport& report);
 
 // 安装版首启：exe 同级 data\（或旧 bin\）若带着 devicedb.db，导入用户目录。
@@ -99,11 +120,14 @@ void import_adjacent_legacy(const std::filesystem::path& data_dir) {
   if (std::filesystem::exists(target, ec)) {
     target_is_legacy = devcard::inspect_legacy(target).is_legacy;
     if (!target_is_legacy) {
-      devcard::Db db(target);
-      db.read([&](sqlite3* conn) {
-        devcard::Stmt stmt(conn, "SELECT COUNT(*) FROM device");
-        if (stmt.step()) existing = stmt.i64(0);
-      });
+      existing = count_devices_readonly(target);
+      if (existing < 0) {
+        throw devcard::AppError(
+            "legacy_conflict",
+            "无法读取用户数据目录里的台账记录数，拒绝自动导入：\n  目标: " +
+                target.string() +
+                "\n请先用 --data-dir 指向正确目录，或人工检查该库是否损坏。");
+      }
       if (existing > 0) {
         throw devcard::AppError(
             "legacy_conflict",
