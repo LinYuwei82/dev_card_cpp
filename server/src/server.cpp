@@ -395,7 +395,7 @@ const StatusTable& error_status_table() {
       {"logo_too_large", 400},
       {"bad_company_name", 400},
       {"logo_write", 400},
-      // 自更新闸门与下载
+      // 更新（macOS 阶段一）
       {"endpoint_not_allowed", 400},
       {"no_update", 400},
       {"update_disabled", 403},
@@ -511,6 +511,23 @@ bool host_allowed(const ServerState& state, std::string host) {
   }
   for (const std::string& allowed : state.allowed_hosts) {
     if (name == lowercase(allowed)) return true;
+  }
+  return false;
+}
+
+// 免登录/免改密白名单：只允许下面两类，集中在这张表里判断。
+// 更新检查与下载故意不在表内：网络模式下若未认证请求就能让服务端去拉
+// 几十 MB 落盘，等于免费的内容缓存 + 磁盘写放大器；所以「检查个版本」
+// 同样要求登录，强制改密前也不放行。以后不要往这里加更新相关路径。
+constexpr const char* kBypassExactPaths[] = {"/api/health"};
+constexpr const char* kBypassPrefixes[] = {"/api/session/"};
+
+bool is_bypass_path(const std::string& path) {
+  for (const char* exact : kBypassExactPaths) {
+    if (path == exact) return true;
+  }
+  for (const char* prefix : kBypassPrefixes) {
+    if (path.rfind(prefix, 0) == 0) return true;
   }
   return false;
 }
@@ -1556,6 +1573,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
   state.server.set_pre_routing_handler(
       [&state](const httplib::Request& request, httplib::Response& response) {
+        // 校验顺序写死，不要交换：
+        //   1 Host 白名单 → 2 来源 IP → 3 路径白名单 → 4 CSRF（非 GET）
+        //   → 5 登录 → 6 must_change_password → 7 角色（在各路由的
+        //   require_admin 里，晚于本 handler 执行）。
+        // 先放行再查 Host，任何一条白名单路径都会顺带绕过 Host 校验；
+        // 这类漏洞不报错、也不写日志，只会静默存在。
         if (!host_allowed(state, request.get_header_value("Host"))) {
           set_json(response,
                    json{{"error", "bad_host"},
@@ -1580,8 +1603,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
         if (request.path.rfind("/api/", 0) != 0) {
           return httplib::Server::HandlerResponse::Unhandled;
         }
-        if (request.path == "/api/health" ||
-            request.path.rfind("/api/session/", 0) == 0) {
+        // 路径白名单只读上面那张表，不要在这里另写判断。
+        if (is_bypass_path(request.path)) {
           return httplib::Server::HandlerResponse::Unhandled;
         }
         if (request.method != "GET" &&
