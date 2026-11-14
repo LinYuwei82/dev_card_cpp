@@ -16,7 +16,7 @@
 |---|---|---|
 | macOS | `DevCard-1.1.3-macos-arm64.dmg` | 已发布到 Gitee / GitHub Release；67 MiB；[SHA256](#已发布产物校验) |
 | Windows | `DevCard-1.1.3-portable.zip` | 脚本就绪，尚未在 Windows 构建/打包 |
-| Windows | 安装版 `setup.exe` | 无 `.iss`，本轮不提供 |
+| Windows | 安装版 `setup.exe` | v1.1.3 无 `.iss`；新架构 Windows 线已有 `packaging/windows/DevCard.iss`，未编译验证 |
 
 - Release：<https://github.com/LinYuwei82/dev_card_cpp/releases/tag/v1.1.3>、<https://gitee.com/lin-yuwei168/dev_card_cpp/releases/tag/v1.1.3>
 - macOS 版为 ad-hoc 签名、未公证；首次打开需在 Gatekeeper 中手动放行，详见 [Release 正文](docs/release-v1.1.3.md)。
@@ -141,7 +141,7 @@ ctest --test-dir build-new --output-on-failure
 
 - **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
 - **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。目前只有本地监听与浏览器访问，`--server` 独立的局域网服务模式属 M7，尚未实现。
-- **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`；Windows `%LOCALAPPDATA%\Anye\DevCard\`。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。
+- **数据目录**：安装版 macOS `~/Library/Application Support/DevCard/`、Windows `%LOCALAPPDATA%\DevCard\data`；Windows 便携版优先用 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。早期 `Anye/DevCard` 下的库由首次启动导入，源文件保留。
 - **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
 - **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
@@ -217,7 +217,8 @@ dev_card_cpp/
 
 - Windows 与 macOS（Apple Silicon，macOS 15+）可运行；界面用固定像素坐标，缩放/字体缺失时排版会变。macOS 版未公证，首次打开需手动放行。
 - 密码明文存储，默认账号每次启动自动补回。
-- v1.1.3 的 Windows 绿色版 zip 尚未产出，安装版没有 `.iss`；绿色版脚本 `make_portable_win.ps1` 仍是旧 Qt 线口径（入口仍指 `bin\DevCard.exe`），新架构 Windows 产物尚未接进打包。macOS 已按 D7 定为 15+，按 D13 不公证（ad-hoc 签名，首次需 Gatekeeper 放行）。
+- v1.1.3 的 Windows 绿色版 zip 尚未产出；新架构 Windows 线已有 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录），但**未在装有 Inno Setup 的机器上编译过**。绿色版脚本 `make_portable_win.ps1` 仍是旧 Qt 线口径（入口仍指 `bin\DevCard.exe`），新架构 Windows 产物尚未接进打包。macOS 已按 D7 定为 15+，按 D13 不公证（ad-hoc 签名，首次需 Gatekeeper 放行）。
+- **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - 无 CI、无许可证声明。（新架构 `tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
