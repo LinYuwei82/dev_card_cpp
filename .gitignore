@@ -1,0 +1,62 @@
+# ===== 构建输出 / 中间产物 =====
+# qmake 生成的 Makefile 与缓存
+Makefile
+Makefile.Debug
+Makefile.Release
+Makefile.*
+.qmake.stash
+# qmake 指定的中间目录（OBJECTS_DIR / MOC_DIR / RCC_DIR / UI_DIR）
+/build/
+/debug/
+/release/
+# qmake 部署输出目录（DevCard.exe、windeployqt 复制的 DLL、运行期 devicedb.db、导出的 PDF）
+/bin/
+# 编译中间文件
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+moc_*.cpp
+moc_predefs.h
+qrc_*.cpp
+# CMake 构建产物
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+
+# ===== 运行期数据 =====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ===== IDE / 编辑器配置 =====
+.vscode/
+.idea/
+.vs/
+*.user
+*.user.*
+*.autosave
+*.kdev4
+.kdev4/
+.clangd/
+.cache/
+
+# ===== 本地环境修复脚本（修改本机 PowerShell 执行策略，不属于工程源码）=====
+# 若要随仓库分发，删除以下两行
+fix_env.bat
+fix_env.reg
+
+# ===== 含真实业务数据的本地文件（不入库，磁盘保留）=====
+resources/tb_device.xlsx
+
+# ===== 操作系统文件 =====
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
