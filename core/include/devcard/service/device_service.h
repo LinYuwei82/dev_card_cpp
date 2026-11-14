@@ -12,7 +12,8 @@ namespace devcard {
 
 struct DevicePage {
   std::vector<Device> items;
-  std::int64_t total = 0;
+  std::int64_t total = 0;      // 当前筛选命中数（页脚与状态栏共用）
+  std::int64_t total_all = 0;  // 无筛选总数（状态栏「筛选后 M / 共 N」用）
   int page = 0;
   int page_size = 20;
 };

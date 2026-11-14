@@ -3,10 +3,12 @@
 物业设备台账与设备管理卡打印工具：维护设备名称 / 位置 / 控制范围 / 维护电话，按条件筛选后把结果排成 A4 版面（每页 3 列 × 4 行，共 12 张卡片）导出 PDF 打印。
 
 > **当前状态（重要）**
-> 本仓库现在发布 **Qt 6 / C++17 版 v1.1.3**：Windows 版 + macOS（Apple Silicon，最低 macOS 15）版。
-> v1.1.3 的 macOS DMG 已挂到 Gitee / GitHub Release；Windows 绿色版 zip 尚未产出（打包脚本已就绪但未在 Windows 实跑），安装版没有 `.iss`。
-> 去 Qt、改 B/S 内核（单机版 + 网络版一体化）的改造**只完成了方案与决策，代码尚未开始迁移**。v1.1.3 仍使用 OPPOSans；开源字体替换（D12）尚未实施。
-> 下文凡标注「目标形态」的内容都是计划，不代表仓库已有该能力；判断现状请看 [现状技术方案](docs/现状技术方案.md)。
+> 仓库里有两条线并行：
+> 1. **旧 Qt 6 / C++17 线（v1.1.3，冻结）**：Windows + macOS（Apple Silicon，最低 macOS 15）。v1.1.3 的 macOS DMG 已挂到 Gitee / GitHub Release；Windows 绿色版 zip 尚未产出（打包脚本已就绪但未在 Windows 实跑），安装版没有 `.iss`。**旧线仍可编译、可发版，不在本轮改动范围内**（`src/`、`dev_card.pro`、`build.bat` 一行不动）。
+> 2. **新架构线（分支 `macmini/new-arch`，C++20 + SQLite + 系统 WebView）**：**当前状态：M0–M4 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M4.1 公司名/图标、M4.2 底部状态栏已落地，M5 未开始**；M6 自动更新阻塞于签名决策，见 [改造技术方案 §11](docs/改造技术方案.md)。
+>
+> 新架构开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
+> 下文凡标注「目标形态」的内容都是计划；判断旧线现状看 [现状技术方案](docs/现状技术方案.md)。
 
 ## 已发布产物（v1.1.3）
 
@@ -133,6 +135,24 @@ hdiutil create -volname "DevCard 1.1.3" -srcfolder <stage> -ov -format UDZO dist
 - 当前 Homebrew 三方库按 macOS 15.0 构建，所以 DMG 的 `LSMinimumSystemVersion` 写的是 15.0，与 D7 已定的 macOS 15 一致。
 - DMG 内不含 `devicedb.db`、`tb_device.xlsx`；`dist/` 已 gitignore。
 
+### 2.7 新架构（改造中）构建与运行
+
+新架构与旧 Qt 线共用仓库，但构建入口独立；不打开开关时 `build.bat` / qmake 的行为完全不变。
+
+```bash
+# 构建（macOS / Linux / Windows 的 CMake 工具链）
+cmake -S . -B build-new -DDEVCARD_NEW_ARCH=ON
+cmake --build build-new -j8
+ctest --test-dir build-new --output-on-failure
+```
+
+- **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
+- **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。目前只有本地监听与浏览器访问，`--server` 独立的局域网服务模式属 M7，尚未实现。
+- **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`；Windows `%LOCALAPPDATA%\Anye\DevCard\`。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。
+- **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
+- **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
+- 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构尚未真机跑过。
+
 ---
 
 ## 3. 目录结构
@@ -141,31 +161,28 @@ hdiutil create -volname "DevCard 1.1.3" -srcfolder <stage> -ov -format UDZO dist
 
 ```text
 dev_card_cpp/
-├── dev_card.pro              # qmake 工程（当前主构建入口）
-├── CMakeLists.txt            # CMake 备选构建
-├── build.bat                 # Windows 一键构建 + windeployqt
-├── fix_env.bat / .reg        # 开发机 PowerShell 执行策略修复（未入库）
-├── DevCard_resource.rc       # Windows 版本信息资源（当前未被构建引用）
-├── src/
-│   ├── main.cpp              # 入口
-│   ├── app_info.h            # 全局变量与版本/版权常量
-│   ├── app_paths.h           # 运行期资源目录（Windows <exe>/resources，macOS Contents/Resources/resources）
-│   ├── db/                   # SQLite 访问与初始化（含数据目录迁移）
-│   ├── excel/                # xlsx 导入导出
-│   ├── printer/              # 设备管理卡 PDF（libharu）
-│   └── ui/                   # 窗口与手写的表单布局类
-├── resources/                # 运行期资源：字体、图标、qrc、示例 xlsx（xlsx 不入库）
+├── dev_card.pro              # 旧 Qt 线 qmake 工程（冻结）
+├── CMakeLists.txt            # 新架构构建入口（-DDEVCARD_NEW_ARCH=ON）；同时保留旧线 CMake 备选
+├── build.bat                 # 旧线 Windows 一键构建 + windeployqt
+├── VERSION.txt               # 新架构版本唯一来源
+├── src/                      # 旧 Qt 线源码（冻结，不再改动）
+├── core/                     # 新架构：业务 / DAO / 迁移 / xlsx / 设置 / 图片元数据
+├── server/                   # 新架构：HTTP 路由与入口 devcard-server
+├── shell/                    # 新架构：macOS 壳（WKWebView + 打印/导出桥）
+├── web/                      # 新架构：原生 JS/CSS 前端（构建期内嵌进二进制）
+├── tests/                    # 新架构：核心单测（ctest）
+├── resources/                # 旧线运行期资源：字体、图标、qrc（示例 xlsx 不入库）
 ├── packaging/mac/            # macOS Info.plist 与 DevCard.icns
 ├── tools/package/            # Windows 绿色版打包脚本（PowerShell）
-├── 3rdparty/                 # SQLite amalgamation
-├── docs/                     # 技术文档、设计样张、Release 正文
+├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖
+├── docs/                     # 技术文档、样张、Release 正文
 ├── dist/                     # 本地打包产物（已 gitignore）
-└── bin/ build/ Makefile*     # 构建产物（已 gitignore）
+└── bin/ build/ build-new/    # 构建产物（已 gitignore）
 ```
 
-### 3.2 目标结构（改造方案，尚未实现）
+### 3.2 新架构目标结构（已实现部分）
 
-`core`（纯 C++20 业务 / DAO / 迁移）+ `server`（HTTP 与入口）+ `shell`（macOS / Windows 壳）+ `web`（原生 JS 前端，内嵌进二进制）+ `tests` + `third_party`，详见 [改造技术方案 §4.1](docs/改造技术方案.md)。
+`core`（纯 C++20 业务 / DAO / 迁移）+ `server`（HTTP 与入口）+ `shell`（macOS 壳；Windows 壳属 M5）+ `web`（原生 JS 前端，构建期内嵌）+ `tests`，详见 [改造技术方案 §4.1](docs/改造技术方案.md)。
 
 ---
 
@@ -174,7 +191,8 @@ dev_card_cpp/
 | 文档 | 内容 | 状态 |
 |---|---|---|
 | [docs/现状技术方案.md](docs/现状技术方案.md) | 当前 Qt 版的实际架构、模块职责、数据流、数据库、构建部署方式，以及通读发现的问题清单 | 描述现状 |
-| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 方案，未实施 |
+| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M4.2） |
+| [docs/M4-卡片打印样张-17条-2页.pdf](docs/M4-卡片打印样张-17条-2页.pdf) | 17 条实测数据导出的完整 2 页 A4 卡片样张（新架构打印链路产物） | 实测样张 |
 
 改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（存量客户保留旧版冻结）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 才删 libharu）；原生 JS/CSS + 两个通用件；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；DAO 集中 SQL + 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（v1.1.3 实际只有绿色版脚本，安装版无 `.iss`）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。详见 [改造技术方案 §14](docs/改造技术方案.md)。
 
@@ -187,7 +205,14 @@ dev_card_cpp/
 - Windows 与 macOS（Apple Silicon，macOS 15+）可运行；界面用固定像素坐标，缩放/字体缺失时排版会变。macOS 版未公证，首次打开需手动放行。
 - 口令明文存储，默认账号每次启动自动补回。
 - v1.1.3 的 Windows 绿色版 zip 尚未产出，安装版没有 `.iss`；macOS 已按 D7 定为 15+，按 D13 不公证（ad-hoc 签名，首次需 Gatekeeper 放行）。
-- 无测试、无 CI、无许可证声明。
+- 无测试、无 CI、无许可证声明。（新架构 `tests/` 已有核心单测，可 `ctest`；CI 仍属 M5。）
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
+
+**新架构当前已知边界（照实写）**：
+
+- **M0–M4 完成、M5 未开始**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**，旧 Qt 线仍是可用的发版路径。
+- **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
+- **Windows 侧未真机跑**：Windows 壳、WebView2、打包脚本都还没在 Windows 机器上执行过。
+- **旧库迁移夹具无设备行**：用于 M3 验收的脱敏旧库样本里没有设备记录，设备行迁移只做了逻辑与单测，未做真实数据抽样比对。
 
 v1.1.3 已修复：数据库迁出程序目录（构建不再删库、只读安装目录可写用户数据）、`build.bat` 构建后自动复制 `resources/` 到 `bin/`。详见 [v1.1.3 变更说明](docs/变更说明-v1.1.3.md)。

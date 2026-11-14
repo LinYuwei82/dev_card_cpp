@@ -186,6 +186,22 @@
       <div class="empty" id="print-empty" hidden>当前筛选没有可打印的设备，请返回台账调整筛选条件。</div>
     </section>
   </main>
+
+  <footer class="statusbar" id="statusbar">
+    <span class="status-left">
+      <span id="status-user">—</span>
+      <span class="status-dot">·</span>
+      <span id="status-mode">—</span>
+    </span>
+    <span class="status-count" id="status-count">共 0 条</span>
+    <span class="status-right">
+      <span id="status-version">—</span>
+      <span id="status-schema">—</span>
+      <button class="status-link" id="status-datadir" type="button" title="打开数据目录">—</button>
+    </span>
+    <span class="status-error" id="status-error" hidden></span>
+    <button class="btn btn-ghost status-retry" id="status-retry" type="button" hidden>重试</button>
+  </footer>
 </div>
 
 <div class="login" id="login" hidden>

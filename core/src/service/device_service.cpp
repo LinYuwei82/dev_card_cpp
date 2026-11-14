@@ -74,6 +74,12 @@ DevicePage DeviceService::list(const DeviceQuery& query) const {
   result.page_size = normalized.page_size;
   result.items = dao_.list(db_, normalized);
   result.total = dao_.count(db_, normalized);
+
+  // 状态栏需要「筛选后 M / 共 N」的 N。无筛选时两个数相同，不再多查一次。
+  const bool filtered = !normalized.keyword.empty() || !normalized.field.empty() ||
+                        !normalized.name.empty() || !normalized.location.empty();
+  result.total_all =
+      filtered ? dao_.count(db_, DeviceQuery{}) : result.total;
   return result;
 }
 

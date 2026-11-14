@@ -443,6 +443,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     for (const Device& device : page.items) items.push_back(device_json(device));
     set_json(response, json{{"items", items},
                             {"total", page.total},
+                            {"total_all", page.total_all},
                             {"page", page.page},
                             {"page_size", page.page_size}});
   });

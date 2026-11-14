@@ -6,11 +6,15 @@
   var state = {
     page: 0,
     total: 0,
+    totalAll: 0,
     items: [],
     filters: { keyword: '', field: '', name: '', location: '' },
     editingId: null,
     pendingDeleteId: null,
     user: null,
+    version: '',
+    schemaVersion: '',
+    dataDir: '',
     view: 'devices',
     users: [],
     backups: [],
@@ -135,6 +139,16 @@
     printStage: document.getElementById('print-stage'),
     printEmpty: document.getElementById('print-empty'),
 
+    statusbar: document.getElementById('statusbar'),
+    statusUser: document.getElementById('status-user'),
+    statusMode: document.getElementById('status-mode'),
+    statusCount: document.getElementById('status-count'),
+    statusVersion: document.getElementById('status-version'),
+    statusSchema: document.getElementById('status-schema'),
+    statusDatadir: document.getElementById('status-datadir'),
+    statusError: document.getElementById('status-error'),
+    statusRetry: document.getElementById('status-retry'),
+
     toast: document.getElementById('toast')
   };
 
@@ -170,10 +184,16 @@
           var failure = new Error((data && data.message) || ('请求失败（' + response.status + '）'));
           failure.code = data && data.error;
           failure.status = response.status;
+          if (response.status >= 500) setStatusError(failure.message);
           throw failure;
         }
+        setStatusOk();
         return data;
       });
+    }, function (error) {
+      // fetch 直接拒绝 = 本地服务不可达
+      setStatusError('无法连接本地服务');
+      throw error;
     });
   }
 
@@ -200,6 +220,73 @@
       el.toast.hidden = true;
     }, 2600);
   }
+
+  // ---------- 底部状态栏（M4.2） ----------
+
+  function updateStatusIdentity() {
+    if (!state.user) return;
+    el.statusUser.textContent = state.user.display_name || state.user.user_name;
+    // 有原生桥 = 桌面壳（单机版）；纯浏览器访问 = 网络版。
+    el.statusMode.textContent = hasNativeBridge() ? '单机版' : '网络版';
+    el.statusVersion.textContent = 'v' + (state.version || '—');
+    el.statusSchema.textContent = 'schema ' + (state.schemaVersion || '—');
+    el.statusDatadir.textContent = state.dataDir || '—';
+  }
+
+  function filtersActive() {
+    var f = state.filters;
+    return !!(f.keyword || f.field || f.name || f.location);
+  }
+
+  // 条数与页脚同源：都用 state.total，不另算一次。
+  function updateStatusCount() {
+    el.statusCount.textContent = filtersActive()
+      ? '筛选后 ' + state.total + ' 条 / 共 ' + state.totalAll + ' 条'
+      : '共 ' + state.total + ' 条';
+  }
+
+  function setStatusError(message) {
+    el.statusbar.classList.add('is-error');
+    el.statusError.textContent = '服务连接异常：' + (message || '请检查本地服务是否仍在运行');
+    el.statusError.hidden = false;
+    el.statusRetry.hidden = false;
+    // 不保留上一次的陈旧数字
+    el.statusCount.textContent = '—';
+    el.statusVersion.textContent = '—';
+    el.statusSchema.textContent = '—';
+    el.statusDatadir.textContent = '—';
+  }
+
+  function setStatusOk() {
+    if (!el.statusbar.classList.contains('is-error')) return;
+    el.statusbar.classList.remove('is-error');
+    el.statusError.hidden = true;
+    el.statusRetry.hidden = true;
+    updateStatusIdentity();
+    updateStatusCount();
+  }
+
+  el.statusRetry.addEventListener('click', function () {
+    loadBootstrap()
+      .then(function () {
+        return load();
+      })
+      .catch(function (error) {
+        if (!handleAuthFailure(error)) setStatusError(error.message);
+      });
+  });
+
+  el.statusDatadir.addEventListener('click', function () {
+    if (!state.dataDir) return;
+    if (sendToShell('openDataDir', { path: state.dataDir })) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(state.dataDir).then(function () {
+        toast('数据目录路径已复制：' + state.dataDir);
+      });
+    } else {
+      toast('数据目录：' + state.dataDir);
+    }
+  });
 
   // ---------- 会话 ----------
 
@@ -228,6 +315,10 @@
     el.navUsers.hidden = data.user.role !== 'admin';
     el.version.textContent = 'v' + data.version;
     el.health.textContent = '服务正常 · schema ' + data.schema_version;
+    state.version = data.version || '';
+    state.schemaVersion = data.schema_version || '';
+    state.dataDir = data.data_dir || '';
+    updateStatusIdentity();
     state.companyName = data.company_name || '';
     state.companyNamePrint = data.company_name_print || state.companyName;
     state.companyNameMaxWidth = data.company_name_max_width || 13;
@@ -436,6 +527,7 @@
     el.pageLabel.textContent = '第 ' + (state.page + 1) + ' / ' + totalPages() + ' 页';
     el.prev.disabled = state.page <= 0;
     el.next.disabled = state.page + 1 >= totalPages();
+    updateStatusCount();
   }
 
   function queryString() {
@@ -455,6 +547,7 @@
       .then(function (data) {
         state.items = data.items || [];
         state.total = data.total || 0;
+        state.totalAll = data.total_all == null ? state.total : data.total_all;
         state.page = data.page || 0;
         if (state.items.length === 0 && state.page > 0 && state.total > 0) {
           state.page = Math.max(0, totalPages() - 1);
@@ -1143,7 +1236,7 @@
     return (
       '<article class="card">' +
       '<span class="card-logo"><img src="/company-logo" alt=""></span>' +
-      '<div class="card-company">' + escapeHtml(state.companyNamePrint) + '</div>' +
+      '<div class="card-company"><span>' + escapeHtml(state.companyNamePrint) + '</span></div>' +
       '<div class="card-title">设备管理卡</div>' +
       fieldHtml(1, '设备名称：', device.dev_name) +
       fieldHtml(2, '位　　置：', device.location) +

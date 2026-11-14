@@ -113,6 +113,12 @@ API_AVAILABLE(macos(11.0))
     [self exportPdfNamed:body[@"filename"]];
   } else if ([action isEqualToString:@"print"]) {
     [self printCards];
+  } else if ([action isEqualToString:@"openDataDir"]) {
+    NSString* path = body[@"path"];
+    if ([path isKindOfClass:[NSString class]] && path.length > 0) {
+      [[NSWorkspace sharedWorkspace]
+          openURL:[NSURL fileURLWithPath:path isDirectory:YES]];
+    }
   }
 }
 
