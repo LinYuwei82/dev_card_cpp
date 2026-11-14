@@ -47,8 +47,8 @@ Source: "{#SourceRoot}\DevCard.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\devcard-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 字体缺失时编译直接失败（不加 skipifsourcedoesntexist）。
 Source: "{#SourceRoot}\fonts\NotoSansSC-*.subset.ttf"; DestDir: "{app}\fonts"; Flags: ignoreversion
-; 浏览器端资源仅在源目录存在时打包（原生壳可能已内嵌）。
-Source: "{#SourceRoot}\web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; 不再打包磁盘 web/：服务端页面来自编译期内嵌资源，磁盘目录是死资源。
+; 实测拿掉后 GET /、/styles.css、/app.js 的响应字节与内嵌资源完全一致。
 
 [Icons]
 Name: "{group}\DevCard"; Filename: "{app}\DevCard.exe"
@@ -61,7 +61,7 @@ Filename: "{app}\DevCard.exe"; Description: "启动 DevCard"; Flags: nowait post
 [UninstallDelete]
 ; 只清理程序目录内的残留。数据目录 {localappdata}\DevCard\data 不在 {app} 下，
 ; 默认不会被删除；这里也不要加任何指向它的条目。
-Type: filesandordirs; Name: "{app}\web"
+Type: filesandordirs; Name: "{app}\fonts"
 
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

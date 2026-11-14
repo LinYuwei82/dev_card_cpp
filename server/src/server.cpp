@@ -1498,11 +1498,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       if (reinterpret_cast<std::intptr_t>(result) <= 32) {
                         throw AppError("bad_request",
                                        "无法打开数据目录：" +
-                                           state.data_dir.string());
+                                           path_utf8(state.data_dir));
                       }
                       set_json(response,
                                json{{"ok", true},
-                                    {"path", state.data_dir.string()}});
+                                    {"path", path_utf8(state.data_dir)}});
 #else
                       throw AppError("bad_request",
                                      "打开数据目录仅在 Windows 版本提供");
