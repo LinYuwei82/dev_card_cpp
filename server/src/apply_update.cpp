@@ -122,7 +122,8 @@ RunResult run_and_wait(const std::filesystem::path& program,
 bool write_json_atomic(const std::filesystem::path& target, const json& doc) {
   std::error_code ec;
   std::filesystem::create_directories(target.parent_path(), ec);
-  const std::filesystem::path temp = target.string() + ".tmp";
+  std::filesystem::path temp = target;
+  temp += ".tmp";
   {
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
     if (!out) return false;
@@ -161,7 +162,8 @@ bool write_json_file(const std::filesystem::path& target, const json& doc,
                      std::string* error) {
   std::error_code ec;
   std::filesystem::create_directories(target.parent_path(), ec);
-  const std::filesystem::path temp = target.string() + ".tmp";
+  std::filesystem::path temp = target;
+  temp += ".tmp";
   {
     std::ofstream out(temp, std::ios::binary | std::ios::trunc);
     if (!out) {

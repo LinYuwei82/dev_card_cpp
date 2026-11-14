@@ -141,7 +141,7 @@ std::filesystem::path executable_dir() {
   if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
     return std::filesystem::path(buffer.data()).parent_path();
   }
-#else
+#elif defined(__linux__)
   std::vector<char> buffer(4096, '\0');
   const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
   if (length > 0) {

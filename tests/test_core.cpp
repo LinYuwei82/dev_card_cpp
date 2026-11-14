@@ -11,6 +11,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 #include "devcard/backup.h"
@@ -88,8 +90,21 @@ std::filesystem::path self_executable() {
                                           static_cast<DWORD>(buffer.size()));
   buffer.resize(size);
   return std::filesystem::path(buffer);
-#else
+#elif defined(__APPLE__)
+  // 与 server/src/platform_paths.cpp 同一写法：先问长度再取值。
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> buffer(size + 1, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+    return std::filesystem::path(buffer.data());
+  }
+  return {};
+#elif defined(__linux__)
   return std::filesystem::canonical("/proc/self/exe");
+#else
+  // 其余平台没有可靠的「自身可执行文件」查询方式。返回空串让调用方明确失败，
+  // 不要编一个假路径——假路径会让用例在没验证的情况下变绿。
+  return {};
 #endif
 }
 

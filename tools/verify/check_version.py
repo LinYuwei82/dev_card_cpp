@@ -13,12 +13,16 @@
        必须用 ISPP 的 FileRead 从 VERSION.txt 取；出现字面量即失败。
     2. 给了 --setup 时：该 exe 的版本属性（FileVersion / ProductVersion）
        必须与 VERSION.txt 逐字符相等，任一不等即失败。
-    3. packaging/mac/Info.plist 的 CFBundleShortVersionString 只列出比对结果，
-       不计入退出码（那一份由 macOS 侧构建，本侧改不到、也验不了）。
+    3. macOS 只看**真产物** build-new/shell/DevCard.app/Contents/Info.plist 的
+       CFBundleShortVersionString；不一致即失败。
+       packaging/mac/Info.plist 是旧 Qt 线的冻结文件，make_dmg.sh 不引用它，
+       只作为一行信息列出，不参与判定。
 
 退出码：
     0  通过
     1  失败（版本不同源，或产物版本与 VERSION.txt 不一致）
+    3  环境不具备（没有 app bundle：Windows 本机、或尚未构建 macOS 产物）。
+       不是失败，也不是通过——不要把它当绿。
 
 故意造坏输入的示例（应得到退出码 1）：
     python3 tools/verify/check_version.py --setup dist/DevCard-1.1.3-setup.exe
@@ -32,7 +36,10 @@ import subprocess
 import sys
 
 ISS = pathlib.Path("packaging/windows/DevCard.iss")
-PLIST = pathlib.Path("packaging/mac/Info.plist")
+# 判据只指向真产物：make_dmg.sh:123-125 读的就是这份，不一致直接 fail。
+APP_PLIST = pathlib.Path("build-new/shell/DevCard.app/Contents/Info.plist")
+# 旧 Qt 线的冻结文件，make_dmg.sh 里一次都没出现；只列出，不判。
+FROZEN_PLIST = pathlib.Path("packaging/mac/Info.plist")
 
 
 def repo_root() -> pathlib.Path:
@@ -57,19 +64,29 @@ def check_iss(root: pathlib.Path) -> list[str]:
     return issues
 
 
-def check_plist(root: pathlib.Path, version: str) -> str:
-    path = root / PLIST
+def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, str | None, bool]:
+    """读真产物的 Info.plist。返回 (说明, 失败项或 None, 是否缺产物)。"""
+    path = root / APP_PLIST
     if not path.exists():
-        return "（无 Info.plist）"
+        return (f"（没有 app bundle：{APP_PLIST} 不存在）", None, True)
     match = re.search(
         r"CFBundleShortVersionString</key>\s*<string>([^<]*)</string>",
         path.read_text(encoding="utf-8", errors="replace"),
     )
     if not match:
-        return "（Info.plist 里没有 CFBundleShortVersionString）"
+        return (
+            f"{APP_PLIST} 里没有 CFBundleShortVersionString",
+            f"{APP_PLIST}: 缺少 CFBundleShortVersionString",
+            False,
+        )
     found = match.group(1).strip()
-    state = "一致" if found == version else f"不一致（{found}）"
-    return f"CFBundleShortVersionString={found}，与 VERSION.txt {state}"
+    if found == version:
+        return (f"CFBundleShortVersionString={found}，与 VERSION.txt 一致", None, False)
+    return (
+        f"CFBundleShortVersionString={found}，与 VERSION.txt 不一致",
+        f"{APP_PLIST}: CFBundleShortVersionString {found} != VERSION.txt {version}",
+        False,
+    )
 
 
 def setup_version(path: pathlib.Path) -> tuple[str, str] | None:
@@ -108,8 +125,16 @@ def main() -> int:
     else:
         print(f"  {ISS}：从 VERSION.txt 取，无第二处字面量")
 
-    print("macOS Info.plist（不计入退出码，改不到那一份）")
-    print(f"  {check_plist(root, version)}")
+    print("macOS 产物 Info.plist（判据指向真产物）")
+    message, plist_failure, missing_bundle = check_app_plist(root, version)
+    print(f"  {message}")
+    if plist_failure:
+        failures.append(plist_failure)
+    frozen = root / FROZEN_PLIST
+    if frozen.exists():
+        print(f"  {FROZEN_PLIST}：旧 Qt 线冻结文件，不进产物、不参与判定")
+    else:
+        print(f"  {FROZEN_PLIST}：不存在（旧 Qt 线冻结文件，不参与判定）")
 
     if args.setup:
         setup = pathlib.Path(args.setup)
@@ -142,6 +167,11 @@ def main() -> int:
         for item in failures:
             print(f"[失败] {item}")
         return 1
+    if missing_bundle:
+        print()
+        print("环境不具备：没有 macOS app bundle，无法核对产物 Info.plist（退出码 3）")
+        print("  这不是通过：macOS 上先构建出 build-new/shell/DevCard.app 再跑本脚本。")
+        return 3
     print()
     print("通过：安装包版本与 VERSION.txt 同源")
     return 0
