@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace devcard {
 
@@ -40,5 +42,13 @@ class ServerHandle {
 };
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options);
+
+// 错误码 → HTTP 状态码的唯一来源。路由里 throw AppError(code, ...) 的 code
+// 必须在这张表里有对应项；缺了会落 500，把本该 4xx 的用户错误报成服务端错误。
+bool http_status_known(std::string_view code);
+// 未登记时返回 500（并应由「清单与表一致」的测试提前拦下）。
+int http_status_for(std::string_view code);
+// 路由实际会抛出的错误码清单（服务启动阶段的错误码不在其中）。
+const std::vector<std::string>& route_error_codes();
 
 }  // namespace devcard

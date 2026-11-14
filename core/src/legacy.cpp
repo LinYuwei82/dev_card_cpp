@@ -18,6 +18,7 @@
 #include "devcard/migrations.h"
 #include "devcard/models.h"
 #include "devcard/password.h"
+#include "devcard/paths.h"
 #include "devcard/settings.h"
 #include "devcard/sha256.h"
 
@@ -84,25 +85,16 @@ std::string stamp() {
   return buffer;
 }
 
-std::string path_utf8(const std::filesystem::path& path) {
-#ifdef _WIN32
-  const auto u8 = path.u8string();
-  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
-#else
-  return path.string();
-#endif
-}
-
 SqlitePtr open_readonly(const std::filesystem::path& file) {
   sqlite3* raw = nullptr;
-  const int rc = sqlite3_open_v2(path_utf8(file).c_str(), &raw,
+  const int rc = sqlite3_open_v2(path_to_utf8(file).c_str(), &raw,
                                  SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
                                  nullptr);
   if (rc != SQLITE_OK) {
     std::string message = raw ? sqlite3_errmsg(raw) : sqlite3_errstr(rc);
     if (raw) sqlite3_close(raw);
     throw AppError("legacy_read",
-                   "无法只读打开旧库 " + path_utf8(file) + ": " + message);
+                   "无法只读打开旧库 " + path_to_utf8(file) + ": " + message);
   }
   sqlite3_busy_timeout(raw, 5000);
   return SqlitePtr(raw);
@@ -214,7 +206,7 @@ bool is_default_user(const std::string& name) {
 }
 
 std::string archive_name(const std::filesystem::path& source) {
-  return source.filename().string() + ".migrated-" + stamp();
+  return path_to_utf8(source.filename()) + ".migrated-" + stamp();
 }
 
 }  // namespace
@@ -243,11 +235,11 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
   if (!info.is_legacy) {
     throw AppError("not_legacy",
                    "不是旧版数据库（缺少 tb_device / tb_user，或已有 schema 版本）: " +
-                       path_utf8(source));
+                       path_to_utf8(source));
   }
 
   LegacyImportReport report;
-  report.source = path_utf8(source);
+  report.source = path_to_utf8(source);
   report.devices_total = info.devices;
   report.users_total = info.users;
 
@@ -272,8 +264,12 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
   if (ec) {
     throw AppError("backup_failed", "旧库备份失败: " + ec.message());
   }
-  const std::filesystem::path source_wal = source.string() + "-wal";
-  const std::filesystem::path backup_wal = backup.string() + "-wal";
+  // 侧车文件在源路径上追加 ASCII 后缀，不要把 path 降成窄字符再拼回来：
+  // Windows 上 .string() 走 ACP，中文/特殊字符会丢。
+  std::filesystem::path source_wal = source;
+  source_wal += "-wal";
+  std::filesystem::path backup_wal = backup;
+  backup_wal += "-wal";
   const bool has_wal =
       std::filesystem::exists(source_wal, ec) &&
       std::filesystem::file_size(source_wal, ec) > 0;
@@ -293,7 +289,7 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
     std::filesystem::remove(backup, ec);
     throw AppError("backup_failed", "旧库备份校验失败（SHA256 不一致）");
   }
-  report.backup = path_utf8(backup);
+  report.backup = path_to_utf8(backup);
 
   // 2. 只从校验过的备份读取数据；旧库文件本身不再打开。
   std::vector<LegacyDevice> devices;
@@ -331,8 +327,12 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
       import_in_place ? target : data_dir / "devicedb.importing.db";
   if (!import_in_place) {
     std::filesystem::remove(work, ec);
-    std::filesystem::remove(work.string() + "-wal", ec);
-    std::filesystem::remove(work.string() + "-shm", ec);
+    std::filesystem::path work_wal = work;
+    work_wal += "-wal";
+    std::filesystem::path work_shm = work;
+    work_shm += "-shm";
+    std::filesystem::remove(work_wal, ec);
+    std::filesystem::remove(work_shm, ec);
   }
 
   {
@@ -436,26 +436,30 @@ LegacyImportReport import_legacy(const std::filesystem::path& source,
   // 3. 旧库归档：文件名加 .migrated-<时间戳>，不删除、不覆盖。
   if (!import_in_place) {
     if (target_is_legacy && std::filesystem::exists(target, ec)) {
-      const std::filesystem::path archived = target.parent_path() / archive_name(target);
+      const std::filesystem::path archived =
+          target.parent_path() / path_from_utf8(archive_name(target));
       std::filesystem::rename(target, archived, ec);
       if (ec) {
         throw AppError("legacy_archive",
                        "新库已导入，但旧库重命名失败: " + ec.message() +
-                           "（备份在 " + backup.string() + "）");
+                           "（备份在 " + path_to_utf8(backup) + "）");
       }
       for (const char* suffix : {"-wal", "-shm"}) {
-        const std::filesystem::path sidecar = target.string() + suffix;
+        std::filesystem::path sidecar = target;
+        sidecar += suffix;
         std::error_code sidecar_ec;
         if (std::filesystem::exists(sidecar, sidecar_ec)) {
-          std::filesystem::rename(sidecar, archived.string() + suffix, sidecar_ec);
+          std::filesystem::path archived_sidecar = archived;
+          archived_sidecar += suffix;
+          std::filesystem::rename(sidecar, archived_sidecar, sidecar_ec);
         }
       }
-      report.archived_as = path_utf8(archived);
+      report.archived_as = path_to_utf8(archived);
     }
     std::filesystem::rename(work, target, ec);
     if (ec) {
       throw AppError("legacy_swap", "导入完成但切换新库失败: " + ec.message() +
-                                        "（备份在 " + backup.string() + "）");
+                                        "（备份在 " + path_to_utf8(backup) + "）");
     }
   }
 

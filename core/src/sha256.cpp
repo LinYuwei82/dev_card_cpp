@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "devcard/error.h"
+#include "devcard/paths.h"
 
 namespace devcard {
 namespace {
@@ -94,7 +95,7 @@ std::string sha256_hex(std::string_view input) {
 std::string sha256_file(const std::filesystem::path& file) {
   std::ifstream input(file, std::ios::binary);
   if (!input) {
-    throw AppError("io_error", "无法读取文件: " + file.string());
+    throw AppError("io_error", "无法读取文件: " + path_to_utf8(file));
   }
   std::string bytes((std::istreambuf_iterator<char>(input)),
                     std::istreambuf_iterator<char>());

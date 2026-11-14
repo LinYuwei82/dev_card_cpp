@@ -15,8 +15,10 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <string>
 
+#include "devcard/paths.h"
 #include "devcard/server.h"
 #include "devcard/sha256.h"
 #include "font_manifest.h"
@@ -142,7 +144,8 @@ int check_csp() {
 
 std::string seed_password(const std::filesystem::path& data_dir,
                           const std::string& user) {
-  std::ifstream in(data_dir / "初始账号密码.txt", std::ios::binary);
+  std::ifstream in(data_dir / devcard::path_from_utf8("初始账号密码.txt"),
+                   std::ios::binary);
   const std::string prefix = user + "：";
   std::string line;
   while (std::getline(in, line)) {
@@ -256,6 +259,90 @@ int check_update_guards() {
   return failures;
 }
 
+// 状态码表：路由会抛的每个错误码都必须有对应 HTTP 状态。
+// 缺一条的后果是 4xx 被渲染成 500（「打开数据目录」失败那次就是这么藏的），
+// 所以这里不只查表，还把 server.cpp 里真实的 AppError 字面量扫一遍——
+// 新增 throw 忘了补表时，这条用例直接红，不用等线上。
+int check_status_map() {
+  int failures = 0;
+  const auto& codes = devcard::route_error_codes();
+  for (const std::string& code : codes) {
+    if (!devcard::http_status_known(code)) {
+      std::cerr << "[失败] 路由错误码 " << code << " 在 status_for 表里没有对应项" << std::endl;
+      ++failures;
+    }
+  }
+
+  // 未映射类型必须能被认出来（不能和「已映射」混在一起）。
+  if (devcard::http_status_known("__unmapped_probe__")) {
+    std::cerr << "[失败] 未映射的错误码被当成了已知类型" << std::endl;
+    ++failures;
+  }
+  if (devcard::http_status_for("__unmapped_probe__") != 500) {
+    std::cerr << "[失败] 未映射的错误码没有回落到 500" << std::endl;
+    ++failures;
+  }
+
+  // 逐个钉住关键码，避免有人改表时静默漂移。
+  struct Expected {
+    const char* code;
+    int status;
+  };
+  const Expected expected[] = {
+      // 6f425fd 七项 + 下载路由
+      {"endpoint_not_allowed", 400}, {"no_update", 400},
+      {"update_disabled", 403},      {"update_busy", 409},
+      {"manifest_invalid", 502},     {"download_failed", 502},
+      {"checksum_mismatch", 502},
+      // 同类洞：未登录不是服务端错误
+      {"unauthorized", 401},
+  };
+  for (const Expected& item : expected) {
+    const int actual = devcard::http_status_for(item.code);
+    if (actual != item.status) {
+      std::cerr << "[失败] " << item.code << " 期望 " << item.status << "，实得 "
+                << actual << std::endl;
+      ++failures;
+    }
+  }
+
+  // 源码扫描：server.cpp 里直接 throw 的码，要么在清单里，要么是启动期错误。
+  std::ifstream in(DEVCARD_SERVER_SOURCE, std::ios::binary);
+  if (!in) {
+    std::cerr << "[失败] 读不到 " << DEVCARD_SERVER_SOURCE << std::endl;
+    return failures + 1;
+  }
+  const std::string source{std::istreambuf_iterator<char>(in),
+                           std::istreambuf_iterator<char>()};
+  const std::string needle = "AppError(\"";
+  // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
+  const std::set<std::string> startup_only = {"web_assets", "data_dir",
+                                              "font_missing", "font_corrupt",
+                                              "port_in_use"};
+  const std::set<std::string> listed(codes.begin(), codes.end());
+  std::size_t pos = 0;
+  while ((pos = source.find(needle, pos)) != std::string::npos) {
+    pos += needle.size();
+    const std::size_t end = source.find('"', pos);
+    if (end == std::string::npos) break;
+    const std::string code = source.substr(pos, end - pos);
+    pos = end;
+    if (startup_only.count(code)) continue;
+    if (!listed.count(code)) {
+      std::cerr << "[失败] server.cpp 抛出了未登记的错误码 \"" << code
+                << "\"：请同时加进 route_error_codes() 与 status_for 的表"
+                << std::endl;
+      ++failures;
+    }
+  }
+
+  if (failures == 0) {
+    std::cout << "状态码自检通过：路由错误码 " << codes.size()
+              << " 项全部有对应 HTTP 状态，未映射码回落 500" << std::endl;
+  }
+  return failures;
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +364,9 @@ int main() {
     code = 1;
   }
   if (check_update_guards() != 0) {
+    code = 1;
+  }
+  if (check_status_map() != 0) {
     code = 1;
   }
   return code;

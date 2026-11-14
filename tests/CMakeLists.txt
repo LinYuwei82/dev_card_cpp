@@ -7,7 +7,8 @@ add_test(NAME devcard_core_tests COMMAND devcard_core_tests)
 add_executable(devcard_web_assets_tests test_web_assets.cpp)
 target_link_libraries(devcard_web_assets_tests PRIVATE devcard_server)
 target_compile_definitions(devcard_web_assets_tests PRIVATE
-    DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts")
+    DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts"
+    DEVCARD_SERVER_SOURCE="${CMAKE_SOURCE_DIR}/server/src/server.cpp")
 add_test(NAME devcard_web_assets_tests COMMAND devcard_web_assets_tests)
 
 # 新架构不得引用旧 Qt 线的 OPPOSans：查源码、可执行文件字符串、随包 fonts 目录。

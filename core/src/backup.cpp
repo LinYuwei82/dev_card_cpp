@@ -10,6 +10,7 @@
 #include <string>
 
 #include "devcard/error.h"
+#include "devcard/paths.h"
 
 namespace devcard {
 namespace {
@@ -20,15 +21,6 @@ struct SqliteCloser {
   }
 };
 using SqlitePtr = std::unique_ptr<sqlite3, SqliteCloser>;
-
-std::string path_utf8(const std::filesystem::path& path) {
-#ifdef _WIN32
-  const auto u8 = path.u8string();
-  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
-#else
-  return path.string();
-#endif
-}
 
 std::string stamp() {
   const std::time_t t = std::time(nullptr);
@@ -63,7 +55,7 @@ std::string format_time(std::filesystem::file_time_type time) {
 
 SqlitePtr open_readonly(const std::filesystem::path& file) {
   sqlite3* raw = nullptr;
-  const int rc = sqlite3_open_v2(path_utf8(file).c_str(), &raw,
+  const int rc = sqlite3_open_v2(path_to_utf8(file).c_str(), &raw,
                                  SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
                                  nullptr);
   if (rc != SQLITE_OK) {
@@ -82,8 +74,8 @@ bool table_exists(sqlite3* conn, const char* name) {
 
 BackupEntry describe(const std::filesystem::path& file) {
   BackupEntry entry;
-  entry.name = file.filename().string();
-  entry.path = path_utf8(file);
+  entry.name = path_to_utf8(file.filename());
+  entry.path = path_to_utf8(file);
   std::error_code ec;
   const auto size = std::filesystem::file_size(file, ec);
   entry.bytes = ec ? 0 : static_cast<std::int64_t>(size);
@@ -121,7 +113,7 @@ BackupEntry create_backup(Db& db, const std::filesystem::path& data_dir,
 
   db.write_raw([&](sqlite3* conn) {
     Stmt stmt(conn, "VACUUM INTO ?");
-    stmt.bind(1, path_utf8(target));
+    stmt.bind(1, path_to_utf8(target));
     stmt.run();
   });
   return describe(target);
@@ -151,7 +143,8 @@ void restore_backup(Db& db, const std::filesystem::path& data_dir,
       name.find('\\') != std::string_view::npos || name == "." || name == "..") {
     throw AppError("bad_backup", "非法的备份文件名");
   }
-  const std::filesystem::path file = backups_dir(data_dir) / std::string(name);
+  // name 来自 JSON（UTF-8），不能当窄字符直接拼路径。
+  const std::filesystem::path file = backups_dir(data_dir) / path_from_utf8(name);
   std::error_code ec;
   if (!std::filesystem::exists(file, ec)) {
     throw AppError("not_found", "备份不存在");
@@ -179,7 +172,7 @@ void restore_backup(Db& db, const std::filesystem::path& data_dir,
   db.write_raw([&](sqlite3* conn) {
     {
       Stmt attach(conn, "ATTACH DATABASE ? AS restore_src");
-      attach.bind(1, path_utf8(file));
+      attach.bind(1, path_to_utf8(file));
       attach.run();
     }
     try {

@@ -30,6 +30,7 @@
 #include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/models.h"
+#include "devcard/paths.h"
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
@@ -319,9 +320,14 @@ const std::string& logo_jpeg() {  static const std::string bytes = [] {
   return bytes;
 }
 
-int status_for(const AppError& error) {
+namespace {
+
+using StatusTable = std::map<std::string, int, std::less<>>;
+
+const StatusTable& error_status_table() {
   // 单张表：错误码 → HTTP。新增码只加一行，不再套 if 链。
-  static const std::map<std::string, int> kStatus = {
+  // 凡是路由会抛的类型都必须在这里，缺一条就会把 4xx 渲染成 500。
+  static const StatusTable kStatus = {
       {"duplicate", 409},
       {"last_admin", 409},
       {"self_delete", 409},
@@ -329,6 +335,7 @@ int status_for(const AppError& error) {
       {"not_found", 404},
       {"legacy_db", 409},
       {"invalid_credentials", 401},
+      {"unauthorized", 401},
       {"locked", 423},
       {"forbidden", 403},
       {"must_change_password", 403},
@@ -341,6 +348,8 @@ int status_for(const AppError& error) {
       {"bad_xlsx", 400},
       {"not_legacy", 400},
       {"bad_backup", 400},
+      // 备份文件本身打不开：是用户选错了文件，不是服务端故障。
+      {"backup_invalid", 400},
       {"old_password_required", 400},
       {"bad_logo", 400},
       {"logo_too_large", 400},
@@ -354,10 +363,17 @@ int status_for(const AppError& error) {
       {"manifest_invalid", 502},
       {"download_failed", 502},
       {"checksum_mismatch", 502},
+      // 路由可达，但属于服务端 / 磁盘故障：显式写出来，别靠「没登记就 500」兜着。
+      {"backup_failed", 500},
+      {"io_error", 500},
+      {"db_error", 500},
+      {"xlsx_write_failed", 500},
+      {"legacy_read", 500},
   };
-  const auto found = kStatus.find(error.code());
-  return found == kStatus.end() ? 500 : found->second;
+  return kStatus;
 }
+
+}  // namespace
 
 std::string random_token() {
   static const char hex[] = "0123456789abcdef";
@@ -458,6 +474,41 @@ User require_admin(ServerState& state, const httplib::Request& request) {
 
 }  // namespace
 
+int http_status_for(std::string_view code) {
+  const StatusTable& table = error_status_table();
+  const auto found = table.find(code);
+  return found == table.end() ? 500 : found->second;
+}
+
+bool http_status_known(std::string_view code) {
+  const StatusTable& table = error_status_table();
+  return table.find(code) != table.end();
+}
+
+const std::vector<std::string>& route_error_codes() {
+  // 与各路由里 throw AppError(...) 的 code 对应。新增路由错误时，这里和
+  // error_status_table 要一起补，否则 tests 里的「清单覆盖」用例会红。
+  static const std::vector<std::string> kCodes = {
+      "duplicate",        "last_admin",       "self_delete",
+      "no_user",          "not_found",        "legacy_db",
+      "invalid_credentials", "unauthorized",  "locked",
+      "forbidden",        "must_change_password",
+      "invalid_device",   "invalid_user",     "weak_password",
+      "bad_field",        "bad_json",         "bad_header",
+      "bad_xlsx",         "not_legacy",       "bad_backup",
+      "backup_invalid",   "old_password_required",
+      "bad_logo",         "logo_too_large",   "bad_company_name",
+      "logo_write",       "endpoint_not_allowed",
+      "no_update",        "update_disabled",  "update_busy",
+      "manifest_invalid", "download_failed",  "checksum_mismatch",
+      "backup_failed",    "io_error",         "db_error",
+      "xlsx_write_failed", "legacy_read",
+  };
+  return kCodes;
+}
+
+int status_for(const AppError& error) { return http_status_for(error.code()); }
+
 struct ServerHandle::Impl : ServerState {};
 
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
@@ -520,13 +571,13 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     std::string bytes = read_file_bytes(path);
     if (bytes.empty()) {
       throw AppError("font_missing",
-                     "缺少随包字体 " + path.string() +
+                     "缺少随包字体 " + path_to_utf8(path) +
                          "：打印与预览必须用同一份子集，缺字体时不做降级，直接中止启动");
     }
     const std::string actual = sha256_hex(bytes);
     if (bytes.size() != spec.bytes || actual != spec.sha256) {
       throw AppError("font_corrupt",
-                     "字体校验失败 " + path.string() + "：期望 " +
+                     "字体校验失败 " + path_to_utf8(path) + "：期望 " +
                          std::to_string(spec.bytes) + " 字节 / SHA256 " + spec.sha256 +
                          "，实得 " + std::to_string(bytes.size()) + " 字节 / SHA256 " + actual +
                          "（多为重新子集后未重建，或文件被截断）");
@@ -577,8 +628,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                  {"endpoint", manifest.check_endpoint},
                                  {"interval_hours", manifest.check_interval_hours}}},
                   {"manifest", manifest.found
-                                   ? json((state.data_dir / kUpdateManifestName)
-                                              .string())
+                                   ? json(path_to_utf8(state.data_dir /
+                                                       kUpdateManifestName))
                                    : json(nullptr)},
                   {"checked_at", now_text()},
                   {"error", manifest.error.empty() ? json(nullptr)
@@ -745,7 +796,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     set_json(response, json{{"user", user_json(user)},
                             {"version", version},
                             {"schema_version", schema},
-                            {"data_dir", state.data_dir.string()},
+                            {"data_dir", path_to_utf8(state.data_dir)},
                             {"company_name", company_name(*state.db)},
                             {"company_name_print", company_print_name(*state.db)},
                             {"company_name_is_default",

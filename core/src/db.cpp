@@ -7,18 +7,10 @@
 #include <stdexcept>
 
 #include "devcard/error.h"
+#include "devcard/paths.h"
 
 namespace devcard {
 namespace {
-
-std::string path_to_utf8(const std::filesystem::path& path) {
-#ifdef _WIN32
-  const auto u8 = path.u8string();
-  return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
-#else
-  return path.string();
-#endif
-}
 
 [[noreturn]] void throw_sqlite(sqlite3* db, const char* what) {
   const char* message = db ? sqlite3_errmsg(db) : "sqlite error";

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #endif
 
+#include "devcard/paths.h"
 #include "devcard/sha256.h"
 
 namespace devcard {
@@ -291,9 +292,11 @@ bool curl_fetch(const std::string& url, const std::filesystem::path& target,
       "--max-filesize",
       std::to_string(kUpdateMaxBytes),
       "--output",
-      target.string(),
+      // 交给 curl 的必须是 UTF-8：Windows 侧再经 CreateProcessW 变成宽字符，
+      // 用 .string()（ACP）会先把中文目录转坏。
+      path_to_utf8(target),
       "--stderr",
-      log.string(),
+      path_to_utf8(log),
       url,
   };
   const int code = run_process(args);
@@ -341,7 +344,7 @@ UpdateDownloadOutcome download_update_package(
         verify_update_file(final_path, spec.size, spec.sha256);
     if (existing.ok) {
       outcome.ok = true;
-      outcome.path = final_path.string();
+      outcome.path = path_to_utf8(final_path);
       outcome.bytes = existing.actual_size;
       outcome.sha256 = existing.actual_sha256;
       return outcome;
@@ -380,7 +383,7 @@ UpdateDownloadOutcome download_update_package(
     return outcome;
   }
   outcome.ok = true;
-  outcome.path = final_path.string();
+  outcome.path = path_to_utf8(final_path);
   outcome.bytes = checked.actual_size;
   outcome.sha256 = checked.actual_sha256;
   return outcome;
@@ -391,7 +394,7 @@ void cleanup_update_partials(const std::filesystem::path& updates_dir) {
   if (!std::filesystem::is_directory(updates_dir, ec)) return;
   for (const auto& entry : std::filesystem::directory_iterator(updates_dir, ec)) {
     if (ec) break;
-    const std::string name = entry.path().filename().string();
+    const std::string name = path_to_utf8(entry.path().filename());
     const bool partial =
         name.size() >= 5 && name.compare(name.size() - 5, 5, ".part") == 0;
     const bool log = name.size() >= 5 &&

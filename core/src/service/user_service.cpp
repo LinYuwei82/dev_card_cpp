@@ -14,6 +14,7 @@
 
 #include "devcard/error.h"
 #include "devcard/password.h"
+#include "devcard/paths.h"
 #include "devcard/settings.h"
 
 namespace devcard {
@@ -273,7 +274,9 @@ SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
     set_setting(conn, "local_user", "root");
   });
 
-  const std::filesystem::path file = data_dir / "初始账号密码.txt";
+  // 文件名是 UTF-8 字面量，必须走 path_from_utf8：Windows 上 path 的窄字符构造
+  // 按 ACP（GBK）解释，直接拼会落盘成乱码目录项。
+  const std::filesystem::path file = data_dir / path_from_utf8("初始账号密码.txt");
   {
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (out) {
@@ -296,7 +299,7 @@ SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
 
 void remove_seed_password_file(const std::filesystem::path& data_dir) {
   std::error_code ec;
-  std::filesystem::remove(data_dir / "初始账号密码.txt", ec);
+  std::filesystem::remove(data_dir / path_from_utf8("初始账号密码.txt"), ec);
 }
 
 }  // namespace devcard

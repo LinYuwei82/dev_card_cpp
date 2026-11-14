@@ -13,6 +13,7 @@
 #include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/password.h"
+#include "devcard/paths.h"
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
@@ -50,9 +51,24 @@ std::filesystem::path temp_db() {
 // 正常关闭（最后一个连接）会 checkpoint 并删掉它们。POSIX 允许删打开中的文件，
 // 所以「目录删得掉」不能当判据，-wal 残留才可以——这一条在 macOS 上也会红。
 void check_db_closed(const std::filesystem::path& dir) {
-  const std::string db = (dir / "devicedb.db").string();
-  CHECK(!std::filesystem::exists(db + "-wal"));
-  CHECK(!std::filesystem::exists(db + "-shm"));
+  // 侧车文件直接在 path 上追加 ASCII 后缀，不经过 .string()：
+  // Windows 上窄字符往返走 ACP，中文目录会被改写。
+  std::filesystem::path db = dir / "devicedb.db";
+  std::filesystem::path wal = db;
+  wal += "-wal";
+  std::filesystem::path shm = db;
+  shm += "-shm";
+  CHECK(!std::filesystem::exists(wal));
+  CHECK(!std::filesystem::exists(shm));
+}
+
+// UTF-8 码点数：续字节（10xxxxxx）不计。
+int utf8_codepoints(const std::string& text) {
+  int count = 0;
+  for (const unsigned char byte : text) {
+    if ((byte & 0xC0) != 0x80) ++count;
+  }
+  return count;
 }
 }  // namespace
 
@@ -116,7 +132,7 @@ void run_update_package_case(const std::filesystem::path& dir) {
   const UpdateDownloadOutcome ok =
       download_update_package(updates, spec, copy_fetcher);
   CHECK(ok.ok);
-  CHECK(ok.path == (updates / "DevCard-1.2.3.zip").string());
+  CHECK(ok.path == devcard::path_to_utf8(updates / "DevCard-1.2.3.zip"));
   CHECK(std::filesystem::exists(ok.path));
   CHECK(!std::filesystem::exists(updates / "DevCard-1.2.3.zip.part"));
   CHECK(ok.sha256 == hash);
@@ -257,6 +273,46 @@ void run_user_service_case(const std::filesystem::path& dir) {
 
 }
 
+// 中文路径判据：只看磁盘上实际的目录项码元，不看 path / 界面怎么显示。
+// Windows 上 path 的窄字符构造按 ACP（简中即 GBK）解释字节，源码里的 UTF-8
+// 会落成 13 个乱码码元（9352 6FC6 E750 7490 FE40 5F7F 9359 FF44 62A4 002E ...），
+// 而正确值是 10 个码元。这条用例在 Windows 上必须红过一次，否则等于没测。
+void run_path_encoding_case(const std::filesystem::path& dir) {
+  const std::string expected = "初始账号密码.txt";
+  CHECK(utf8_codepoints(expected) == 10);
+
+  // 1) 内存里来回一趟不能变形（Windows 上这里就会暴露 ACP 解释）。
+  CHECK(devcard::path_to_utf8(devcard::path_from_utf8(expected)) == expected);
+
+  {
+    devcard::Db db(dir / "devicedb.db");
+    devcard::migrate(db);
+    const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
+    CHECK(seed.seeded);
+
+    // 2) 种子文件名的码元必须与常量逐码点一致。
+    CHECK(devcard::path_to_utf8(seed.password_file.filename()) == expected);
+
+    // 3) 再对着枚举出来的目录项核一遍：这是「落盘」而不是「内存里看着对」。
+    bool found = false;
+    bool mojibake = false;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+      const std::string name = devcard::path_to_utf8(entry.path().filename());
+      if (name == expected) found = true;
+      if (name.find("初始账号密码.txt") == std::string::npos &&
+          name.find(".txt") != std::string::npos) {
+        mojibake = true;
+      }
+    }
+    CHECK(found);
+    CHECK(!mojibake);
+  }
+
+  // 4) 删除也要按同一套码元命中，不能删出个「看起来删了」。
+  devcard::remove_seed_password_file(dir);
+  CHECK(!std::filesystem::exists(dir / devcard::path_from_utf8(expected)));
+}
+
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_legacy_import_case(const std::filesystem::path& dir) {
   const std::filesystem::path legacy_dir = dir / "legacy";
@@ -264,7 +320,9 @@ void run_legacy_import_case(const std::filesystem::path& dir) {
   const std::filesystem::path legacy_file = legacy_dir / "devicedb.db";
   {
   sqlite3* conn = nullptr;
-  sqlite3_open(legacy_file.string().c_str(), &conn);
+  // SQLite 的路径参数是 UTF-8；Windows 上 .string() 给的是 ACP，
+  // 临时目录落在中文用户名下时会打不开，所以走 path_to_utf8。
+  sqlite3_open(devcard::path_to_utf8(legacy_file).c_str(), &conn);
   devcard::exec_sql(
       conn,
       "CREATE TABLE tb_device(dev_id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -692,6 +750,15 @@ int main() {
   {
     const std::filesystem::path dir = temp_db().parent_path();
     run_user_service_case(dir);
+    check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 中文路径：种子文件名按「磁盘上的目录项码元」比，不看界面显示。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_path_encoding_case(dir);
     check_db_closed(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
