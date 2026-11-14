@@ -329,7 +329,7 @@ int check_status_map() {
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
-                                              "port_in_use"};
+                                              "port_in_use", "instance_in_use"};
   std::size_t pos = 0;
   while ((pos = source.find(needle, pos)) != std::string::npos) {
     pos += needle.size();

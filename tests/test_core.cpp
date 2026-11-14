@@ -9,6 +9,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
@@ -75,6 +79,45 @@ int utf8_codepoints(const std::string& text) {
     if ((byte & 0xC0) != 0x80) ++count;
   }
   return count;
+}
+
+std::filesystem::path self_executable() {
+#ifdef _WIN32
+  std::wstring buffer(32768, L'\0');
+  const DWORD size = ::GetModuleFileNameW(nullptr, buffer.data(),
+                                          static_cast<DWORD>(buffer.size()));
+  buffer.resize(size);
+  return std::filesystem::path(buffer);
+#else
+  return std::filesystem::canonical("/proc/self/exe");
+#endif
+}
+
+void set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+// curl_fetch 调过来的替身：放在真实调用点上，不走注入的 fetcher。
+// 这里拿到的 argv 是 CRT 按 ACP 从宽命令行转出来的窄串——与真实 curl.exe
+// 同一层，所以「命令行里的路径能不能还原成原路径」是真跑过的。
+int run_curl_stub(int argc, char** argv) {
+  std::filesystem::path output;
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (std::string(argv[i]) == "--output") output = argv[i + 1];
+  }
+  const char* payload = std::getenv("DEVCARD_PROBE_PAYLOAD");
+  if (output.empty() || !payload) return 2;
+  std::error_code ec;
+  // 环境变量里给的是 UTF-8（curl_fetch 那边就是这么约定的），这里必须按 UTF-8
+  // 还原成 path；直接用 path(const char*) 会按 ACP 再解释一次。
+  std::filesystem::copy_file(devcard::path_from_utf8(payload), output,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  return ec ? 1 : 0;
 }
 }  // namespace
 
@@ -370,6 +413,72 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
   CHECK(!std::filesystem::exists(dir / devcard::path_from_utf8(expected)));
 }
 
+// 调用点断言：如果错在 curl_fetch 里的 target.string()，helper 全绿也照样下错地方。
+// 所以这里走真实的 download_update_package（默认 fetcher 就是 curl_fetch），
+// 并把 DEVCARD_CURL 指向本测试程序自己——它按真实 curl 的方式重新解析 argv。
+// 判据是枚举 <data_dir>\updates\ 的目录项逐码点比，不是断言某个字符串相等。
+void run_update_download_landing_case(const std::filesystem::path& dir) {
+  using namespace devcard;
+  const std::filesystem::path data_dir = dir / "中文数据";
+  const std::filesystem::path updates = data_dir / "updates";
+  std::filesystem::create_directories(updates);
+
+  const std::filesystem::path payload = data_dir / "payload.bin";
+  {
+    std::ofstream out(payload, std::ios::binary | std::ios::trunc);
+    for (int i = 0; i < 4096; ++i) {
+      out.put(static_cast<char>((i * 31 + 7) & 0xFF));
+    }
+  }
+
+  UpdatePackageSpec spec;
+  spec.version = "1.2.3";
+  spec.file_name = "DevCard-1.2.3.exe";
+  spec.url =
+      "https://github.com/LinYuwei82/dev_card_cpp/releases/download/v1.2.3/"
+      "DevCard-1.2.3.exe";
+  spec.size = std::filesystem::file_size(payload);
+  spec.sha256 = sha256_file(payload);
+
+  // 环境变量本身也要按 UTF-8 给：curl_fetch 取出来后会再 widen(CP_UTF8)。
+  set_env("DEVCARD_CURL", path_to_utf8(self_executable()));
+  set_env("DEVCARD_PROBE_PAYLOAD", path_to_utf8(payload));
+
+  const UpdateDownloadOutcome outcome = download_update_package(updates, spec);
+  set_env("DEVCARD_CURL", "");
+  set_env("DEVCARD_PROBE_PAYLOAD", "");
+
+  CHECK(outcome.ok);
+  if (!outcome.ok) std::cerr << "  下载失败：" << outcome.error << "\n";
+  CHECK(outcome.bytes == spec.size);
+
+  int entries = 0;
+  bool name_ok = false;
+  bool leftovers = false;
+  for (const auto& entry : std::filesystem::directory_iterator(updates)) {
+    const std::string name = path_to_utf8(entry.path().filename());
+    ++entries;
+    if (name == "DevCard-1.2.3.exe") name_ok = true;
+    if (name.size() >= 5 &&
+        (name.compare(name.size() - 5, 5, ".part") == 0 ||
+         name.compare(name.size() - 5, 5, ".log") == 0)) {
+      leftovers = true;
+    }
+  }
+  CHECK(entries == 1);
+  CHECK(name_ok);
+  CHECK(!leftovers);
+
+  const std::filesystem::path landed =
+      updates / path_from_utf8("DevCard-1.2.3.exe");
+  CHECK(std::filesystem::exists(landed));
+  std::error_code size_ec;
+  const auto landed_size = std::filesystem::file_size(landed, size_ec);
+  CHECK(!size_ec);
+  CHECK(landed_size == spec.size);
+  CHECK(outcome.path == path_to_utf8(landed));
+}
+
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_legacy_import_case(const std::filesystem::path& dir) {
   const std::filesystem::path legacy_dir = dir / "legacy";
@@ -545,7 +654,11 @@ void run_xlsx_template_case(const std::filesystem::path& dir) {
 
 }
 
-int main() {
+int main(int argc, char** argv) {
+  // 被 curl_fetch 当作 curl 调起来时，先走替身分支。
+  if (argc > 1 && std::string(argv[1]) == "--fail") {
+    return run_curl_stub(argc, argv);
+  }
   const std::filesystem::path file = temp_db();
   {
     devcard::Db db(file);
@@ -884,6 +997,14 @@ int main() {
     const std::filesystem::path dir = temp_db().parent_path();
     run_company_name_case(dir);
     check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 下载落盘：数据目录含中文，判据是枚举出来的目录项码元。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_update_download_landing_case(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
   }
