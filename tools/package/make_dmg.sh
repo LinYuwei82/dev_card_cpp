@@ -163,10 +163,30 @@ hdiutil verify -quiet "$DMG"
 BYTES="$(stat -f%z "$DMG")"
 HUMAN="$(du -h "$DMG" | awk '{print $1}')"
 SHA="$(shasum -a 256 "$DMG" | awk '{print $1}')"
+# 身份看 App 内容层，不看 DMG 容器：hdiutil 每次新造 GUID，容器字节不可复现。
+BIN_SHA="$(shasum -a 256 "$BIN" | awk '{print $1}')"
+PLIST_SHA="$(shasum -a 256 "$PLIST" | awk '{print $1}')"
 
 echo ""
 echo "打包完成"
 echo "  产物：$DMG"
 echo "  版本：$VERSION"
 echo "  体积：$BYTES bytes（${HUMAN}）"
-echo "  SHA256：$SHA"
+echo "  SHA256（DMG，仅作传输校验，不作身份）：$SHA"
+echo "  身份（App 层）："
+echo "    可执行文件 $BIN"
+echo "      SHA256：$BIN_SHA"
+echo "    Info.plist $PLIST"
+echo "      SHA256：$PLIST_SHA"
+
+if [ "$SKIP_BUILD" -eq 1 ]; then
+  echo ""
+  echo "--skip-build 复用说明（缺任一项，该产物的体积与哈希都不可比）"
+  COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$COMMIT" ]; then
+    echo "  复用的 $BUILD_DIR 对应 commit：$COMMIT"
+  else
+    echo "  [警告] 取不到 commit：该产物的体积与哈希不可比，不得写进基线"
+  fi
+  echo "  bundle 内可执行文件 SHA256：$BIN_SHA"
+fi
