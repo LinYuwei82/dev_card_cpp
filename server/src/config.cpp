@@ -281,10 +281,10 @@ ServerConfig resolve_config(const CliOverrides& cli) {
     config.data_dir = *file.data_dir;
     config.data_dir_source = "配置文件 data_dir";
   } else {
-    // 形态默认留档：绿色版 <exe>\data、每用户 %LOCALAPPDATA%、
-    // 整机 %ProgramData% 的选择待 P1 拍板，这里不锁死。
     config.data_dir = default_data_dir();
-    config.data_dir_source = "形态默认（安装形态待定）";
+    config.data_dir_source =
+        std::string("形态默认（") +
+        (is_installed_layout() ? "安装版" : "便携版") + "）";
   }
   config.data_dir = resolve_relative(exe, config.data_dir);
 

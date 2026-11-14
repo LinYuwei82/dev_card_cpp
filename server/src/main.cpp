@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -65,6 +66,61 @@ OpenedDatabase open_database(const std::filesystem::path& data_dir) {
   devcard::migrate(*opened.db);
   devcard::seed_default_users(*opened.db, data_dir);
   return opened;
+}
+
+void print_legacy_report(const devcard::LegacyImportReport& report);
+
+// 安装版首启：exe 同级 data\（或旧 bin\）若带着 devicedb.db，导入用户目录。
+// 原文件只读、不改名、不删；用户目录已有台账时拒绝，绝不合并两份台账。
+void import_adjacent_legacy(const std::filesystem::path& data_dir) {
+  if (!devcard::is_installed_layout()) return;
+  const std::filesystem::path exe = devcard::executable_dir();
+  std::error_code ec;
+  std::filesystem::path source;
+  for (const auto& candidate :
+       {exe / "data" / "devicedb.db", exe / "bin" / "devicedb.db"}) {
+    if (std::filesystem::exists(candidate, ec)) {
+      source = candidate;
+      break;
+    }
+  }
+  if (source.empty()) return;
+
+  const devcard::LegacyInfo info = devcard::inspect_legacy(source);
+  if (!info.is_legacy) {
+    std::cout << "提示：exe 同级发现 " << source.string()
+              << "，不是旧版库，未自动导入。" << std::endl;
+    return;
+  }
+
+  const std::filesystem::path target = data_dir / "devicedb.db";
+  std::int64_t existing = 0;
+  bool target_is_legacy = false;
+  if (std::filesystem::exists(target, ec)) {
+    target_is_legacy = devcard::inspect_legacy(target).is_legacy;
+    if (!target_is_legacy) {
+      devcard::Db db(target);
+      db.read([&](sqlite3* conn) {
+        devcard::Stmt stmt(conn, "SELECT COUNT(*) FROM device");
+        if (stmt.step()) existing = stmt.i64(0);
+      });
+      if (existing > 0) {
+        throw devcard::AppError(
+            "legacy_conflict",
+            "用户数据目录已有台账，拒绝自动导入（不会合并两份台账）：\n"
+            "  已有: " + target.string() + "（设备 " +
+                std::to_string(existing) + " 条）\n"
+            "  待导入: " + source.string() + "（设备 " +
+                std::to_string(info.devices) + " 条）\n"
+            "请确认保留哪一份：用 --data-dir 指向旧目录，或先自行备份/移走其中一个库。");
+      }
+    }
+  }
+  if (target_is_legacy) return;  // 由 open_database 的 auto_import_if_needed 处理
+
+  std::cout << "检测到安装版随包旧数据 " << source.string()
+            << "，导入到用户数据目录（原文件保留、不改名）：" << std::endl;
+  print_legacy_report(devcard::import_legacy(source, data_dir));
 }
 
 void print_legacy_report(const devcard::LegacyImportReport& report) {
@@ -260,6 +316,9 @@ int main(int argc, char** argv) {
                 << " 将对所有网卡开放，请确保处在可信内网。" << std::endl;
     }
 
+    // 安装版首启：先处理 exe 同级的旧库，再打开正式数据库。
+    import_adjacent_legacy(config.data_dir);
+
     devcard::ServerOptions options;
     options.data_dir = config.data_dir;
     options.host = listen;
@@ -280,6 +339,8 @@ int main(int argc, char** argv) {
     }
     std::cout << "数据目录: " << config.data_dir.string() << "（来源："
               << config.data_dir_source << "）\n"
+              << "安装形态: " << (devcard::is_installed_layout() ? "安装版" : "便携版")
+              << "\n"
               << "数据库:   " << (config.data_dir / "devicedb.db").string() << "\n"
               << "监听地址: " << listen << ":" << server->port() << "（来源："
               << listen_source << "，端口来源：" << config.port_source << "）\n";

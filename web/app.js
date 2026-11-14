@@ -139,6 +139,7 @@
     backupRows: document.getElementById('backup-rows'),
     backupEmpty: document.getElementById('backup-empty'),
     backupNow: document.getElementById('backup-now'),
+    openDataDir: document.getElementById('open-data-dir'),
 
     gotoPrint: document.getElementById('goto-print'),
     saveCompany: document.getElementById('save-company'),
@@ -1693,6 +1694,20 @@
         toast(error.message, 'error');
       });
   }
+
+  // 数据目录由服务端判定并打开，前端不传路径。
+  el.openDataDir.addEventListener('click', function () {
+    el.openDataDir.disabled = true;
+    api('POST', '/api/system/open-data-dir', {})
+      .then(function (data) {
+        toast('已打开数据目录：' + (data && data.path ? data.path : ''));
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      })
+      .then(function () { el.openDataDir.disabled = false; });
+  });
 
   el.backupNow.addEventListener('click', function () {
     el.backupNow.disabled = true;

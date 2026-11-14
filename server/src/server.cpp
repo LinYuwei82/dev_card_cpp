@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -45,6 +46,7 @@
 #include "font_coverage.h"
 
 #ifdef _WIN32
+#include <shellapi.h>
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -1479,6 +1481,33 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       clear_session_cookie(response);
                       set_json(response, json{{"ok", true}, {"reload", true}});
                     });
+
+  // ==== P1 新增：打开数据目录（整段插入，rebase 时整段保留）====
+  // 路径只取服务端自己判定的 state.data_dir，不接受前端传参；
+  // 仅管理员可用，避免普通用户借服务端拉起资源管理器。
+  state.server.Post("/api/system/open-data-dir",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+#ifdef _WIN32
+                      const std::wstring dir = state.data_dir.wstring();
+                      const HINSTANCE result =
+                          ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr,
+                                        nullptr, SW_SHOWNORMAL);
+                      if (reinterpret_cast<std::intptr_t>(result) <= 32) {
+                        throw AppError("bad_request",
+                                       "无法打开数据目录：" +
+                                           state.data_dir.string());
+                      }
+                      set_json(response,
+                               json{{"ok", true},
+                                    {"path", state.data_dir.string()}});
+#else
+                      throw AppError("bad_request",
+                                     "打开数据目录仅在 Windows 版本提供");
+#endif
+                    });
+  // ==== P1 新增段结束 ====
 
   // 审计查询：仅管理员。user 角色一律 403。
   state.server.Get("/api/audit", [&state](const httplib::Request& request,

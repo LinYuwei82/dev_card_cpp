@@ -10,6 +10,10 @@ namespace devcard {
 
 std::filesystem::path default_data_dir();
 
+// 安装形态：Inno 安装版（程序目录有 unins000.exe，或位于
+// %LOCALAPPDATA%\Programs\DevCard）返回 true；绿色版返回 false。
+bool is_installed_layout();
+
 // 可执行文件所在目录：配置文件、随包字体都相对它解析，不依赖当前工作目录。
 std::filesystem::path executable_dir();
 

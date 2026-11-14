@@ -1,0 +1,73 @@
+; DevCard Windows 安装脚本（Inno Setup 6.x）
+;
+; 编译（Windows，需先构建好两个 exe 与字体）：
+;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
+;     /DAppVersion=1.1.3 ^
+;     /DSourceRoot=..\..\dist\Mote-Windows ^
+;     packaging\windows\DevCard.iss
+;
+; 说明：以下内容未在本机实际编译（本机未安装 Inno Setup），
+; 语法按 Inno Setup 6 编写；首次编译请重点核对 SourceRoot 下的文件布局。
+;
+; 安装位置与数据位置刻意分开：
+;   程序: %LOCALAPPDATA%\Programs\DevCard
+;   数据: %LOCALAPPDATA%\DevCard\data（由 devcard-server.exe 首次启动创建）
+; 卸载只删程序目录，数据目录保留并在结束时提示路径。
+
+#ifndef AppVersion
+  #define AppVersion "1.1.3"
+#endif
+#ifndef SourceRoot
+  #define SourceRoot "..\..\dist\Mote-Windows"
+#endif
+
+[Setup]
+AppId={{6F1E7A52-3C4B-4E8D-9A21-5B7C0D3E8F14}
+AppName=DevCard
+AppVersion={#AppVersion}
+AppPublisher=深圳市安业物业管理有限公司
+DefaultDirName={localappdata}\Programs\DevCard
+DefaultGroupName=DevCard
+DisableProgramGroupPage=yes
+; 每用户安装：不弹 UAC、不需要管理员、不注册系统服务。
+PrivilegesRequired=lowest
+OutputDir=..\..\dist
+OutputBaseFilename=DevCard-{#AppVersion}-setup
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\DevCard.exe
+
+[Languages]
+Name: "en"; MessagesFile: "compiler:Default.isl"
+
+[Files]
+Source: "{#SourceRoot}\DevCard.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\devcard-server.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 字体缺失时编译直接失败（不加 skipifsourcedoesntexist）。
+Source: "{#SourceRoot}\fonts\NotoSansSC-*.subset.ttf"; DestDir: "{app}\fonts"; Flags: ignoreversion
+; 浏览器端资源仅在源目录存在时打包（原生壳可能已内嵌）。
+Source: "{#SourceRoot}\web\*"; DestDir: "{app}\web"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+
+[Icons]
+Name: "{group}\DevCard"; Filename: "{app}\DevCard.exe"
+Name: "{group}\DevCard 服务端"; Filename: "{app}\devcard-server.exe"; Parameters: "--server"
+Name: "{group}\卸载 DevCard"; Filename: "{uninstallexe}"
+
+[Run]
+Filename: "{app}\DevCard.exe"; Description: "启动 DevCard"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; 只清理程序目录内的残留。数据目录 {localappdata}\DevCard\data 不在 {app} 下，
+; 默认不会被删除；这里也不要加任何指向它的条目。
+Type: filesandordirs; Name: "{app}\web"
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    MsgBox('程序已卸载，台账数据仍保留在：' + #13#10 +
+           ExpandConstant('{localappdata}\DevCard\data'),
+           mbInformation, MB_OK);
+end;
