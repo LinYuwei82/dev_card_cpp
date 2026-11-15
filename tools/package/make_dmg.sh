@@ -73,7 +73,6 @@ PLIST="$APP/Contents/Info.plist"
 if [ "$SKIP_BUILD" -eq 0 ]; then
   echo "构建：${BUILD_DIR}（Release）"
   cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-    -DDEVCARD_NEW_ARCH=ON \
     -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build "$BUILD_DIR" --target DevCard --parallel "$(sysctl -n hw.ncpu)" \
     >/dev/null

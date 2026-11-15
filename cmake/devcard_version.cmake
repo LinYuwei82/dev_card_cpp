@@ -1,5 +1,4 @@
 # 新架构的 Windows 版本资源：所有取值都来自 VERSION.txt。
-# 旧 Qt 线继续用手写的 DevCard_resource.rc（已冻结在 v1.1.3）。
 #
 # 用法：devcard_add_version_rc(<exe target>)
 # - 任何平台上都会在构建目录生成 version_<target>.rc，便于核对内容；

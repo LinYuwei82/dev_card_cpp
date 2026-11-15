@@ -1,8 +1,7 @@
 # 新架构产物不得出现旧 Qt 线的 OPPOSans（2026-11-14 定）。
 #
-# 背景：旧 Qt 线仍引用 OPPOSans（dev_card.pro / resources.qrc / card_printer.cpp /
-# ui_login.h / ui_main.h / ui_user.h 共 6 处，两个 ttf 约 20 MB）。该线冻结保留，
-# 字体不删——删了冻结线就编不出来。但这批字体只服务旧线，新架构禁止引用：
+# 背景：改造前的 Qt 线曾引用 OPPOSans（两个 ttf 约 20 MB）。旧线已从仓库删除，
+# 字体随之删除；这条守卫保留，防止新架构再混进 OPPOSans：
 # 新架构用 Noto Sans SC 子集，界面与打印共用一份，混进 OPPOSans 就意味着某处
 # 偷偷回退到了系统字体或旧资源。
 #

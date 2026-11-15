@@ -9,7 +9,6 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-new",
       "cacheVariables": {
-        "DEVCARD_NEW_ARCH": "ON",
         "CMAKE_BUILD_TYPE": "Release"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
@@ -20,7 +19,6 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-new-dev",
       "cacheVariables": {
-        "DEVCARD_NEW_ARCH": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
@@ -32,7 +30,6 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-win",
       "cacheVariables": {
-        "DEVCARD_NEW_ARCH": "ON",
         "CMAKE_BUILD_TYPE": "Release"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
@@ -43,7 +40,6 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-win-dev",
       "cacheVariables": {
-        "DEVCARD_NEW_ARCH": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
@@ -55,7 +51,6 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-linux",
       "cacheVariables": {
-        "DEVCARD_NEW_ARCH": "ON",
         "CMAKE_BUILD_TYPE": "Debug"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
