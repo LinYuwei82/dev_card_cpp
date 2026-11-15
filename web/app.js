@@ -57,8 +57,6 @@
     pageSub: document.getElementById('page-sub'),
     viewDevices: document.getElementById('view-devices'),
     viewUsers: document.getElementById('view-users'),
-    legacyNotice: document.getElementById('legacy-notice'),
-
     filters: document.getElementById('filters'),
     keyword: document.getElementById('keyword'),
     field: document.getElementById('field'),
@@ -731,7 +729,6 @@
     el.companyLogoPreview.src = data.company_logo_url || '/company-logo';
     updateCompanyHint();
     updateLogoTime(data.company_logo_updated_at);
-    renderLegacyNotice(data.legacy);
     if (data.user.must_change_password) {
       openPasswordModal(true);
     } else {
@@ -885,24 +882,6 @@
     if (!button || button.disabled) return;
     setView(button.getAttribute('data-view'));
   });
-
-  function renderLegacyNotice(legacy) {
-    if (!legacy) {
-      el.legacyNotice.hidden = true;
-      return;
-    }
-    var parts = [
-      '已从旧库导入 ' + legacy.devices_imported + ' 条设备、' +
-        legacy.users_imported + ' 个账号。',
-      '原库备份：' + legacy.backup + '。'
-    ];
-    if (legacy.archived_as) parts.push('旧库已归档为 ' + legacy.archived_as + '。');
-    if (legacy.warnings && legacy.warnings.length) {
-      parts.push('共 ' + legacy.warnings.length + ' 条告警（超长截断、空字段跳过等）。');
-    }
-    el.legacyNotice.textContent = parts.join(' ');
-    el.legacyNotice.hidden = false;
-  }
 
   // ---------- 设备台账 ----------
 

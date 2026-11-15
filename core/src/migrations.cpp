@@ -71,14 +71,14 @@ void migrate(Db& db) {
   db.write([&](sqlite3* conn) {
     // 旧版 Qt 库没有 schema 版本号，只有 tb_device / tb_user。
     // 在这里硬失败，避免把新表悄悄加到真实旧库、让用户误以为数据丢了；
-    // M3 的旧库导入器负责备份、建新库并搬数据。
+    // 旧库导入已下线，不再有自动搬数据的路径。
     const bool has_marker = table_exists(conn, "schema_migration");
     const bool has_legacy = table_exists(conn, "tb_device") ||
                             table_exists(conn, "tb_user");
     if (has_legacy && !has_marker) {
       throw AppError("legacy_db",
-                     "检测到旧版数据库（无 schema 版本号）。请先执行旧库导入，"
-                     "程序不会在原库上直接建新表。");
+                     "检测到旧版数据库（无 schema 版本号）。新版本不再支持旧库导入，"
+                     "请先用旧版程序导出数据或改用新库。");
     }
 
     exec_sql(conn,

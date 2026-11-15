@@ -14,7 +14,6 @@
 #include "devcard/backup.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
-#include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/server.h"
 #include "devcard/settings.h"
@@ -54,39 +53,14 @@ std::string prompt_password(const std::string& label) {
 
 struct OpenedDatabase {
   std::unique_ptr<devcard::Db> db;
-  devcard::LegacyImportReport legacy;
 };
 
 OpenedDatabase open_database(const std::filesystem::path& data_dir) {
   OpenedDatabase opened;
-  opened.legacy = devcard::auto_import_if_needed(data_dir);
   opened.db = std::make_unique<devcard::Db>(data_dir / "devicedb.db");
   devcard::migrate(*opened.db);
   devcard::seed_default_users(*opened.db, data_dir);
   return opened;
-}
-
-void print_legacy_report(const devcard::LegacyImportReport& report) {
-  if (!report.performed) {
-    std::cout << "未发现需要导入的旧库" << std::endl;
-    return;
-  }
-  std::cout << "旧库导入完成\n"
-            << "  来源: " << report.source << "\n"
-            << "  SHA256: " << report.source_sha256 << "\n"
-            << "  备份: " << report.backup << "\n"
-            << "  归档: "
-            << (report.archived_as.empty() ? "(源库保留原处)" : report.archived_as)
-            << "\n"
-            << "  设备: 共 " << report.devices_total << "，导入 "
-            << report.devices_imported << "，跳过 " << report.devices_skipped
-            << "\n"
-            << "  用户: 共 " << report.users_total << "，导入 "
-            << report.users_imported << "，跳过 " << report.users_skipped
-            << std::endl;
-  for (const std::string& warning : report.warnings) {
-    std::cout << "  警告: " << warning << std::endl;
-  }
 }
 
 void print_usage() {
@@ -94,7 +68,6 @@ void print_usage() {
       << "devcard-server [选项]\n"
       << "  --port N               监听端口（默认 18080）\n"
       << "  --data-dir PATH        数据目录（默认为系统应用数据目录）\n"
-      << "  --import-legacy PATH   导入旧版 devicedb.db 后退出\n"
       << "  --set-password USER    重置本机账号密码后退出（密码从标准输入读取）\n"
       << "  --backup               立即备份后退出\n"
       << "  --restore NAME         从 backups/ 下的备份恢复后退出\n"
@@ -108,7 +81,6 @@ int main(int argc, char** argv) {
   devcard::ServerOptions options;
   options.data_dir = devcard::default_data_dir();
 
-  std::string import_legacy_path;
   std::string set_password_user;
   std::string restore_name;
   bool backup_only = false;
@@ -127,8 +99,6 @@ int main(int argc, char** argv) {
       options.port = std::stoi(next("--port"));
     } else if (arg == "--data-dir") {
       options.data_dir = next("--data-dir");
-    } else if (arg == "--import-legacy") {
-      import_legacy_path = next("--import-legacy");
     } else if (arg == "--set-password") {
       set_password_user = next("--set-password");
     } else if (arg == "--restore") {
@@ -149,13 +119,6 @@ int main(int argc, char** argv) {
   try {
     if (show_version) {
       std::cout << DEVCARD_VERSION << std::endl;
-      return 0;
-    }
-
-    if (!import_legacy_path.empty()) {
-      const devcard::LegacyImportReport report =
-          devcard::import_legacy(import_legacy_path, options.data_dir);
-      print_legacy_report(report);
       return 0;
     }
 

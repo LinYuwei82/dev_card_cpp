@@ -27,7 +27,6 @@
 #include "devcard/db.h"
 #include "devcard/error.h"
 #include "devcard/image_meta.h"
-#include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/models.h"
 #include "devcard/paths.h"
@@ -62,7 +61,6 @@ struct ServerState {
   std::map<std::string, std::string> fonts;
   FontCoverage coverage;
   std::string local_token;
-  LegacyImportReport legacy;
   bool seeded = false;
 
   std::mutex sessions_mutex;
@@ -346,7 +344,6 @@ const StatusTable& error_status_table() {
       {"bad_json", 400},
       {"bad_header", 400},
       {"bad_xlsx", 400},
-      {"not_legacy", 400},
       {"bad_backup", 400},
       // 备份文件本身打不开：是用户选错了文件，不是服务端故障。
       {"backup_invalid", 400},
@@ -368,7 +365,6 @@ const StatusTable& error_status_table() {
       {"io_error", 500},
       {"db_error", 500},
       {"xlsx_write_failed", 500},
-      {"legacy_read", 500},
   };
   return kStatus;
 }
@@ -495,14 +491,14 @@ const std::vector<std::string>& route_error_codes() {
       "forbidden",        "must_change_password",
       "invalid_device",   "invalid_user",     "weak_password",
       "bad_field",        "bad_json",         "bad_header",
-      "bad_xlsx",         "not_legacy",       "bad_backup",
+      "bad_xlsx",         "bad_backup",
       "backup_invalid",   "old_password_required",
       "bad_logo",         "logo_too_large",   "bad_company_name",
       "logo_write",       "endpoint_not_allowed",
       "no_update",        "update_disabled",  "update_busy",
       "manifest_invalid", "download_failed",  "checksum_mismatch",
       "backup_failed",    "io_error",         "db_error",
-      "xlsx_write_failed", "legacy_read",
+      "xlsx_write_failed",
   };
   return kCodes;
 }
@@ -547,9 +543,6 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
-
-  // 旧库自动探测：先备份、再只读导入，成功后旧库改名 *.migrated-<时间戳>。
-  state.legacy = auto_import_if_needed(options.data_dir);
 
   state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
   migrate(*state.db);
@@ -612,8 +605,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     set_json(response, json{{"status", "ok"},
                             {"version", version},
                             {"schema_version", schema},
-                            {"mode", "local"},
-                            {"legacy_imported", state.legacy.performed}});
+                            {"mode", "local"}});
   });
 
   // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。
@@ -789,19 +781,6 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                          const httplib::Request& request,
                                          httplib::Response& response) {
     const User user = current_user(state, request);
-    json legacy = nullptr;
-    if (state.legacy.performed) {
-      legacy = {{"source", state.legacy.source},
-                {"backup", state.legacy.backup},
-                {"archived_as", state.legacy.archived_as},
-                {"devices_total", state.legacy.devices_total},
-                {"devices_imported", state.legacy.devices_imported},
-                {"devices_skipped", state.legacy.devices_skipped},
-                {"users_total", state.legacy.users_total},
-                {"users_imported", state.legacy.users_imported},
-                {"users_skipped", state.legacy.users_skipped},
-                {"warnings", state.legacy.warnings}};
-    }
     set_json(response, json{{"user", user_json(user)},
                             {"version", version},
                             {"schema_version", schema},
@@ -813,8 +792,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                             {"company_name_max_width", kCompanyNameMaxWidth},
                             {"company_logo_url", "/company-logo"},
                             {"company_logo_updated_at",
-                             get_setting(*state.db, "company_logo_updated_at")},
-                            {"legacy", legacy}});
+                             get_setting(*state.db, "company_logo_updated_at")}});
   });
 
   state.server.Get("/api/devices", [&state](const httplib::Request& request,

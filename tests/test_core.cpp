@@ -12,7 +12,6 @@
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
-#include "devcard/legacy.h"
 #include "devcard/migrations.h"
 #include "devcard/password.h"
 #include "devcard/paths.h"
@@ -509,103 +508,30 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
-void run_legacy_import_case(const std::filesystem::path& dir) {
-  const std::filesystem::path legacy_dir = dir / "legacy";
-  std::filesystem::create_directories(legacy_dir);
-  const std::filesystem::path legacy_file = legacy_dir / "devicedb.db";
-  {
-  sqlite3* conn = nullptr;
-  // SQLite 的路径参数是 UTF-8；Windows 上 .string() 给的是 ACP，
-  // 临时目录落在中文用户名下时会打不开，所以走 path_to_utf8。
-  sqlite3_open(devcard::path_to_utf8(legacy_file).c_str(), &conn);
-  devcard::exec_sql(
-      conn,
-      "CREATE TABLE tb_device(dev_id INTEGER PRIMARY KEY AUTOINCREMENT,"
-      " dev_name VARCHAR(20), location VARCHAR(20), control_range VARCHAR(20),"
-      " phone VARCHAR(20));"
-      "CREATE TABLE tb_user(userName VARCHAR(20) PRIMARY KEY,"
-      " userPwd VARCHAR(20));");
-  devcard::exec_sql(conn, "BEGIN");
-  for (int i = 1; i <= 12; ++i) {
-    const std::string sql =
-        "INSERT INTO tb_device(dev_name,location,control_range,phone)"
-        " VALUES('设备" + std::to_string(i) + "','B" + std::to_string(i % 3) +
-        "栋','1-" + std::to_string(i % 5) + "层','138000000" +
-        (i < 10 ? "0" : "") + std::to_string(i) + "')";
-    devcard::exec_sql(conn, sql);
-  }
-  devcard::exec_sql(conn,
-                    "INSERT INTO tb_device(dev_name,location,control_range,phone)"
-                    " VALUES('这是一个超过二十个字符的设备名称用来验证截断行为',"
-                    "'A2栋','屋顶',NULL)");
-  devcard::exec_sql(conn,
-                    "INSERT INTO tb_user(userName,userPwd) VALUES"
-                    "('root','123456'),('安业物业','123456'),('operator','pass123')");
-  devcard::exec_sql(conn, "COMMIT");
-  sqlite3_close(conn);
-  }
-
-  const devcard::LegacyInfo info = devcard::inspect_legacy(legacy_file);
-  CHECK(info.is_legacy);
-  CHECK(info.devices == 13);
-  CHECK(info.users == 3);
-
-  const devcard::LegacyImportReport report =
-    devcard::import_legacy(legacy_file, dir);
-  CHECK(report.performed);
-  CHECK(report.devices_total == 13);
-  CHECK(report.devices_imported == 13);
-  CHECK(report.devices_skipped == 0);
-  CHECK(report.users_imported == 3);
-  CHECK(!report.backup.empty());
-  CHECK(std::filesystem::exists(report.backup));
-  CHECK(report.source_sha256.size() == 64);
-  CHECK(!report.warnings.empty());  // 超长字段截断告警
-
+void run_backup_case(const std::filesystem::path& dir) {
   devcard::Db db(dir / "devicedb.db");
   devcard::migrate(db);
+
+  devcard::DeviceService service(db);
+  devcard::Device seed;
+  seed.dev_name = "备份样例";
+  seed.location = "B1栋";
+  seed.control_range = "1层";
+  seed.phone = "13800000001";
+  const devcard::Device created = service.create(seed);
+
   devcard::DeviceDao devices;
-  CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
-  devcard::Device sample;
-  CHECK(devices.find(db, 1, sample));
-  CHECK(sample.dev_name == "设备1");
-  CHECK(sample.location == "B1栋");
-  CHECK(devices.find(db, 13, sample));
-  CHECK(sample.phone.empty());  // NULL → ''
-  CHECK(sample.dev_name.size() <= 60);  // 已按 20 个字符截断
-
-  devcard::UserService users(db);
-  CHECK(users.count() == 3);
-  const devcard::User root = users.get("root");
-  CHECK(root.role == "admin");
-  CHECK(root.must_change_password);
-  CHECK(root.password_hash.rfind("$argon2id$", 0) == 0);
-  CHECK(root.password_hash.find("123456") == std::string::npos);
-  CHECK(users.get("安业物业").must_change_password);
-  CHECK(!users.get("operator").must_change_password);
-  CHECK(devcard::get_setting(db, "legacy_imported_from") == report.source);
-  CHECK(users.authenticate("root", "123456").must_change_password);
-
-  // 重复导入：按 dev_id / user_name 幂等跳过，不追加。
-  const devcard::LegacyImportReport again =
-      devcard::import_legacy(legacy_file, dir);
-  CHECK(again.performed);
-  CHECK(again.devices_imported == 0);
-  CHECK(again.devices_skipped == 13);
-  CHECK(again.users_imported == 0);
-  CHECK(again.users_skipped == 3);
-  CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+  CHECK(devices.count(db, devcard::DeviceQuery{}) == 1);
 
   // 备份与恢复：删除一条后可从备份恢复。
   const devcard::BackupEntry backup =
       devcard::create_backup(db, dir, "test");
   CHECK(std::filesystem::exists(backup.path));
   CHECK(backup.bytes > 0);
-  devcard::DeviceService service(db);
-  service.remove(1);
-  CHECK(devices.count(db, devcard::DeviceQuery{}) == 12);
+  service.remove(created.id);
+  CHECK(devices.count(db, devcard::DeviceQuery{}) == 0);
   devcard::restore_backup(db, dir, backup.name);
-  CHECK(devices.count(db, devcard::DeviceQuery{}) == 13);
+  CHECK(devices.count(db, devcard::DeviceQuery{}) == 1);
 
   bool bad_name = false;
   try {
@@ -960,9 +886,9 @@ int main() {
   }
 
   {
-    // 旧库：13 条设备 + 3 个用户（含默认账号与超长字段）。
+    // 备份与恢复：删除一条后可从备份恢复。
     const std::filesystem::path dir = temp_db().parent_path();
-    run_legacy_import_case(dir);
+    run_backup_case(dir);
     check_db_closed(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
