@@ -670,27 +670,40 @@ int check_status_map() {
   }
   const std::string source{std::istreambuf_iterator<char>(in),
                            std::istreambuf_iterator<char>()};
-  const std::string needle = "AppError(\"";
+  // 扫描 AppError(<空白>"code" ...)：括号与引号之间允许换行。
+  // 之前固定匹配 AppError(" 会漏掉换行写法（port_in_use、install_unsupported、
+  // bad_version、bad_company_name 都这么写），等于给这类码开了后门。
+  const std::string needle = "AppError(";
+  const auto scan_codes = [&](const std::string& text, const std::string& label,
+                              const std::set<std::string>& exempt) {
+    std::size_t at = 0;
+    while ((at = text.find(needle, at)) != std::string::npos) {
+      at += needle.size();
+      while (at < text.size() &&
+             (text[at] == ' ' || text[at] == '\t' || text[at] == '\r' ||
+              text[at] == '\n')) {
+        ++at;
+      }
+      if (at >= text.size() || text[at] != '"') continue;
+      const std::size_t stop = text.find('"', at + 1);
+      if (stop == std::string::npos) break;
+      const std::string code = text.substr(at + 1, stop - at - 1);
+      at = stop + 1;
+      if (exempt.count(code)) continue;
+      if (!listed.count(code)) {
+        std::cerr << "[失败] " << label << " 抛出了未登记的错误码 \"" << code
+                  << "\"：请同时加进 route_error_codes() 与 status_for 的表"
+                  << std::endl;
+        ++failures;
+      }
+    }
+  };
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
-                                              "instance_in_use",
+                                              "port_in_use", "instance_in_use",
                                               "app_started_marker"};
-  std::size_t pos = 0;
-  while ((pos = source.find(needle, pos)) != std::string::npos) {
-    pos += needle.size();
-    const std::size_t end = source.find('"', pos);
-    if (end == std::string::npos) break;
-    const std::string code = source.substr(pos, end - pos);
-    pos = end;
-    if (startup_only.count(code)) continue;
-    if (!listed.count(code)) {
-      std::cerr << "[失败] server.cpp 抛出了未登记的错误码 \"" << code
-                << "\"：请同时加进 route_error_codes() 与 status_for 的表"
-                << std::endl;
-      ++failures;
-    }
-  }
+  scan_codes(source, "server.cpp", startup_only);
 
   // core/src 也要扫：路由调用的 service / dao 层抛的码同样会经路由渲染成 HTTP。
   // 只豁免启动期码（建库、打开库、迁移），它们在开始服务之前就结束了。
@@ -708,22 +721,7 @@ int check_status_map() {
     }
     const std::string text{std::istreambuf_iterator<char>(core_in),
                            std::istreambuf_iterator<char>()};
-    std::size_t at = 0;
-    while ((at = text.find(needle, at)) != std::string::npos) {
-      at += needle.size();
-      const std::size_t stop = text.find('"', at);
-      if (stop == std::string::npos) break;
-      const std::string code = text.substr(at, stop - at);
-      at = stop;
-      if (core_startup_only.count(code)) continue;
-      if (!listed.count(code)) {
-        std::cerr << "[失败] " << entry.path().filename().string()
-                  << " 抛出了未登记的错误码 \"" << code
-                  << "\"：请同时加进 route_error_codes() 与 status_for 的表"
-                  << std::endl;
-        ++failures;
-      }
-    }
+    scan_codes(text, entry.path().filename().string(), core_startup_only);
   }
 
   if (failures == 0) {

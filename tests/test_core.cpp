@@ -34,9 +34,14 @@
 namespace {
 
 int failures = 0;
+// 断言计数：没有这个数，输出只有「core tests passed」，无法确认哪些断言真的跑过
+// （Windows 下整段 #ifndef _WIN32 的用例根本不编译）。
+int checks = 0;
+int skips = 0;
 
 #define CHECK(cond)                                                        \
   do {                                                                     \
+    ++checks;                                                              \
     if (!(cond)) {                                                         \
       std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << "  " #cond     \
                 << "\n";                                                   \
@@ -568,7 +573,10 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
     legacy_threw = true;
   }
   if (legacy_threw) {
-    std::cout << "宽→窄→宽：Windows 上 path::string() 对非 ASCII 路径直接抛错，"
+    // 这条分支不断言（旧写法在该平台直接抛），但必须计数：否则「断言数」与实际
+    // 执行数对不上，看输出也分不清是跳过还是漏跑。
+    ++skips;
+    std::cout << "SKIP 宽→窄→宽：Windows 上 path::string() 对非 ASCII 路径直接抛错，"
                  "旧写法不可用" << std::endl;
   } else {
     CHECK(legacy_wal == direct_wal);
@@ -1215,6 +1223,8 @@ int run_all_tests() {
   }
 
   std::filesystem::remove_all(file.parent_path());
+  std::cout << "断言 " << checks << " 条执行，失败 " << failures << " 条，跳过 "
+            << skips << " 条\n";
   if (failures) {
     std::cerr << failures << " 项失败\n";
     return 1;
