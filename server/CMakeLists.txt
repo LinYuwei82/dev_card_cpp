@@ -49,6 +49,9 @@ target_include_directories(devcard_server PUBLIC
 )
 target_compile_definitions(devcard_server PRIVATE
     DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
+    # accept 队列深度。httplib 默认 5（third_party/httplib/httplib.h:141），
+    # 20 并发建连会被拒；只从构建侧抬高，不改内嵌依赖本体。
+    CPPHTTPLIB_LISTEN_BACKLOG=128
 )
 target_link_libraries(devcard_server PUBLIC devcard_core)
 if(WIN32)
