@@ -4,9 +4,18 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 #include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
@@ -73,6 +82,70 @@ int utf8_codepoints(const std::string& text) {
     if ((byte & 0xC0) != 0x80) ++count;
   }
   return count;
+}
+
+std::filesystem::path self_executable() {
+#ifdef _WIN32
+  std::wstring buffer(32768, L'\0');
+  const DWORD size = ::GetModuleFileNameW(nullptr, buffer.data(),
+                                          static_cast<DWORD>(buffer.size()));
+  buffer.resize(size);
+  return std::filesystem::path(buffer);
+#elif defined(__APPLE__)
+  // 与 server/src/platform_paths.cpp 同一写法：先问长度再取值。
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> buffer(size + 1, '\0');
+  if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+    return std::filesystem::path(buffer.data());
+  }
+  return {};
+#elif defined(__linux__)
+  return std::filesystem::canonical("/proc/self/exe");
+#else
+  // 其余平台没有可靠的「自身可执行文件」查询方式。返回空串让调用方明确失败，
+  // 不要编一个假路径——假路径会让用例在没验证的情况下变绿。
+  return {};
+#endif
+}
+
+void set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  ::setenv(name, value.c_str(), 1);
+#endif
+}
+
+// curl_fetch 调过来的替身：放在真实调用点上，不走注入的 fetcher。
+// 这里拿到的 argv 是 CRT 按 ACP 从宽命令行转出来的窄串——与真实 curl.exe
+// 同一层，所以「命令行里的路径能不能还原成原路径」是真跑过的。
+int run_curl_stub(int argc, char** argv) {
+  std::filesystem::path output;
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (std::string(argv[i]) == "--output") output = argv[i + 1];
+  }
+  const char* payload = std::getenv("DEVCARD_PROBE_PAYLOAD");
+  if (output.empty() || !payload) return 2;
+  // 工作目录是这条设计里唯一承载非 ASCII 的地方，对不上就直接报 3，
+  // 免得「文件碰巧写到了别处」被当成通过。
+  const char* expect_cwd = std::getenv("DEVCARD_PROBE_EXPECT_CWD");
+  if (expect_cwd) {
+    std::error_code cwd_ec;
+    const std::filesystem::path expected = devcard::path_from_utf8(expect_cwd);
+    if (!std::filesystem::equivalent(std::filesystem::current_path(cwd_ec),
+                                     expected, cwd_ec) ||
+        cwd_ec) {
+      return 3;
+    }
+  }
+  std::error_code ec;
+  // 环境变量里给的是 UTF-8（curl_fetch 那边就是这么约定的），这里必须按 UTF-8
+  // 还原成 path；直接用 path(const char*) 会按 ACP 再解释一次。
+  std::filesystem::copy_file(devcard::path_from_utf8(payload), output,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  return ec ? 1 : 0;
 }
 }  // namespace
 
@@ -480,9 +553,24 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
   const std::filesystem::path db_file = dir / "devicedb.db";
   std::filesystem::path direct_wal = db_file;
   direct_wal += "-wal";
-  const std::filesystem::path legacy_wal =
-      std::filesystem::path(db_file.string() + "-wal");
-  CHECK(legacy_wal == direct_wal);
+  // 旧写法在非 ASCII 路径上有两种退化：POSIX 上返回错误字节，Windows 上
+  // .string() 直接抛「目标代码页无法表示的字符」。两种都算旧写法不可用，
+  // 不能让它把整个用例打崩，更不能把「抛错」当成「通过」。
+  bool legacy_threw = false;
+  std::filesystem::path legacy_wal;
+  try {
+    legacy_wal = std::filesystem::path(db_file.string() + "-wal");
+  } catch (const std::exception&) {
+    // MSVC 的窄转换失败抛的是 system_error 一系，不是 filesystem_error；
+    // 按 std::exception 兜住，免得整条用例 fail-fast 成 0xC0000409。
+    legacy_threw = true;
+  }
+  if (legacy_threw) {
+    std::cout << "宽→窄→宽：Windows 上 path::string() 对非 ASCII 路径直接抛错，"
+                 "旧写法不可用" << std::endl;
+  } else {
+    CHECK(legacy_wal == direct_wal);
+  }
   CHECK(direct_wal.parent_path() == db_file.parent_path());
   CHECK(devcard::path_to_utf8(direct_wal.parent_path()) ==
         devcard::path_to_utf8(db_file.parent_path()));
@@ -507,6 +595,74 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
   CHECK(!std::filesystem::exists(dir / devcard::path_from_utf8(expected)));
 }
 
+// 调用点断言：如果错在 curl_fetch 里的 target.string()，helper 全绿也照样下错地方。
+// 所以这里走真实的 download_update_package（默认 fetcher 就是 curl_fetch），
+// 并把 DEVCARD_CURL 指向本测试程序自己——它按真实 curl 的方式重新解析 argv。
+// 判据是枚举 <data_dir>\updates\ 的目录项逐码点比，不是断言某个字符串相等。
+void run_update_download_landing_case(const std::filesystem::path& dir) {
+  using namespace devcard;
+  const std::filesystem::path data_dir = dir / "中文数据";
+  const std::filesystem::path updates = data_dir / "updates";
+  std::filesystem::create_directories(updates);
+
+  const std::filesystem::path payload = data_dir / "payload.bin";
+  {
+    std::ofstream out(payload, std::ios::binary | std::ios::trunc);
+    for (int i = 0; i < 4096; ++i) {
+      out.put(static_cast<char>((i * 31 + 7) & 0xFF));
+    }
+  }
+
+  UpdatePackageSpec spec;
+  spec.version = "1.2.3";
+  spec.file_name = "DevCard-1.2.3.exe";
+  spec.url =
+      "https://github.com/LinYuwei82/dev_card_cpp/releases/download/v1.2.3/"
+      "DevCard-1.2.3.exe";
+  spec.size = std::filesystem::file_size(payload);
+  spec.sha256 = sha256_file(payload);
+
+  // 环境变量本身也要按 UTF-8 给：curl_fetch 取出来后会再 widen(CP_UTF8)。
+  set_env("DEVCARD_CURL", path_to_utf8(self_executable()));
+  set_env("DEVCARD_PROBE_PAYLOAD", path_to_utf8(payload));
+  set_env("DEVCARD_PROBE_EXPECT_CWD", path_to_utf8(updates));
+
+  const UpdateDownloadOutcome outcome = download_update_package(updates, spec);
+  set_env("DEVCARD_CURL", "");
+  set_env("DEVCARD_PROBE_PAYLOAD", "");
+  set_env("DEVCARD_PROBE_EXPECT_CWD", "");
+
+  CHECK(outcome.ok);
+  if (!outcome.ok) std::cerr << "  下载失败：" << outcome.error << "\n";
+  CHECK(outcome.bytes == spec.size);
+
+  int entries = 0;
+  bool name_ok = false;
+  bool leftovers = false;
+  for (const auto& entry : std::filesystem::directory_iterator(updates)) {
+    const std::string name = path_to_utf8(entry.path().filename());
+    ++entries;
+    if (name == "DevCard-1.2.3.exe") name_ok = true;
+    if (name.size() >= 5 &&
+        (name.compare(name.size() - 5, 5, ".part") == 0 ||
+         name.compare(name.size() - 5, 5, ".log") == 0)) {
+      leftovers = true;
+    }
+  }
+  CHECK(entries == 1);
+  CHECK(name_ok);
+  CHECK(!leftovers);
+
+  const std::filesystem::path landed =
+      updates / path_from_utf8("DevCard-1.2.3.exe");
+  CHECK(std::filesystem::exists(landed));
+  std::error_code size_ec;
+  const auto landed_size = std::filesystem::file_size(landed, size_ec);
+  CHECK(!size_ec);
+  CHECK(landed_size == spec.size);
+  CHECK(outcome.path == path_to_utf8(landed));
+}
+
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_backup_case(const std::filesystem::path& dir) {
   devcard::Db db(dir / "devicedb.db");
@@ -526,9 +682,9 @@ void run_backup_case(const std::filesystem::path& dir) {
   // 备份与恢复：删除一条后可从备份恢复。
   const devcard::BackupEntry backup =
       devcard::create_backup(db, dir, "test");
-  CHECK(std::filesystem::exists(backup.path));
+  CHECK(std::filesystem::exists(devcard::path_from_utf8(backup.path)));
   CHECK(backup.bytes > 0);
-  service.remove(created.id);
+  service.remove(created.id, created.version);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 0);
   devcard::restore_backup(db, dir, backup.name);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 1);
@@ -609,7 +765,67 @@ void run_xlsx_template_case(const std::filesystem::path& dir) {
 
 }
 
-int main() {
+// M2 硬验收②：同一份文件连续导入两次——不去重、不合并、不跳过、不覆盖。
+// 判据按文档原话：第二次仍新增 N 条、重复只计数提示、两次后总数 2N，
+// 且重复行各自持有新的 id（COUNT(DISTINCT 三字段) 不变）。
+void run_xlsx_reimport_case(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "devicedb.db";
+  devcard::Db db(file);
+  devcard::migrate(db);
+  devcard::DeviceService service(db);
+
+  devcard::xlsx::Sheet data;
+  data.name = "设备台账";
+  data.rows.push_back(devcard::DeviceService::expected_header());
+  data.rows.push_back({"1号水泵", "B1栋", "1-3层", "13800000001"});
+  data.rows.push_back({"排风机", "B1栋", "屋顶", "13800000002"});
+  data.rows.push_back({"", "", "", ""});  // 四字段全空：跳过
+  data.rows.push_back({"消防泵", "A栋", "B1层", "13800000003"});
+  const std::string bytes = devcard::xlsx::write_workbook({data});
+  CHECK(!bytes.empty());
+
+  // 两次都从同一份字节重新解析，模拟「同一个文件上传两次」。
+  const auto first_rows = devcard::xlsx::read(bytes);
+  CHECK(first_rows.size() == 5);
+  const devcard::ImportReport first = service.import_rows(first_rows);
+  CHECK(first.imported == 3);
+  CHECK(first.skipped_empty == 1);
+  CHECK(first.duplicates == 0);
+  CHECK(service.export_rows().size() == 4);  // 表头 + 3
+
+  const auto second_rows = devcard::xlsx::read(bytes);
+  const devcard::ImportReport second = service.import_rows(second_rows);
+  CHECK(second.imported == 3);     // 不阻断、不跳过
+  CHECK(second.skipped_empty == 1);
+  CHECK(second.duplicates == 3);   // 仅提示
+  CHECK(service.export_rows().size() == 7);  // 表头 + 2N
+
+  // 主键必须各自独立：6 条不同 id，且三字段组合仍是 3 种。
+  devcard::DeviceDao dao;
+  devcard::DeviceQuery query;
+  const auto all = dao.list(db, query);
+  CHECK(all.size() == 6);
+  std::set<std::int64_t> ids;
+  std::set<std::string> triples;
+  for (const auto& item : all) {
+    ids.insert(item.id);
+    triples.insert(item.dev_name + "|" + item.location + "|" + item.control_range);
+  }
+  CHECK(ids.size() == 6);
+  CHECK(triples.size() == 3);
+
+  // 先插入的 3 条没有被覆盖：第一次导入的内容原样还在。
+  bool found_pump = false;
+  for (const auto& item : all) {
+    if (item.dev_name == "1号水泵" && item.phone == "13800000001" &&
+        item.control_range == "1-3层") {
+      found_pump = true;
+    }
+  }
+  CHECK(found_pump);
+}
+
+int run_all_tests() {
   const std::filesystem::path file = temp_db();
   {
     devcard::Db db(file);
@@ -657,7 +873,7 @@ int main() {
     CHECK(dao.find(db, fan.id, updated));
     CHECK(updated.location == "A2栋");
 
-    db.write([&](sqlite3* conn) { dao.erase(conn, pump.id); });
+    db.write([&](sqlite3* conn) { dao.erase(conn, pump.id, pump.version); });
     CHECK(dao.count(db, devcard::DeviceQuery{}) == 1);
 
     query.name.clear();
@@ -764,17 +980,66 @@ int main() {
 
       bool missing_update = false;
       try {
-        service.update(99999, make("不存在", "B1栋", "1层", "138"));
+        devcard::Device absent =
+            make("不存在", "B1栋", "1层", "138");
+        absent.version = 1;  // 有版本才谈得上「记录不存在」，否则先被 bad_version 拦住
+        service.update(99999, absent);
       } catch (const devcard::AppError& error) {
         missing_update = std::string(error.code()) == "not_found";
       }
       CHECK(missing_update);
 
-      service.remove(first.id);
+      // 真并发：两个线程拿同一个版本同时改同一条，只能一个成功。
+      {
+        const devcard::Device base = service.get(first.id);
+        struct Outcome {
+          bool ok = false;
+          bool conflict = false;
+          devcard::Device current;
+          std::vector<std::string> fields;
+          std::string phone;
+        };
+        Outcome left;
+        Outcome right;
+        auto attempt = [&](Outcome& out, const char* phone) {
+          devcard::Device edit = base;
+          edit.phone = phone;
+          out.phone = phone;
+          try {
+            service.update(base.id, edit);
+            out.ok = true;
+          } catch (const devcard::ConflictError& error) {
+            out.conflict = true;
+            out.current = error.snapshot().current;
+            out.fields = error.snapshot().fields;
+          }
+        };
+        std::thread one(attempt, std::ref(left), "13911112222");
+        std::thread two(attempt, std::ref(right), "13933334444");
+        one.join();
+        two.join();
+
+        CHECK(left.ok != right.ok);
+        CHECK(left.conflict != right.conflict);
+        const Outcome& loser = left.conflict ? left : right;
+        const Outcome& winner = left.ok ? left : right;
+        CHECK(loser.conflict);
+        CHECK(loser.current.version == base.version + 1);
+        CHECK(loser.current.phone == winner.phone);
+        CHECK(loser.fields.size() == 1);
+        CHECK(!loser.fields.empty() && loser.fields.front() == "phone");
+
+        const devcard::Device merged = service.get(base.id);
+        CHECK(merged.version == base.version + 1);
+        CHECK(merged.phone == winner.phone);
+      }
+
+      const std::int64_t remove_version = service.get(first.id).version;
+      service.remove(first.id, remove_version);
       CHECK(service.list(devcard::DeviceQuery{}).total == 4);
       bool missing_remove = false;
       try {
-        service.remove(first.id);
+        service.remove(first.id, remove_version);
       } catch (const devcard::AppError& error) {
         missing_remove = std::string(error.code()) == "not_found";
       }
@@ -904,6 +1169,14 @@ int main() {
   }
 
   {
+    // 下载落盘：数据目录含中文，判据是枚举出来的目录项码元。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_update_download_landing_case(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
     // 自更新阶段一：地址白名单、文件名清洗、双校验与失败清理。
     const std::filesystem::path dir = temp_db().parent_path();
     run_update_package_case(dir);
@@ -920,6 +1193,15 @@ int main() {
     CHECK(!std::filesystem::exists(dir));
   }
 
+  {
+    // M2 硬验收②：同一文件连续导入两次，不覆盖、不合并、不跳过。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_xlsx_reimport_case(dir);
+    check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
   std::filesystem::remove_all(file.parent_path());
   if (failures) {
     std::cerr << failures << " 项失败\n";
@@ -927,4 +1209,19 @@ int main() {
   }
   std::cout << "core tests passed\n";
   return 0;
+}
+
+int main(int argc, char** argv) {
+  // 被 curl_fetch 当作 curl 调起来时，先走替身分支。
+  if (argc > 1 && std::string(argv[1]) == "--fail") {
+    return run_curl_stub(argc, argv);
+  }
+  // 未捕获的异常在这里落成一行可读输出：否则 0xC0000409 的 fail-fast
+  // 只会留下一个退出码，看不出坏在哪条路径上。
+  try {
+    return run_all_tests();
+  } catch (const std::exception& error) {
+    std::cerr << "未捕获异常：" << error.what() << "\n";
+    return 1;
+  }
 }

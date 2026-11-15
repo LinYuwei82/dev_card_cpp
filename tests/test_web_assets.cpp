@@ -17,7 +17,9 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 
+#include "config.h"
 #include "devcard/paths.h"
 #include "devcard/server.h"
 #include "devcard/sha256.h"
@@ -259,6 +261,347 @@ int check_update_guards() {
   return failures;
 }
 
+// 登录/改密失败限流：真起服务、真走 HTTP。
+// 回环地址按要求整体不受限，所以限流那几段必须从非回环来源打——把服务绑在
+// 本机私有 IP 上（网络模式），否则测出来的永远是不受限的那条路径。
+int check_rate_limit() {
+  namespace fs = std::filesystem;
+#ifdef _WIN32
+  _putenv_s("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR);
+#else
+  setenv("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR, 1);
+#endif
+  const std::vector<std::string> addresses = devcard::private_ipv4_addresses();
+  if (addresses.empty()) {
+    std::cerr << "[失败] 没有私有 IPv4，无法从非回环来源验证限流" << std::endl;
+    return 1;
+  }
+  const std::string address = addresses.front();
+
+  auto start = [](const std::string& prefix, const std::string& host, int base,
+                  bool enabled, fs::path* data_dir) {
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    *data_dir = fs::temp_directory_path() / (prefix + std::to_string(stamp));
+    std::unique_ptr<devcard::ServerHandle> server;
+    for (int port = base; port <= base + 20 && !server; ++port) {
+      devcard::ServerOptions options;
+      options.data_dir = *data_dir;
+      options.host = host;
+      options.port = port;
+      options.network = host != "127.0.0.1";
+      options.rate_limit.enabled = enabled;
+      options.rate_limit.max_failures = 5;
+      options.rate_limit.window_seconds = 60;
+      options.rate_limit.lock_seconds = 2;
+      try {
+        server = devcard::start_server(options);
+      } catch (const std::exception&) {
+      }
+    }
+    return server;
+  };
+
+  auto post_login = [](httplib::Client& client, const std::string& user,
+                       const std::string& password) {
+    return client.Post("/api/session/login",
+                       "{\"username\":\"" + user + "\",\"password\":\"" +
+                           password + "\"}",
+                       "application/json");
+  };
+
+  int failures = 0;
+  fs::path data_dir;
+  auto server = start("devcard_ratelimit_", address, 18370, true, &data_dir);
+  const std::string password = seed_password(data_dir, "root");
+  if (!server || password.empty()) {
+    std::cerr << "[失败] 起服务或读取初始密码失败，无法校验限流" << std::endl;
+    fs::remove_all(data_dir);
+    return 1;
+  }
+  {
+    httplib::Client client(address, server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+
+    // 1) 阈值内 4 次失败只回 401，不锁。
+    for (int i = 0; i < 4; ++i) {
+      const auto response = post_login(client, "root", "wrong-password");
+      if (!response || response->status != 401) {
+        std::cerr << "[失败] 阈值内的失败未被识别为 401："
+                  << (response ? response->status : -1) << " "
+                  << (response ? response->body : "") << std::endl;
+        ++failures;
+      }
+    }
+    // 2) 第 5 次改用正确密码：必须 200（5 次内不影响正常登录），并清零计数。
+    {
+      const auto response = post_login(client, "root", password);
+      if (!response || response->status != 200) {
+        std::cerr << "[失败] 阈值内用正确密码登录失败："
+                  << (response ? response->status : -1) << " "
+                  << (response ? response->body : "") << std::endl;
+        ++failures;
+      }
+    }
+    // 3) 同一来源换不同用户名连错 5 次：IP 键到阈值。
+    for (int i = 0; i < 5; ++i) {
+      const auto response = post_login(client, "ghost" + std::to_string(i), "wrong");
+      if (!response || response->status != 401) {
+        std::cerr << "[失败] 第 " << i + 1 << " 次失败未回 401："
+                  << (response ? response->status : -1) << std::endl;
+        ++failures;
+      }
+    }
+    // 4) 锁定期内即使密码正确也 429，并带 Retry-After。
+    {
+      const auto response = post_login(client, "root", password);
+      const bool limited =
+          response && response->status == 429 &&
+          response->body.find("too_many_requests") != std::string::npos &&
+          !response->get_header_value("Retry-After").empty();
+      if (!limited) {
+        std::cerr << "[失败] 锁定期内正确密码未被 429 拒绝（或缺 Retry-After）："
+                  << (response ? response->status : -1) << " "
+                  << (response ? response->body : "") << std::endl;
+        ++failures;
+      }
+    }
+    // 5) 锁定过期后能登：证明锁是限时的，不是永久拉黑。
+    std::this_thread::sleep_for(std::chrono::milliseconds(2300));
+    {
+      const auto response = post_login(client, "root", password);
+      if (!response || response->status != 200) {
+        std::cerr << "[失败] 锁定过期后仍登录失败："
+                  << (response ? response->status : -1) << " "
+                  << (response ? response->body : "") << std::endl;
+        ++failures;
+      }
+    }
+    // 6) 用户名键独立生效：同一账号连错 5 次后，第 6 次必须 429 而不是 423。
+    //    （账号库里也有 5 次锁 15 分钟的老机制；限流必须先拒，否则这条会退回 423。）
+    for (int i = 0; i < 5; ++i) {
+      post_login(client, "root", "wrong-password");
+    }
+    {
+      const auto response = post_login(client, "root", password);
+      if (!response || response->status != 429) {
+        std::cerr << "[失败] 用户名键未生效：期望 429，实得 "
+                  << (response ? response->status : -1) << " "
+                  << (response ? response->body : "") << std::endl;
+        ++failures;
+      }
+    }
+  }
+  server.reset();
+  fs::remove_all(data_dir);
+
+  // 7) 本机地址不受限：回环来源连错 8 次，一次 429 都不许有。
+  {
+    fs::path loop_dir;
+    auto loop_server =
+        start("devcard_ratelimit_loop_", "127.0.0.1", 18395, true, &loop_dir);
+    if (!loop_server) {
+      std::cerr << "[失败] 起回环服务失败，无法校验「本机地址不受限」" << std::endl;
+      fs::remove_all(loop_dir);
+      ++failures;
+    } else {
+      httplib::Client client("127.0.0.1", loop_server->port());
+      client.set_connection_timeout(5, 0);
+      client.set_read_timeout(5, 0);
+      for (int i = 0; i < 8; ++i) {
+        const auto response = post_login(client, "ghost" + std::to_string(i), "wrong");
+        if (!response || response->status == 429) {
+          std::cerr << "[失败] 本机地址被限流了："
+                    << (response ? response->status : -1) << " "
+                    << (response ? response->body : "") << std::endl;
+          ++failures;
+        }
+      }
+      loop_server.reset();
+      fs::remove_all(loop_dir);
+    }
+  }
+
+  // 8) 关掉开关后不限：同样从非回环来源连错 8 次，不许出现 429。
+  {
+    fs::path off_dir;
+    auto off_server = start("devcard_ratelimit_off_", address, 18415, false, &off_dir);
+    if (!off_server) {
+      std::cerr << "[失败] 起服务失败，无法校验「关开关后不限」" << std::endl;
+      fs::remove_all(off_dir);
+      ++failures;
+    } else {
+      httplib::Client client(address, off_server->port());
+      client.set_connection_timeout(5, 0);
+      client.set_read_timeout(5, 0);
+      for (int i = 0; i < 8; ++i) {
+        const auto response = post_login(client, "ghost" + std::to_string(i), "wrong");
+        if (!response || response->status == 429) {
+          std::cerr << "[失败] 关闭限流后仍出现 429："
+                    << (response ? response->status : -1) << std::endl;
+          ++failures;
+        }
+      }
+      off_server.reset();
+      fs::remove_all(off_dir);
+    }
+  }
+
+  if (failures == 0) {
+    std::cout << "限流自检通过：阈值内 401、第 6 次 429 带 Retry-After、锁定期内"
+                 "正确密码也 429、锁定过后能登、本机地址不限、关开关后不限"
+              << std::endl;
+  }
+  return failures;
+}
+
+// 阶段二判据：app-started.marker 必须真落地；apply-state.json 停在 installing
+// 且超过阈值时，重启后的接口必须报 interrupted——「协助器被杀」在磁盘上留下的
+// 正是这两样证据（state=installing、没有 install-result.json），所以这条用例
+// 复现的是可复现的持久化条件，而不是手点一次。
+int check_apply_state() {
+  namespace fs = std::filesystem;
+#ifdef _WIN32
+  _putenv_s("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR);
+#else
+  setenv("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR, 1);
+#endif
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path data_dir =
+      fs::temp_directory_path() / ("devcard_applystate_" + std::to_string(stamp));
+
+  auto start = [&data_dir](int base) {
+    std::unique_ptr<devcard::ServerHandle> server;
+    for (int port = base; port <= base + 20 && !server; ++port) {
+      devcard::ServerOptions options;
+      options.data_dir = data_dir;
+      options.port = port;
+      try {
+        server = devcard::start_server(options);
+      } catch (const std::exception&) {
+      }
+    }
+    return server;
+  };
+
+  int failures = 0;
+  auto server = start(18440);
+  if (!server) {
+    std::cerr << "[失败] 起服务失败，无法校验阶段二判据" << std::endl;
+    fs::remove_all(data_dir);
+    return 1;
+  }
+  if (!fs::exists(data_dir / "app-started.marker")) {
+    std::cerr << "[失败] app-started.marker 未落盘：启动握手判据无法成立"
+              << std::endl;
+    ++failures;
+  }
+
+  // 登录并完成强制改密，后续接口才可达。
+  std::string password = seed_password(data_dir, "root");
+  auto login = [&](httplib::Client& client, const std::string& pwd,
+                   std::string* cookie) {
+    const auto response = client.Post(
+        "/api/session/login",
+        "{\"username\":\"root\",\"password\":\"" + pwd + "\"}", "application/json");
+    if (!response || response->status != 200) return false;
+    const std::string raw = response->get_header_value("Set-Cookie");
+    *cookie = raw.substr(0, raw.find(';'));
+    return !cookie->empty();
+  };
+
+  {
+    httplib::Client client("127.0.0.1", server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    std::string cookie;
+    if (!login(client, password, &cookie)) {
+      std::cerr << "[失败] 初始账号登录失败" << std::endl;
+      ++failures;
+    } else {
+      client.set_default_headers(
+          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
+      const auto change = client.Post(
+          "/api/users/password", R"({"new_password":"ApplyState123"})",
+          "application/json");
+      if (!change || change->status != 200) {
+        std::cerr << "[失败] 首次改密失败，无法继续校验安装状态" << std::endl;
+        ++failures;
+      }
+      password = "ApplyState123";
+
+      // 刚写入的 installing：不该被当成中断。
+      fs::create_directories(data_dir / "updates");
+      {
+        std::ofstream out(data_dir / "updates" / "apply-state.json",
+                          std::ios::binary | std::ios::trunc);
+        out << R"({"state":"installing","detail":"用例写入","updated_at":""})";
+      }
+      const auto fresh = client.Get("/api/update/install-result");
+      if (!fresh || fresh->status != 200 ||
+          fresh->body.find("\"installing\"") == std::string::npos) {
+        std::cerr << "[失败] 刚写入的 installing 未被识别为进行中："
+                  << (fresh ? fresh->status : -1) << " "
+                  << (fresh ? fresh->body : "") << std::endl;
+        ++failures;
+      }
+    }
+  }
+
+  // 把状态文件时间拨回 1 小时，模拟「协助器被杀、机器重启过后才起来」。
+  {
+    std::error_code ec;
+    const fs::path state_file = data_dir / "updates" / "apply-state.json";
+    fs::last_write_time(state_file,
+                        fs::file_time_type::clock::now() - std::chrono::hours(1),
+                        ec);
+    if (ec) {
+      std::cerr << "[失败] 无法回拨状态文件时间：" << ec.message() << std::endl;
+      ++failures;
+    }
+  }
+  server.reset();
+  server = start(18470);
+  if (!server) {
+    std::cerr << "[失败] 重启服务失败，无法校验中断判据" << std::endl;
+    fs::remove_all(data_dir);
+    return failures + 1;
+  }
+  {
+    httplib::Client client("127.0.0.1", server->port());
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+    std::string cookie;
+    if (!login(client, password, &cookie)) {
+      std::cerr << "[失败] 重启后登录失败" << std::endl;
+      ++failures;
+    } else {
+      client.set_default_headers(
+          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
+      const auto result = client.Get("/api/update/install-result");
+      const bool interrupted =
+          result && result->status == 200 &&
+          result->body.find("\"interrupted\"") != std::string::npos;
+      if (!interrupted) {
+        std::cerr << "[失败] 停在 installing 且超阈值时未报 interrupted："
+                  << (result ? result->status : -1) << " "
+                  << (result ? result->body : "") << std::endl;
+        ++failures;
+      }
+    }
+  }
+  server.reset();
+  fs::remove_all(data_dir);
+
+  if (failures == 0) {
+    std::cout << "阶段二判据自检通过：app-started.marker 已落盘；"
+                 "installing 超阈值经重启后报 interrupted"
+              << std::endl;
+  }
+  return failures;
+}
+
 // 状态码表：路由会抛的每个错误码都必须有对应 HTTP 状态。
 // 缺一条的后果是 4xx 被渲染成 500（「打开数据目录」失败那次就是这么藏的），
 // 所以这里不只查表，还把 server.cpp 里真实的 AppError 字面量扫一遍——
@@ -307,6 +650,8 @@ int check_status_map() {
       {"checksum_mismatch", 502},
       // 同类洞：未登录不是服务端错误
       {"unauthorized", 401},
+      // 限流单独一项：不能与 401/403 混在一起，客户端要靠 429 + Retry-After 等待
+      {"too_many_requests", 429},
   };
   for (const Expected& item : expected) {
     const int actual = devcard::http_status_for(item.code);
@@ -329,7 +674,8 @@ int check_status_map() {
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
-                                              "port_in_use"};
+                                              "port_in_use", "instance_in_use",
+                                              "app_started_marker"};
   std::size_t pos = 0;
   while ((pos = source.find(needle, pos)) != std::string::npos) {
     pos += needle.size();
@@ -375,6 +721,12 @@ int main() {
     code = 1;
   }
   if (check_update_guards() != 0) {
+    code = 1;
+  }
+  if (check_rate_limit() != 0) {
+    code = 1;
+  }
+  if (check_apply_state() != 0) {
     code = 1;
   }
   if (check_status_map() != 0) {

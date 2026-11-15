@@ -13,6 +13,10 @@ struct Device {
   std::string phone;
   std::string created_at;
   std::string updated_at;
+  // 乐观锁版本：读接口下发，编辑提交时带回；0 表示调用方没有版本
+  // （HTTP 层会拒绝，避免退化成盲写）。
+  std::int64_t version = 0;
+  std::string updated_by;
 };
 
 struct DeviceQuery {

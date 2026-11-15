@@ -12,6 +12,10 @@
 namespace devcard {
 namespace {
 
+// 写争用的等待上限。正常并发（5–20 客户端）由 write_mutex_ 串行化，不会触发；
+// 只有外部工具（DB 浏览器、备份脚本）持锁时才会等。超时后向上抛 locked，
+// 由 HTTP 层映射成 423，让用户看到「数据库正被其他程序占用」，不无限重试。
+constexpr int kBusyTimeoutMs = 5000;
 [[noreturn]] void throw_sqlite(sqlite3* db, const char* what) {
   const char* message = db ? sqlite3_errmsg(db) : "sqlite error";
   throw AppError("db_error", std::string(what) + ": " + message);
@@ -25,7 +29,7 @@ sqlite3* open_connection(const std::string& file, int flags) {
     if (db) sqlite3_close(db);
     throw AppError("db_open", "无法打开数据库 " + file + ": " + message);
   }
-  sqlite3_busy_timeout(db, 5000);
+  sqlite3_busy_timeout(db, kBusyTimeoutMs);
   return db;
 }
 
@@ -141,8 +145,14 @@ void Db::write(const std::function<void(sqlite3*)>& fn) {
   }
 }
 
-void Db::read(const std::function<void(sqlite3*)>& fn) const {
-  sqlite3* conn = nullptr;
+void Db::checkpoint() {
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  // PASSIVE：能写多少写多少，遇到读者不阻塞，失败也不影响主流程。
+  sqlite3_exec(write_, "PRAGMA wal_checkpoint(PASSIVE)", nullptr, nullptr,
+               nullptr);
+}
+
+void Db::read(const std::function<void(sqlite3*)>& fn) const {  sqlite3* conn = nullptr;
   std::size_t slot = 0;
   {
     std::unique_lock<std::mutex> lock(pool_mutex_);

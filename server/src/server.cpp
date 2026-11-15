@@ -7,8 +7,10 @@
 #include "font_manifest.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +26,7 @@
 #include <vector>
 
 #include "devcard/backup.h"
+#include "devcard/audit.h"
 #include "devcard/db.h"
 #include "devcard/error.h"
 #include "devcard/image_meta.h"
@@ -35,8 +38,19 @@
 #include "devcard/settings.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
+#include "apply_update.h"
+#include "config.h"
+#include "heartbeat.h"
+#include "instance_lock.h"
 #include "web_assets.h"
 #include "font_coverage.h"
+
+#ifdef _WIN32
+#include <shellapi.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace devcard {
 namespace {
@@ -44,6 +58,20 @@ namespace {
 using nlohmann::json;
 
 constexpr auto kSessionTtl = std::chrono::hours(12);
+
+// 登录/改密失败计数的单个键（来源 IP 或用户名）。字段用 atomic，
+// 计数与判定另由 ServerState::rate_limit_mutex 串成一次操作。
+struct RateLimitEntry {
+  std::atomic<int> failures{0};
+  std::atomic<long long> window_start{0};  // steady 秒；0 表示窗口未开始
+  std::atomic<long long> locked_until{0};  // steady 秒
+};
+
+long long steady_seconds() {
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 struct Session {
   std::string user;
@@ -56,20 +84,38 @@ struct ServerState {
   std::unique_ptr<Db> db;
   std::unique_ptr<DeviceService> devices;
   std::unique_ptr<UserService> users;
+  std::unique_ptr<InstanceGuard> instance_guard;
   std::filesystem::path data_dir;
   std::filesystem::path font_dir;
   std::map<std::string, std::string> fonts;
   FontCoverage coverage;
   std::string local_token;
   bool seeded = false;
+  // 库内心跳（多实例第 3 层）：启动时抢占一行，运行期定时刷新。
+  std::string instance_id;
+  std::thread heartbeat_thread;
+  std::atomic<bool> heartbeat_stop{false};
+  // 网络模式（--server）：允许内网来源；本地窗口模式只接受回环。
+  bool network = false;
+  std::string bound_host;
+  std::string machine_name;
+  std::vector<std::string> allowed_hosts;
 
   std::mutex sessions_mutex;
   std::map<std::string, Session> sessions;
+
+  // 登录/改密失败限流：内存实现，进程重启清零（不落库）。
+  // 双键（来源 IP / 用户名）各自独立计数，任一超限即拒。
+  RateLimitOptions rate_limit;
+  std::mutex rate_limit_mutex;
+  std::map<std::string, RateLimitEntry> rate_limit_by_ip;
+  std::map<std::string, RateLimitEntry> rate_limit_by_user;
 
   // 自更新阶段一：同一时间只允许一个下载任务；状态由后台线程更新。
   struct UpdateDownload {
     std::mutex mutex;
     std::string state = "idle";  // idle / running / done / failed
+    bool installing = false;
     std::uint64_t total = 0;
     std::uint64_t received = 0;
     std::filesystem::path part_path;
@@ -79,6 +125,11 @@ struct ServerState {
     std::string error;
   };
   std::shared_ptr<UpdateDownload> update = std::make_shared<UpdateDownload>();
+
+  // 自更新阶段二：安装接口回完 202 后置位，main 轮询到就退出，交由安装器接管。
+  // 用 shared_ptr 是因为置位发生在 detached 线程里，不能碰已析构的 ServerState。
+  std::shared_ptr<std::atomic<bool>> stop_requested =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 std::string json_body(const json& value) { return value.dump(); }
@@ -108,7 +159,23 @@ json device_json(const Device& device) {
           {"control_range", device.control_range},
           {"phone", device.phone},
           {"created_at", device.created_at},
-          {"updated_at", device.updated_at}};
+          {"updated_at", device.updated_at},
+          {"version", device.version},
+          {"updated_by", device.updated_by}};
+}
+
+// 409 响应体：最新快照 + 冲突字段 + 版本号。
+// 前端据此提示「刷新后重填」；P3 若以后开放管理员强制覆盖，
+// 直接复用这里的 current/version 即可，不需要再改接口形状。
+json conflict_json(const ConflictError& error) {
+  const ConflictSnapshot& snapshot = error.snapshot();
+  return {{"error", "conflict"},
+          {"message", error.what()},
+          {"fields", snapshot.fields},
+          {"current", device_json(snapshot.current)},
+          {"current_version", snapshot.current.version},
+          {"updated_by", snapshot.current.updated_by},
+          {"updated_at", snapshot.current.updated_at}};
 }
 
 json user_json(const User& user) {
@@ -127,6 +194,7 @@ Device device_from_json(const json& body) {
   device.location = body.value("location", "");
   device.control_range = body.value("control_range", "");
   device.phone = body.value("phone", "");
+  device.version = body.value("version", static_cast<std::int64_t>(0));
   return device;
 }
 
@@ -334,9 +402,14 @@ const StatusTable& error_status_table() {
       {"legacy_db", 409},
       {"invalid_credentials", 401},
       {"unauthorized", 401},
+      // 登录/改密失败限流：单独一项，不混进 401/403——客户端要能按 429
+      // 读 Retry-After 决定等待，而不是把「密码错了」和「先别试了」混为一谈。
+      {"too_many_requests", 429},
       {"locked", 423},
       {"forbidden", 403},
       {"must_change_password", 403},
+      {"bad_request", 400},
+      {"bad_version", 400},
       {"invalid_device", 400},
       {"invalid_user", 400},
       {"weak_password", 400},
@@ -352,7 +425,7 @@ const StatusTable& error_status_table() {
       {"logo_too_large", 400},
       {"bad_company_name", 400},
       {"logo_write", 400},
-      // 自更新闸门与下载
+      // 更新（macOS 阶段一）
       {"endpoint_not_allowed", 400},
       {"no_update", 400},
       {"update_disabled", 403},
@@ -360,6 +433,12 @@ const StatusTable& error_status_table() {
       {"manifest_invalid", 502},
       {"download_failed", 502},
       {"checksum_mismatch", 502},
+      // 自更新阶段二（仅 Windows 安装版）
+      {"update_package_missing", 400},
+      {"install_package_invalid", 400},
+      {"install_busy", 409},
+      {"install_failed", 500},
+      {"install_unsupported", 501},
       // 路由可达，但属于服务端 / 磁盘故障：显式写出来，别靠「没登记就 500」兜着。
       {"backup_failed", 500},
       {"io_error", 500},
@@ -441,11 +520,113 @@ bool is_loopback(const std::string& address) {
          address == "::ffff:127.0.0.1";
 }
 
-bool host_allowed(std::string host) {
-  if (host.empty()) return false;
-  std::transform(host.begin(), host.end(), host.begin(),
+struct RateLimitDecision {
+  bool locked = false;
+  int retry_after = 0;
+};
+
+// 回环地址不计：本机界面与壳的自动登录不该被自己的失败计数锁在门外。
+bool rate_limit_exempt(const std::string& address) {
+  return is_loopback(address);
+}
+
+void rate_limit_touch(std::map<std::string, RateLimitEntry>& table,
+                      const std::string& key, const RateLimitOptions& options) {
+  if (key.empty()) return;
+  RateLimitEntry& entry = table[key];
+  const long long now = steady_seconds();
+  const long long start = entry.window_start.load();
+  // 窗口过期就重新计数：5 次必须落在同一个窗口内才累计。
+  if (start == 0 || now - start >= options.window_seconds) {
+    entry.window_start.store(now);
+    entry.failures.store(0);
+  }
+  const int failures = entry.failures.fetch_add(1) + 1;
+  if (failures >= options.max_failures) {
+    entry.locked_until.store(now + options.lock_seconds);
+    entry.failures.store(0);
+    entry.window_start.store(now);
+  }
+}
+
+// 键空间只增不减会随来源 IP 数量无限涨；超过上限时清掉已解锁且窗口过期的项。
+void rate_limit_prune(std::map<std::string, RateLimitEntry>& table,
+                      const RateLimitOptions& options) {
+  if (table.size() <= 1024) return;
+  const long long now = steady_seconds();
+  for (auto item = table.begin(); item != table.end();) {
+    const long long start = item->second.window_start.load();
+    const bool unlocked = item->second.locked_until.load() <= now;
+    const bool expired = start == 0 || now - start >= options.window_seconds;
+    if (unlocked && expired) {
+      item = table.erase(item);
+    } else {
+      ++item;
+    }
+  }
+}
+
+RateLimitDecision rate_limit_check(ServerState& state, const std::string& address,
+                                   const std::string& user) {
+  RateLimitDecision decision;
+  // 本机地址整体不受限：壳与本地界面不能被自己的失败计数锁在门外。
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return decision;
+  const long long now = steady_seconds();
+  const auto inspect = [&](const std::map<std::string, RateLimitEntry>& table,
+                           const std::string& key) {
+    if (key.empty()) return;
+    const auto found = table.find(key);
+    if (found == table.end()) return;
+    const long long until = found->second.locked_until.load();
+    if (until <= now) return;
+    decision.locked = true;
+    const int wait = static_cast<int>(until - now);
+    if (wait > decision.retry_after) decision.retry_after = wait;
+  };
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  if (!rate_limit_exempt(address)) inspect(state.rate_limit_by_ip, address);
+  inspect(state.rate_limit_by_user, user);
+  return decision;
+}
+
+void rate_limit_record_failure(ServerState& state, const std::string& address,
+                               const std::string& user) {
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  rate_limit_touch(state.rate_limit_by_ip, address, state.rate_limit);
+  rate_limit_touch(state.rate_limit_by_user, user, state.rate_limit);
+  rate_limit_prune(state.rate_limit_by_ip, state.rate_limit);
+  rate_limit_prune(state.rate_limit_by_user, state.rate_limit);
+}
+
+void rate_limit_clear(ServerState& state, const std::string& address,
+                      const std::string& user) {
+  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
+  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
+  if (!address.empty()) state.rate_limit_by_ip.erase(address);
+  if (!user.empty()) state.rate_limit_by_user.erase(user);
+}
+
+// 锁定期间一律 429，连密码正确也不放行；Retry-After 由响应头带出。
+void throw_rate_limited(httplib::Response& response,
+                        const RateLimitDecision& decision) {
+  const int retry_after = decision.retry_after > 0 ? decision.retry_after : 1;
+  response.set_header("Retry-After", std::to_string(retry_after));
+  throw AppError("too_many_requests",
+                 "失败次数过多，请 " + std::to_string(retry_after) + " 秒后重试");
+}
+
+std::string lowercase(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  std::string name = host;
+  return value;
+}
+
+// Host 白名单：本地窗口模式只认回环；网络模式再加入实际监听 IP、机器名
+// 与配置的 allowed_hosts，其他 Host 返回 421，用于防 DNS rebinding。
+bool host_allowed(const ServerState& state, std::string host) {
+  if (host.empty()) return false;
+  std::string name = lowercase(host);
   if (!name.empty() && name.front() == '[') {
     const std::size_t end = name.find(']');
     if (end != std::string::npos) name = name.substr(1, end - 1);
@@ -453,7 +634,56 @@ bool host_allowed(std::string host) {
     const std::size_t colon = name.find(':');
     if (colon != std::string::npos) name = name.substr(0, colon);
   }
-  return name == "127.0.0.1" || name == "localhost" || name == "::1";
+  if (name == "127.0.0.1" || name == "localhost" || name == "::1") return true;
+  if (!state.network) return false;
+  if (!state.bound_host.empty() && name == lowercase(state.bound_host)) return true;
+  if (!state.machine_name.empty() && name == lowercase(state.machine_name)) {
+    return true;
+  }
+  for (const std::string& allowed : state.allowed_hosts) {
+    if (name == lowercase(allowed)) return true;
+  }
+  return false;
+}
+
+// 免登录/免改密白名单：只允许下面两类，集中在这张表里判断。
+// 更新检查与下载故意不在表内：网络模式下若未认证请求就能让服务端去拉
+// 几十 MB 落盘，等于免费的内容缓存 + 磁盘写放大器；所以「检查个版本」
+// 同样要求登录，强制改密前也不放行。以后不要往这里加更新相关路径。
+constexpr const char* kBypassExactPaths[] = {"/api/health"};
+constexpr const char* kBypassPrefixes[] = {"/api/session/"};
+
+bool is_bypass_path(const std::string& path) {
+  for (const char* exact : kBypassExactPaths) {
+    if (path == exact) return true;
+  }
+  for (const char* prefix : kBypassPrefixes) {
+    if (path.rfind(prefix, 0) == 0) return true;
+  }
+  return false;
+}
+
+unsigned long process_id() {
+#ifdef _WIN32
+  return GetCurrentProcessId();
+#else
+  return static_cast<unsigned long>(getpid());
+#endif
+}
+
+AuditContext audit_context(ServerState& state, const httplib::Request& request) {
+  return AuditContext{session_user(state, request), request.remote_addr};
+}
+
+// 独立于业务事务的审计（登录、恢复等）：写失败只告警，不影响主流程，
+// 但不能静默——静默失败等于审计形同虚设。
+void audit_event(ServerState& state, AuditEntry entry) {
+  if (entry.actor.empty()) entry.actor = "system";
+  try {
+    state.db->write([&](sqlite3* conn) { record_audit(conn, entry); });
+  } catch (const std::exception& error) {
+    std::cerr << "警告：审计写入失败：" << error.what() << std::endl;
+  }
 }
 
 User current_user(ServerState& state, const httplib::Request& request) {
@@ -488,6 +718,7 @@ const std::vector<std::string>& route_error_codes() {
       "duplicate",        "last_admin",       "self_delete",
       "no_user",          "not_found",        "legacy_db",
       "invalid_credentials", "unauthorized",  "locked",
+      "too_many_requests",
       "forbidden",        "must_change_password",
       "invalid_device",   "invalid_user",     "weak_password",
       "bad_field",        "bad_json",         "bad_header",
@@ -497,8 +728,11 @@ const std::vector<std::string>& route_error_codes() {
       "logo_write",       "endpoint_not_allowed",
       "no_update",        "update_disabled",  "update_busy",
       "manifest_invalid", "download_failed",  "checksum_mismatch",
+      "update_package_missing", "install_package_invalid",
+      "install_busy",     "install_failed",   "install_unsupported",
       "backup_failed",    "io_error",         "db_error",
-      "xlsx_write_failed",
+      "xlsx_write_failed", "bad_version",
+      "bad_request",
   };
   return kCodes;
 }
@@ -518,11 +752,26 @@ struct ServerHandle::Impl : ServerState {};
 
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
 ServerHandle::~ServerHandle() {
-  if (impl_ && impl_->server.is_running()) impl_->server.stop();
-  if (impl_ && impl_->thread.joinable()) impl_->thread.join();
+  if (!impl_) return;
+  impl_->heartbeat_stop = true;
+  if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
+  if (impl_->server.is_running()) impl_->server.stop();
+  if (impl_->thread.joinable()) impl_->thread.join();
+  // 正常析构时删掉自己那一行；异常/强杀留下的行由下次启动按 PID/超时接管。
+  if (impl_->db && !impl_->instance_id.empty()) {
+    try {
+      release_heartbeat(*impl_->db, impl_->instance_id);
+    } catch (const std::exception& error) {
+      std::cerr << "警告：释放库内心跳失败：" << error.what() << std::endl;
+    }
+  }
 }
 
 const std::string& ServerHandle::local_token() const { return impl_->local_token; }
+
+bool ServerHandle::stop_requested() const {
+  return impl_ && impl_->stop_requested->load();
+}
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
@@ -535,6 +784,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
   ServerState& state = *handle->impl_;
   state.data_dir = options.data_dir;
+  state.network = options.network;
+  state.allowed_hosts = options.allowed_hosts;
+  state.rate_limit = options.rate_limit;
+  state.bound_host = options.host;
+  state.machine_name = local_host_name();
 
   std::error_code ec;
   std::filesystem::create_directories(options.data_dir, ec);
@@ -544,14 +798,37 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
 
+  // 多实例防护：同一数据目录（规范化后）只能有一个 server 持有写权。
+  // 必须在打开数据库之前拿到锁，否则两个进程会先各自打开库再互相覆盖。
+  std::string guard_error;
+  state.instance_guard = InstanceGuard::acquire(options.data_dir, &guard_error);
+  if (!state.instance_guard) {
+    throw AppError("instance_in_use", guard_error);
+  }
+
   state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
   migrate(*state.db);
+
+  // 第三层防护：库内心跳。锁文件被删除、或两条路径 hardlink 到同一个库时，
+  // 只有这一行能判出「还有人在用」。放在库文件身份互斥体之前，
+  // 这样验收（删锁文件后再起一个）会走到心跳这条判据上。
+  state.instance_id = random_token().substr(0, 16);
+  std::string heartbeat_error;
+  if (!claim_heartbeat(*state.db, state.instance_id, &heartbeat_error)) {
+    throw AppError("instance_in_use", heartbeat_error);
+  }
+
+  if (!state.instance_guard->claim_database(options.data_dir / "devicedb.db",
+                                            &guard_error)) {
+    throw AppError("instance_in_use", guard_error);
+  }
 
   const SeedResult seed = seed_default_users(*state.db, options.data_dir);
   state.seeded = seed.seeded;
   if (seed.seeded) {
-    std::cout << "首次启动：已生成初始账号，密码写入 " << seed.password_file
-              << "（首次登录必须修改）" << std::endl;
+    std::cout << "首次启动：已生成初始账号，密码写入 "
+              << path_to_utf8(seed.password_file) << "（首次登录必须修改）"
+              << std::endl;
     for (const auto& [name, password] : seed.accounts) {
       std::cout << "  用户名: " << name << "  初始密码: " << password << std::endl;
     }
@@ -561,6 +838,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.users = std::make_unique<UserService>(*state.db);
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
+#ifdef _WIN32
+  // Windows 的 SO_REUSEADDR 允许第二个进程绑同一端口，两边会随机抢连接；
+  // 换成 SO_EXCLUSIVEADDRUSE，让端口冲突在 bind 阶段就明确失败。
+  state.server.set_socket_options([](::socket_t sock) {
+    int disabled = 0;
+    int enabled = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&disabled), sizeof(disabled));
+    setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+               reinterpret_cast<const char*>(&enabled), sizeof(enabled));
+  });
+#endif
 
   // 子集字体随包分发，启动时读进内存并逐份校验。
   // 校验值是构建期从 web/fonts/ 读出来的（cmake/font_manifest.cmake），不是「服务器自己报自己的大小」——
@@ -605,7 +894,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     set_json(response, json{{"status", "ok"},
                             {"version", version},
                             {"schema_version", schema},
-                            {"mode", "local"}});
+                            {"mode", state.network ? "network" : "local"}});
   });
 
   // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。
@@ -662,10 +951,54 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const json body = parse_body(request.body);
-                      const User user = state.users->authenticate(
-                          body.value("username", ""), body.value("password", ""));
+                      const std::string username = body.value("username", "");
+                      const std::string password = body.value("password", "");
+                      // 先查锁定再验密码：锁定期内即使密码正确也拒，
+                      // 否则攻击者只要撞对一次就能把计数清零。
+                      const RateLimitDecision limited =
+                          rate_limit_check(state, request.remote_addr, username);
+                      if (limited.locked) {
+                        AuditEntry blocked;
+                        blocked.actor = username.empty() ? "anonymous" : username;
+                        blocked.actor_ip = request.remote_addr;
+                        blocked.action = "login_blocked";
+                        blocked.entity = "user";
+                        blocked.entity_id = username;
+                        blocked.summary = "失败次数过多，429 拒绝（" +
+                                          std::to_string(limited.retry_after) +
+                                          " 秒后可重试）";
+                        audit_event(state, blocked);
+                        throw_rate_limited(response, limited);
+                      }
+                      User user;
+                      try {
+                        user = state.users->authenticate(username, password);
+                      } catch (const AppError& error) {
+                        rate_limit_record_failure(state, request.remote_addr,
+                                                 username);
+                        // 失败也记：撞库在审计里必须能看出来自哪个 IP。
+                        AuditEntry entry;
+                        entry.actor = username.empty() ? "anonymous" : username;
+                        entry.actor_ip = request.remote_addr;
+                        entry.action = "login_failed";
+                        entry.entity = "user";
+                        entry.entity_id = username;
+                        entry.summary = error.what();
+                        audit_event(state, entry);
+                        throw;
+                      }
+                      // 登录成功清零：同一键的正常使用不该被历史失败拖累。
+                      rate_limit_clear(state, request.remote_addr, username);
                       set_session_cookie(response,
                                          create_session(state, user.user_name));
+                      AuditEntry entry;
+                      entry.actor = user.user_name;
+                      entry.actor_ip = request.remote_addr;
+                      entry.action = "login";
+                      entry.entity = "user";
+                      entry.entity_id = user.user_name;
+                      entry.summary = "登录成功";
+                      audit_event(state, entry);
                       set_json(response, json{{"user", user_json(user)}});
                     });
 
@@ -769,6 +1102,191 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                    {"error", download->error}});
                    });
 
+  // 自更新阶段二（仅 Windows 安装版）：把已下载并校验过的 Inno 安装包交给
+  // 独立的协助进程去装。本进程先回 202，约 300ms 后停服退出；安装器负责
+  // 关掉还占着程序文件的实例。退出码与版本变化由新进程从 install-result.json 回读。
+  state.server.Post("/api/update/install",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+#ifndef _WIN32
+                      // mac 侧只有下载（阶段一），替换与重启未实现。
+                      throw AppError("install_unsupported",
+                                     "自动安装目前只有 Windows 安装版支持");
+#else
+                      if (!is_installed_layout()) {
+                        throw AppError(
+                            "install_unsupported",
+                            "绿色版不提供自动安装：请退出后手动替换程序目录。");
+                      }
+                      const json body = parse_body(request.body);
+                      const std::filesystem::path updates_dir =
+                          state.data_dir / "updates";
+                      std::filesystem::path package;
+                      std::string expected_sha;
+                      std::uint64_t expected_size = 0;
+                      const std::string requested =
+                          body.value("path", std::string{});
+                      if (!requested.empty()) {
+                        // 显式指定：仅用于重试已落盘的包；仍要自带 SHA256 与字节数复核。
+                        package = path_from_utf8(requested);
+                        expected_sha = body.value("sha256", std::string{});
+                        expected_size =
+                            body.value("size", static_cast<std::uint64_t>(0));
+                        if (!is_valid_sha256(expected_sha) ||
+                            expected_size == 0) {
+                          throw AppError("manifest_invalid",
+                                         "指定安装包时必须同时给出 sha256 与字节数");
+                        }
+                      } else {
+                        std::lock_guard<std::mutex> lock(state.update->mutex);
+                        if (state.update->state != "done") {
+                          throw AppError("update_package_missing",
+                                         "还没有已下载并校验的更新包");
+                        }
+                        package = path_from_utf8(state.update->path);
+                        expected_sha = state.update->sha256;
+                        expected_size = state.update->total;
+                      }
+
+                      std::error_code ec;
+                      const std::filesystem::path base =
+                          std::filesystem::weakly_canonical(updates_dir, ec);
+                      if (ec || base.empty()) {
+                        throw AppError("install_failed",
+                                       "数据目录 updates/ 路径不可用");
+                      }
+                      const std::filesystem::path full =
+                          std::filesystem::weakly_canonical(package, ec);
+                      if (ec || full.empty()) {
+                        throw AppError("update_package_missing",
+                                       "安装包路径不可用：" +
+                                           path_to_utf8(package));
+                      }
+                      // 只认 updates/ 下的 .exe：这个接口不能变成「跑任意程序」。
+                      const std::filesystem::path relative =
+                          full.lexically_relative(base);
+                      if (relative.empty() ||
+                          path_to_utf8(relative).rfind("..", 0) == 0) {
+                        throw AppError("install_package_invalid",
+                                       "安装包必须位于数据目录 updates/ 下");
+                      }
+                      if (full.extension() != L".exe") {
+                        throw AppError("install_package_invalid",
+                                       "只接受 .exe 安装包");
+                      }
+                      if (!std::filesystem::is_regular_file(full, ec)) {
+                        throw AppError("update_package_missing",
+                                       "安装包不存在：" + path_to_utf8(full));
+                      }
+                      // 触发时再校验一次：下载完成到点安装之间文件可能已被换掉。
+                      const UpdateVerification checked =
+                          verify_update_file(full, expected_size, expected_sha);
+                      if (!checked.ok) {
+                        throw AppError(checked.code, checked.error);
+                      }
+
+                      {
+                        std::lock_guard<std::mutex> lock(state.update->mutex);
+                        if (state.update->installing) {
+                          throw AppError("install_busy", "已在安装中，请稍候");
+                        }
+                        state.update->installing = true;
+                      }
+
+                      const std::filesystem::path helper =
+                          updates_dir / "devcard-updater.exe";
+                      std::filesystem::copy_file(
+                          current_executable(), helper,
+                          std::filesystem::copy_options::overwrite_existing, ec);
+                      if (ec) {
+                        throw AppError("install_failed",
+                                       "无法准备更新协助程序：" + ec.message());
+                      }
+                      // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
+                      std::filesystem::remove(updates_dir / "install-result.json",
+                                              ec);
+                      // 先落 installing 再起协助器：没这一步，协助器被杀后
+                      // 磁盘上没有任何「升级曾经开始过」的证据。
+                      {
+                        std::string state_error;
+                        if (!write_apply_state(state.data_dir,
+                                               ApplyState::Installing,
+                                               "安装接口已受理，等待协助器接管",
+                                               &state_error)) {
+                          throw AppError("install_failed",
+                                         "无法写入安装状态：" + state_error);
+                        }
+                      }
+                      ApplyUpdateOptions options;
+                      options.setup = full;
+                      options.wait_pid = current_process_id();
+                      options.result = updates_dir / "install-result.json";
+                      options.relaunch = current_executable();
+                      options.relaunch_args = current_arguments();
+                      spawn_apply_update(helper, options);
+
+                      set_json(response,
+                               json{{"state", "installing"},
+                                    {"setup", path_to_utf8(full)}},
+                               202);
+                      // 先让 202 的响应写回浏览器，再让 main 退出；
+                      // 用 shared_ptr 捕获，避免 detached 线程碰到已析构的状态。
+                      const std::shared_ptr<std::atomic<bool>> stop =
+                          state.stop_requested;
+                      std::thread([stop]() {
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(300));
+                        stop->store(true);
+                      }).detach();
+#endif
+                    });
+
+  // 安装结果：新进程启动后由界面读回，显示「安装器退出码 X｜版本 A → B」。
+  state.server.Get("/api/update/install-result",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     require_admin(state, request);
+                     const std::filesystem::path file =
+                         state.data_dir / "updates" / "install-result.json";
+                     std::error_code ec;
+                     if (!std::filesystem::is_regular_file(file, ec)) {
+                       // 没有结果文件时看状态文件：installing 且超阈值即中断，
+                       // 由「启动时还在 installing」推出来，不落第五个状态。
+                       const ApplyStateSnapshot snapshot =
+                           read_apply_state(state.data_dir);
+                       if (apply_state_interrupted(snapshot)) {
+                         set_json(response,
+                                  json{{"state", "interrupted"},
+                                       {"detail", "升级被中断：协助器未完成安装"},
+                                       {"updated_at", snapshot.updated_at},
+                                       {"age_seconds", snapshot.age_seconds}});
+                         return;
+                       }
+                       if (snapshot.present && snapshot.state == "installing") {
+                         set_json(response, json{{"state", "installing"},
+                                                 {"updated_at", snapshot.updated_at}});
+                         return;
+                       }
+                       set_json(response, json{{"state", "none"}});
+                       return;
+                     }
+                     std::ifstream in(file, std::ios::binary);
+                     if (!in) {
+                       throw AppError("io_error", "无法读取安装结果文件");
+                     }
+                     const std::string text(
+                         (std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+                     const json doc = json::parse(text, nullptr, false);
+                     if (doc.is_discarded() || !doc.is_object()) {
+                       throw AppError("io_error", "安装结果文件不是合法 JSON");
+                     }
+                     json out = doc;
+                     out["state"] = "done";
+                     set_json(response, out);
+                   });
+
   state.server.Post("/api/session/logout",
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
@@ -818,7 +1336,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const auto rows = xlsx::read(request.body);
-                      const ImportReport report = state.devices->import_rows(rows);
+                      const ImportReport report = state.devices->import_rows(
+                          rows, audit_context(state, request));
                       set_json(response, json{{"imported", report.imported},
                                               {"skipped_empty", report.skipped_empty},
                                               {"duplicates", report.duplicates},
@@ -978,7 +1497,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Post("/api/devices", [&state](const httplib::Request& request,
                                              httplib::Response& response) {
     Device device = device_from_json(parse_body(request.body));
-    set_json(response, device_json(state.devices->create(std::move(device))), 201);
+    set_json(response,
+             device_json(state.devices->create(std::move(device),
+                                               audit_context(state, request))),
+             201);
   });
 
   state.server.Put(R"(/api/devices/(\d+))",
@@ -986,15 +1508,57 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                             httplib::Response& response) {
                      const auto id = std::stoll(request.matches[1].str());
                      Device device = device_from_json(parse_body(request.body));
-                     set_json(response,
-                              device_json(state.devices->update(id, std::move(device))));
+                     try {
+                       set_json(response,
+                                device_json(state.devices->update(
+                                    id, std::move(device),
+                                    audit_context(state, request))));
+                     } catch (const ConflictError& error) {
+                       set_json(response, conflict_json(error), 409);
+                     }
                    });
+
+  // P3：管理员强制覆盖。普通用户 403（role 校验在服务端，不依赖按钮隐藏）；
+  // 覆盖的受害者版本与 updated_by/updated_at 由 core 写入 force_overwrite 审计。
+  state.server.Post(R"(/api/devices/(\d+)/force)",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      const User actor = require_admin(state, request);
+                      const auto id = std::stoll(request.matches[1].str());
+                      Device device = device_from_json(parse_body(request.body));
+                      const AuditContext context{actor.user_name,
+                                                 request.remote_addr};
+                      set_json(response,
+                               device_json(state.devices->force_update(
+                                   id, std::move(device), context)));
+                    });
 
   state.server.Delete(R"(/api/devices/(\d+))",
                       [&state](const httplib::Request& request,
                                httplib::Response& response) {
-                        state.devices->remove(std::stoll(request.matches[1].str()));
-                        set_json(response, json{{"ok", true}});
+                        const std::string version_text =
+                            request.get_param_value("version");
+                        if (version_text.empty()) {
+                          throw AppError(
+                              "bad_version",
+                              "删除需要带 ?version=N：请先刷新列表，"
+                              "避免用过期页面删掉别人刚改过的记录");
+                        }
+                        std::int64_t version = 0;
+                        try {
+                          version = std::stoll(version_text);
+                        } catch (...) {
+                          throw AppError("bad_version",
+                                         "version 必须是整数：" + version_text);
+                        }
+                        try {
+                          state.devices->remove(
+                              std::stoll(request.matches[1].str()), version,
+                              audit_context(state, request));
+                          set_json(response, json{{"ok", true}});
+                        } catch (const ConflictError& error) {
+                          set_json(response, conflict_json(error), 409);
+                        }
                       });
 
   state.server.Get("/api/users", [&state](const httplib::Request& request,
@@ -1037,38 +1601,50 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const User actor = current_user(state, request);
-                      const json body = parse_body(request.body);
-                      std::string target = body.value("user_name", "");
-                      if (target.empty()) target = actor.user_name;
-                      const std::string new_password = body.value("new_password", "");
-                      if (new_password.empty()) {
-                        throw AppError("bad_json", "new_password 不能为空");
-                      }
-                      if (target == actor.user_name) {
-                        // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
-                        // 重置后的强制改密时，用户本来就不掌握旧密码。
-                        if (actor.must_change_password) {
-                          state.users->complete_forced_change(actor.user_name,
-                                                              new_password);
-                        } else {
-                          const std::string old_password =
-                              body.value("old_password", "");
-                          if (old_password.empty()) {
-                            throw AppError("old_password_required", "请输入原密码");
+                      // 改密同样双键计数：猜旧密码与撞登录密码是同一类攻击。
+                      const RateLimitDecision limited =
+                          rate_limit_check(state, request.remote_addr,
+                                           actor.user_name);
+                      if (limited.locked) throw_rate_limited(response, limited);
+                      try {
+                        const json body = parse_body(request.body);
+                        std::string target = body.value("user_name", "");
+                        if (target.empty()) target = actor.user_name;
+                        const std::string new_password = body.value("new_password", "");
+                        if (new_password.empty()) {
+                          throw AppError("bad_json", "new_password 不能为空");
+                        }
+                        if (target == actor.user_name) {
+                          // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
+                          // 重置后的强制改密时，用户本来就不掌握旧密码。
+                          if (actor.must_change_password) {
+                            state.users->complete_forced_change(actor.user_name,
+                                                                new_password);
+                          } else {
+                            const std::string old_password =
+                                body.value("old_password", "");
+                            if (old_password.empty()) {
+                              throw AppError("old_password_required", "请输入原密码");
+                            }
+                            state.users->change_password(actor.user_name, old_password,
+                                                         new_password);
                           }
-                          state.users->change_password(actor.user_name, old_password,
-                                                       new_password);
+                        } else {
+                          if (actor.role != "admin") {
+                            throw AppError("forbidden", "需要管理员权限");
+                          }
+                          state.users->reset_password(target, new_password);
                         }
-                      } else {
-                        if (actor.role != "admin") {
-                          throw AppError("forbidden", "需要管理员权限");
+                        if (!state.users->any_must_change()) {
+                          remove_seed_password_file(state.data_dir);
                         }
-                        state.users->reset_password(target, new_password);
+                        set_json(response, json{{"ok", true}, {"user_name", target}});
+                      } catch (const AppError&) {
+                        rate_limit_record_failure(state, request.remote_addr,
+                                                  actor.user_name);
+                        throw;
                       }
-                      if (!state.users->any_must_change()) {
-                        remove_seed_password_file(state.data_dir);
-                      }
-                      set_json(response, json{{"ok", true}, {"user_name", target}});
+                      rate_limit_clear(state, request.remote_addr, actor.user_name);
                     });
 
   // 打印卡片头部公司名：仅管理员可改；空值表示恢复默认。
@@ -1220,27 +1796,89 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Post("/api/system/restore",
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
-                      require_admin(state, request);
+                      const User actor = require_admin(state, request);
                       const json body = parse_body(request.body);
                       if (body.value("confirm", "") != "RESTORE") {
                         throw AppError("bad_json", "恢复操作需要 confirm=RESTORE");
                       }
-                      restore_backup(*state.db, state.data_dir,
-                                     body.value("name", ""));
+                      const std::string name = body.value("name", "");
+                      restore_backup(*state.db, state.data_dir, name);
+                      // 备份里带着导出时的心跳行，恢复后必须由当前实例重写，
+                      // 否则定时刷新会因 instance_id 不匹配而停摆。
+                      force_heartbeat(*state.db, state.instance_id);
                       {
                         std::lock_guard<std::mutex> lock(state.sessions_mutex);
                         state.sessions.clear();
                       }
+                      AuditEntry entry;
+                      entry.actor = actor.user_name;
+                      entry.actor_ip = request.remote_addr;
+                      entry.action = "restore";
+                      entry.entity = "system";
+                      entry.summary = "从备份恢复：" + name;
+                      audit_event(state, entry);
                       clear_session_cookie(response);
                       set_json(response, json{{"ok", true}, {"reload", true}});
                     });
 
+  // ==== P1 新增：打开数据目录（整段插入，rebase 时整段保留）====
+  // 路径只取服务端自己判定的 state.data_dir，不接受前端传参；
+  // 仅管理员可用，避免普通用户借服务端拉起资源管理器。
+  state.server.Post("/api/system/open-data-dir",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+#ifdef _WIN32
+                      const std::wstring dir = state.data_dir.wstring();
+                      const HINSTANCE result =
+                          ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr,
+                                        nullptr, SW_SHOWNORMAL);
+                      if (reinterpret_cast<std::intptr_t>(result) <= 32) {
+                        throw AppError("bad_request",
+                                       "无法打开数据目录：" +
+                                           path_to_utf8(state.data_dir));
+                      }
+                      set_json(response,
+                               json{{"ok", true},
+                                    {"path", path_to_utf8(state.data_dir)}});
+#else
+                      throw AppError("bad_request",
+                                     "打开数据目录仅在 Windows 版本提供");
+#endif
+                    });
+  // ==== P1 新增段结束 ====
+
+  // 审计查询：仅管理员。user 角色一律 403。
+  state.server.Get("/api/audit", [&state](const httplib::Request& request,
+                                          httplib::Response& response) {
+    require_admin(state, request);
+    const int limit = int_param(request, "limit", 200);
+    json items = json::array();
+    for (const AuditEntry& entry : list_audit(*state.db, limit)) {
+      items.push_back({{"id", entry.id},
+                       {"at", entry.at},
+                       {"actor", entry.actor},
+                       {"actor_ip", entry.actor_ip},
+                       {"action", entry.action},
+                       {"entity", entry.entity},
+                       {"entity_id", entry.entity_id},
+                       {"summary", entry.summary},
+                       {"before", entry.before_json},
+                       {"after", entry.after_json}});
+    }
+    set_json(response, json{{"items", items}});
+  });
+
   state.server.Get("/", [&state](const httplib::Request&, httplib::Response& response) {
     std::string html = embedded_index_html();
-    const std::string meta = "<meta name=\"devcard-local-token\" content=\"" +
-                             state.local_token + "\">";
-    const std::size_t head = html.find("</head>");
-    if (head != std::string::npos) html.insert(head, meta + "\n");
+    // 本地窗口模式注入一次性令牌供壳自动登录；网络模式绝不注入：
+    // 否则任何能打开首页的人都能拿到本地自动登录令牌。
+    if (!state.network) {
+      const std::string meta = "<meta name=\"devcard-local-token\" content=\"" +
+                               state.local_token + "\">";
+      const std::size_t head = html.find("</head>");
+      if (head != std::string::npos) html.insert(head, meta + "\n");
+    }
     set_asset(response, html, "text/html; charset=utf-8");
   });
   state.server.Get("/styles.css", [](const httplib::Request&, httplib::Response& response) {
@@ -1303,18 +1941,38 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
   state.server.set_pre_routing_handler(
       [&state](const httplib::Request& request, httplib::Response& response) {
-        if (!host_allowed(request.get_header_value("Host"))) {
+        // 校验顺序写死，不要交换：
+        //   1 Host 白名单 → 2 来源 IP → 3 路径白名单 → 4 CSRF（非 GET）
+        //   → 5 登录 → 6 must_change_password → 7 角色（在各路由的
+        //   require_admin 里，晚于本 handler 执行）。
+        // 先放行再查 Host，任何一条白名单路径都会顺带绕过 Host 校验；
+        // 这类漏洞不报错、也不写日志，只会静默存在。
+        if (!host_allowed(state, request.get_header_value("Host"))) {
           set_json(response,
                    json{{"error", "bad_host"},
-                        {"message", "Host 头必须是 127.0.0.1 或 localhost"}},
+                        {"message", "Host 头不在允许列表内（防 DNS rebinding）：" +
+                                        request.get_header_value("Host")}},
                    421);
+          return httplib::Server::HandlerResponse::Handled;
+        }
+        // 纵深防御：网络模式只接受回环与 RFC1918 来源，公网来源直接 403。
+        // 这不能替代防火墙，只是别把库暴露在公网网卡上。
+        if (state.network && !is_loopback(request.remote_addr) &&
+            !is_private_ipv4(request.remote_addr)) {
+          set_json(response,
+                   json{{"error", "forbidden_source"},
+                        {"message",
+                         "网络版只接受本机与内网（10/172.16–31/192.168）来源，"
+                         "当前来源 IP：" +
+                             request.remote_addr}},
+                   403);
           return httplib::Server::HandlerResponse::Handled;
         }
         if (request.path.rfind("/api/", 0) != 0) {
           return httplib::Server::HandlerResponse::Unhandled;
         }
-        if (request.path == "/api/health" ||
-            request.path.rfind("/api/session/", 0) == 0) {
+        // 路径白名单只读上面那张表，不要在这里另写判断。
+        if (is_bypass_path(request.path)) {
           return httplib::Server::HandlerResponse::Unhandled;
         }
         if (request.method != "GET" &&
@@ -1394,11 +2052,49 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   });
 
+  // 阶段二判据：握手标记写在数据库与字体初始化之后、HTTP 开始服务之前。
+  // 写失败必须让启动失败——静默跳过会让「新版本启动即崩」这条判据假绿。
+  {
+    std::string marker_error;
+    if (!write_app_started_marker(options.data_dir, DEVCARD_VERSION,
+                                  &marker_error)) {
+      throw AppError("app_started_marker",
+                     "无法写入启动标记 app-started.marker：" + marker_error);
+    }
+  }
+
   if (!state.server.bind_to_port(options.host, options.port)) {
-    throw AppError("port_in_use",
-                   "无法监听 " + options.host + ":" + std::to_string(options.port));
+    throw AppError(
+        "port_in_use",
+        "无法监听 " + options.host + ":" + std::to_string(options.port) +
+            "（端口被占用）。请换端口：--port " +
+            std::to_string(options.port + 1) +
+            "，或查看占用：netstat -ano | findstr :" +
+            std::to_string(options.port));
   }
   handle->port_ = options.port;
+  // 锁文件回写监听地址：第二个实例失败时能直接报出占用者在哪个地址上。
+  state.instance_guard->set_owner_info(
+      "PID " + std::to_string(process_id()) + "，启动于 " + now_text() +
+      "，监听 " + options.host + ":" + std::to_string(options.port));
+  // 心跳行同步监听地址，失败时第二个实例的报错能指出占用者。
+  set_heartbeat_listen(*state.db, state.instance_id,
+                       options.host + ":" + std::to_string(options.port));
+  state.heartbeat_thread = std::thread([&state]() {
+    while (!state.heartbeat_stop) {
+      for (int i = 0; i < kHeartbeatIntervalSeconds; ++i) {
+        if (state.heartbeat_stop) return;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
+      try {
+        // 返回 false 说明行已被别的实例接管，自己停止刷新即可。
+        if (!refresh_heartbeat(*state.db, state.instance_id)) return;
+      } catch (const std::exception& error) {
+        // 心跳写失败不终止服务；下一轮重试，连续失败会在下次启动时暴露。
+        std::cerr << "警告：心跳写入失败：" << error.what() << std::endl;
+      }
+    }
+  });
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
   return handle;
 }

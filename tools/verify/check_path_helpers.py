@@ -51,6 +51,37 @@ def iter_sources(root: pathlib.Path):
         yield path
 
 
+def scan_proc_self(root: pathlib.Path) -> list[str]:
+    """/proc/self 只允许出现在 __linux__ 守卫之内。
+
+    其它平台没有这个路径：写在守卫外会让 macOS/Windows 上拿到假路径或抛异常，
+    而且往往被当成「拿到自身可执行文件」继续用下去。用简单的预处理栈判断，
+    #else 一律视为「不在 linux 分支」。
+    """
+    hits = []
+    for path in iter_sources(root):
+        relative = path.relative_to(root)
+        stack: list[bool] = []
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+        ):
+            stripped = line.strip()
+            if stripped.startswith("#if"):
+                stack.append("__linux__" in stripped)
+            elif stripped.startswith("#elif"):
+                if stack:
+                    stack[-1] = "__linux__" in stripped
+            elif stripped.startswith("#else"):
+                if stack:
+                    stack[-1] = False
+            elif stripped.startswith("#endif"):
+                if stack:
+                    stack.pop()
+            if "/proc/self" in line and not any(stack):
+                hits.append(f"{relative}:{number}  {stripped}")
+    return hits
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="路径 helper 唯一性检查")
     parser.add_argument("--root", default=str(repo_root()))
@@ -147,6 +178,16 @@ def main() -> int:
         print("  产品代码（core/server/shell）：无")
     for relative, number, text in wide_arg_offenders["tests"]:
         print(f"  [待核] {relative}:{number}  {text}")
+
+    print()
+    print("/proc/self 只允许出现在 __linux__ 守卫内")
+    proc_hits = scan_proc_self(root)
+    if proc_hits:
+        for item in proc_hits:
+            print(f"  [失败] {item}")
+            failures.append(f"/proc/self 出现在 __linux__ 守卫之外：{item}")
+    else:
+        print("  （无越界命中）")
 
     if failures:
         print()

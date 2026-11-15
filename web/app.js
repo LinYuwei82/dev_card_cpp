@@ -10,7 +10,10 @@
     items: [],
     filters: { keyword: '', field: '', name: '', location: '' },
     editingId: null,
+    // 编辑/删除时带回的乐观锁版本号：服务端用它判断页面是不是过期了。
+    editingVersion: 0,
     pendingDeleteId: null,
+    pendingDeleteVersion: 0,
     user: null,
     version: '',
     schemaVersion: '',
@@ -49,6 +52,8 @@
     updateDownload: document.getElementById('update-download'),
     updateDownloadPackage: document.getElementById('update-download-package'),
     updateProgress: document.getElementById('update-progress'),
+    updateInstall: document.getElementById('update-install'),
+    updateInstallResult: document.getElementById('update-install-result'),
     updateLater: document.getElementById('update-later'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
@@ -134,6 +139,7 @@
     backupRows: document.getElementById('backup-rows'),
     backupEmpty: document.getElementById('backup-empty'),
     backupNow: document.getElementById('backup-now'),
+    openDataDir: document.getElementById('open-data-dir'),
 
     gotoPrint: document.getElementById('goto-print'),
     saveCompany: document.getElementById('save-company'),
@@ -598,6 +604,13 @@
     } else {
       setUpdateProgress('');
     }
+    // 阶段二：只有 Windows 安装版的管理员能看到「安装并重启」。
+    // 按钮先禁用，下载并通过校验后才放开。
+    var isWindows = /Windows/i.test(navigator.userAgent || '');
+    el.updateInstall.hidden = !(isWindows && isAdmin);
+    el.updateInstall.disabled = true;
+    state.updateInstalling = false;
+    loadInstallResult();
     el.updateModal.hidden = false;
   }
 
@@ -606,6 +619,45 @@
     el.updateProgress.textContent = text || '';
     el.updateProgress.classList.toggle('is-error', !!isError);
   }
+
+  // 安装结果由新进程读回。只有「退出码为 0 且版本确实变了」才算成功：
+  // 静默失败（安装器非 0、版本没换）一律按失败显示，不给「升级成功」四个字。
+  function loadInstallResult() {
+    el.updateInstallResult.hidden = true;
+    el.updateInstallResult.textContent = '';
+    el.updateInstallResult.classList.remove('is-error');
+    if (!state.user || state.user.role !== 'admin') return;
+    api('GET', '/api/update/install-result').then(function (data) {
+      if (!data || data.state !== 'done') return;
+      var code = Number(data.exit_code);
+      var before = data.version_before || '?';
+      var after = data.version_after || '?';
+      var ok = code === 0 && !!data.version_after &&
+        data.version_after !== data.version_before;
+      var text = (ok ? '上次安装成功：' : '上次安装未成功：') +
+        '安装器退出码 ' + code + '｜版本 ' + before + ' → ' + after;
+      if (data.error) text += '（' + data.error + '）';
+      el.updateInstallResult.hidden = false;
+      el.updateInstallResult.textContent = text;
+      el.updateInstallResult.classList.toggle('is-error', !ok);
+    }).catch(function () {
+      // 读不到结果不影响手动升级，也不弹错误。
+    });
+  }
+
+  el.updateInstall.addEventListener('click', function () {
+    if (state.updateInstalling) return;
+    state.updateInstalling = true;
+    el.updateInstall.disabled = true;
+    setUpdateProgress('正在启动安装程序，服务即将停止…');
+    api('POST', '/api/update/install', {}).then(function () {
+      setUpdateProgress('安装程序已启动：服务正在停止，装完会自动打开新版本。');
+    }).catch(function (error) {
+      state.updateInstalling = false;
+      el.updateInstall.disabled = false;
+      setUpdateProgress('安装未启动：' + error.message, true);
+    });
+  });
 
   function closeUpdateModal() {
     el.updateModal.hidden = true;
@@ -663,8 +715,9 @@
           state.updateDownloading = false;
           state.updateTimer = null;
           el.updateDownloadPackage.disabled = true;
+          if (!el.updateInstall.hidden) el.updateInstall.disabled = false;
           setUpdateProgress('已下载并通过 SHA256 + 字节数校验：' + data.path);
-          toast('更新包已下载并通过校验（未安装）');
+          toast('更新包已下载并通过校验');
           return;
         }
         if (data.state === 'failed') {
@@ -978,6 +1031,7 @@
 
   function openDrawer(device) {
     state.editingId = device ? device.id : null;
+    state.editingVersion = device ? device.version : 0;
     el.drawerTitle.textContent = device ? '编辑设备' : '新增设备';
     el.deviceId.value = device ? String(device.id) : '';
     el.devName.value = device ? device.dev_name : '';
@@ -997,10 +1051,12 @@
     el.drawer.setAttribute('aria-hidden', 'true');
     el.scrim.hidden = true;
     state.editingId = null;
+    state.editingVersion = 0;
   }
 
   function openDelete(device) {
     state.pendingDeleteId = device.id;
+    state.pendingDeleteVersion = device.version;
     el.modalText.textContent =
       '确定删除「' + device.dev_name + '」·' + device.location + '？删除后不可恢复。';
     el.modal.hidden = false;
@@ -1008,6 +1064,7 @@
 
   function closeDelete() {
     state.pendingDeleteId = null;
+    state.pendingDeleteVersion = 0;
     el.modal.hidden = true;
   }
 
@@ -1379,6 +1436,8 @@
       phone: el.devPhone.value.trim()
     };
     var editingId = state.editingId;
+    // 乐观锁：编辑必须带回打开抽屉时的版本号，服务端版本不一致会返回 409。
+    if (editingId) payload.version = state.editingVersion;
     // 生僻字只提示、不拦截：设备名是真实的，拒绝保存只会让用户回去删字。
     var missing = uncoveredChars(payload.dev_name + payload.location + payload.control_range);
     var request = editingId
@@ -1403,6 +1462,34 @@
           closeDrawer();
           return;
         }
+        if (error.status === 409) {
+          // 只有管理员在冲突时看到强制覆盖入口；普通用户仍然只能刷新重填。
+          // 覆盖会抹掉别人刚保存的内容，所以文案必须写清后果。
+          var canForce = editingId && state.user && state.user.role === 'admin';
+          if (canForce && window.confirm(
+                '数据已被他人修改。\n\n' +
+                '强制覆盖会用你刚才填写的内容覆盖别人刚保存的修改；' +
+                '被覆盖的版本、修改人和时间会写入审计记录。\n\n' +
+                '确定强制覆盖吗？')) {
+            return api('POST', '/api/devices/' + editingId + '/force', payload)
+              .then(function () {
+                closeDrawer();
+                toast('已强制覆盖（已写入审计）');
+                return loadOptions().then(load);
+              })
+              .catch(function (forceError) {
+                if (handleAuthFailure(forceError)) {
+                  closeDrawer();
+                  return;
+                }
+                el.formError.textContent = forceError.message;
+                el.formError.hidden = false;
+              });
+          }
+          closeDrawer();
+          toast('数据已被他人修改，请刷新后重试', 'error');
+          return loadOptions().then(load);
+        }
         el.formError.textContent = error.message;
         el.formError.hidden = false;
       });
@@ -1412,9 +1499,10 @@
 
   el.confirmDelete.addEventListener('click', function () {
     var id = state.pendingDeleteId;
+    var version = state.pendingDeleteVersion;
     if (!id) return;
     el.confirmDelete.disabled = true;
-    api('DELETE', '/api/devices/' + id)
+    api('DELETE', '/api/devices/' + id + '?version=' + version)
       .then(function () {
         closeDelete();
         toast('已删除设备');
@@ -1423,6 +1511,10 @@
       .catch(function (error) {
         closeDelete();
         if (handleAuthFailure(error)) return;
+        if (error.status === 409) {
+          toast('数据已被他人修改，请刷新后重试', 'error');
+          return load();
+        }
         toast(error.message, 'error');
       })
       .then(function () {
@@ -1630,6 +1722,20 @@
         toast(error.message, 'error');
       });
   }
+
+  // 数据目录由服务端判定并打开，前端不传路径。
+  el.openDataDir.addEventListener('click', function () {
+    el.openDataDir.disabled = true;
+    api('POST', '/api/system/open-data-dir', {})
+      .then(function (data) {
+        toast('已打开数据目录：' + (data && data.path ? data.path : ''));
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      })
+      .then(function () { el.openDataDir.disabled = false; });
+  });
 
   el.backupNow.addEventListener('click', function () {
     el.backupNow.disabled = true;

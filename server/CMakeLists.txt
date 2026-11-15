@@ -31,7 +31,11 @@ add_custom_command(
 
 add_library(devcard_server STATIC
     src/server.cpp
+    src/apply_update.cpp
     src/platform_paths.cpp
+    src/config.cpp
+    src/instance_lock.cpp
+    src/heartbeat.cpp
     src/font_coverage.cpp
     src/web_assets_check.cpp
     "${WEB_ASSETS_CPP}"
@@ -45,10 +49,15 @@ target_include_directories(devcard_server PUBLIC
 )
 target_compile_definitions(devcard_server PRIVATE
     DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
+    # accept 队列深度。httplib 默认 5（third_party/httplib/httplib.h:141），
+    # 20 并发建连会被拒；只从构建侧抬高，不改内嵌依赖本体。
+    CPPHTTPLIB_LISTEN_BACKLOG=128
 )
 target_link_libraries(devcard_server PUBLIC devcard_core)
 if(WIN32)
-    target_link_libraries(devcard_server PUBLIC ws2_32)
+    # ws2_32: sockets（httplib / inet_ntop）；iphlpapi: 枚举本机私有 IPv4；
+    # version: 读 PE 版本资源；shell32: CommandLineToArgvW（重启时沿用原参数）。
+    target_link_libraries(devcard_server PUBLIC ws2_32 iphlpapi version shell32)
 endif()
 
 add_executable(devcard-server src/main.cpp)

@@ -27,6 +27,8 @@
 #include <windows.h>
 #endif
 
+#include "devcard/paths.h"
+
 #ifndef DEVCARD_CMAKE_COMMAND
 #define DEVCARD_CMAKE_COMMAND "cmake"
 #endif
@@ -84,6 +86,26 @@ std::string quote_arg(const std::string& arg) {
 #endif
 }
 
+#ifdef _WIN32
+// 命令行是宽字符的：参数（UTF-8）必须先按 UTF-8 解码成 wstring，
+// 不能把 UTF-8 字节直接 append 进 wstring——那正是 ACP 机器上路径变形的根因。
+std::wstring widen_utf8(const std::string& value) {
+  if (value.empty()) return {};
+  const int size = ::MultiByteToWideChar(CP_UTF8, 0, value.data(),
+                                         static_cast<int>(value.size()),
+                                         nullptr, 0);
+  if (size <= 0) return {};
+  std::wstring widened(static_cast<std::size_t>(size), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, value.data(),
+                        static_cast<int>(value.size()), widened.data(), size);
+  return widened;
+}
+
+std::wstring quote_arg_wide(const std::string& arg) {
+  return L"\"" + widen_utf8(arg) + L"\"";
+}
+#endif
+
 int run_process(const std::vector<std::string>& args, std::string* output) {
 #ifdef _WIN32
   const fs::path log = fs::temp_directory_path() /
@@ -100,8 +122,7 @@ int run_process(const std::vector<std::string>& args, std::string* output) {
     if (!command.empty()) {
       command += L' ';
     }
-    const std::string quoted = quote_arg(arg);
-    command.append(quoted.begin(), quoted.end());
+    command += quote_arg_wide(arg);
   }
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
@@ -337,12 +358,13 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
   const fs::path output = root / "out.cpp";
 
-  // argv 的编码归属由 Windows 侧统一收口（宽命令行 + 工作目录），本文件先保持原样，
-  // 等 win-m5 的版本落地后按它对齐；不要在这里再造第三份转换。
+  // argv 在 Windows 上走宽命令行，参数按 UTF-8 给出，由 run_process 逐参数
+  // MultiByteToWideChar 解成宽串；这里用 path_to_utf8 而不是 .string()，
+  // 否则 ACP 字节会被当成 UTF-8 再解一次。
   const std::vector<std::string> args = {
       DEVCARD_CMAKE_COMMAND,
-      "-DINPUT_DIR=" + input.string(),
-      "-DOUTPUT=" + output.string(),
+      "-DINPUT_DIR=" + devcard::path_to_utf8(input),
+      "-DOUTPUT=" + devcard::path_to_utf8(output),
       "-P",
       script_path(),
   };

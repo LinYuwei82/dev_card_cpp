@@ -21,7 +21,7 @@
 #include <cwctype>
 #include <exception>
 #include <filesystem>
-#include <memory>
+#include <iterator>#include <memory>
 #include <string.h>
 #include <string>
 #include <vector>
@@ -353,7 +353,18 @@ void ExportPdf(const std::string& suggested_name) {
 
         std::filesystem::path target;
         std::wstring pick_error;
-        if (!PickSavePath(Widen(suggested_name), &target, &pick_error)) {
+        bool picked = false;
+#if !defined(NDEBUG)
+        // 仅调试构建：设置 DEVCARD_EXPORT_PATH 时跳过保存对话框，直接写该路径。
+        // 用于验收出样张时避开模态对话框的自动化；Release 不编译这段，产品行为不变。
+        wchar_t forced_path[1024] = {};
+        if (GetEnvironmentVariableW(L"DEVCARD_EXPORT_PATH", forced_path,
+                                    static_cast<DWORD>(std::size(forced_path))) > 0) {
+          target = std::filesystem::path(forced_path);
+          picked = true;
+        }
+#endif
+        if (!picked && !PickSavePath(Widen(suggested_name), &target, &pick_error)) {
           g.print_busy = false;
           if (pick_error.empty()) {
             Notify(nullptr, L"已取消导出");
