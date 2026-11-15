@@ -23,8 +23,16 @@
 #include <string>
 #include <vector>
 
+#include "devcard/paths.h"
+
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
 #endif
 
 #include "devcard/paths.h"
@@ -65,25 +73,41 @@ std::string read_bytes(const fs::path& path);
 const std::string kNewlineToken = " \"\\n\" ";
 
 // 起一个外部进程并连 stderr 一起收回来；返回退出码。
-// 两条路径共用同一份「参数数组」，只有最后的落地方式不同：
-//   Windows 走 CreateProcessW，不经过 cmd.exe —— 整行以引号开头时 cmd 会按另一套规则剥引号，
-//   把命令行拆坏（实测报 The filename, directory name, or volume label syntax is incorrect.，
-//   而且 cmake 一次都没跑起来，看上去却像「用例全红」）。
-//   POSIX 走 popen，参数逐个加单引号，不依赖字符串拼接的正确性。
-std::string quote_arg(const std::string& arg) {
+// 参数数组一律用 UTF-8 表达（路径也先 path_to_utf8），落地方式按平台不同：
+//   Windows 走 CreateProcessW，先把每个参数 UTF-8 → UTF-16 再拼宽命令行。
+//     不能退回窄 argv：cmake 的窄 argv 按 ACP 解，UTF-8 字节会被解成 `娑擃厽鏋僜`；
+//     改传 ACP 又表达不了 emoji。实测同一中文目录（D:\work\中文\tmp\三向）：
+//       ACP 窄命令行 → exit 0、有产物；UTF-8 窄命令行 → exit 1、file() 打不开；
+//       宽命令行 → exit 0、有产物。emoji 目录（D:\work\😀\三向）下 ACP 连编码都失败，
+//       宽命令行仍 exit 0。所以正确解是「不产生窄 argv」，不是选一种窄编码。
+//   POSIX 走 posix_spawn，argv 原样交给 exec，不经过 shell 解析：
+//     走 shell 等于把引号与编码交给别人的解析器，路径里有空格、单引号、换行就变形。
+//   两侧共用同一套语义：输出重定向到临时文件，进程结束再整块读回来；
+//   退出码单独拿，所以「进程失败」与「输出内容不对」是两条可区分的判据。
 #ifdef _WIN32
-  return "\"" + arg + "\"";
-#else
-  std::string quoted = "'";
-  for (char c : arg) {
-    if (c == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += c;
-    }
-  }
-  return quoted + "'";
+std::wstring widen_utf8(const std::string& text) {
+  if (text.empty()) return std::wstring();
+  const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                       static_cast<int>(text.size()), nullptr, 0);
+  if (size <= 0) return std::wstring();
+  std::wstring wide(static_cast<size_t>(size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                      wide.data(), size);
+  return wide;
+}
 #endif
+
+// 夹具目录与日志共用的唯一后缀：进程号 + 进程内自增。
+// 原先是 `std::rand()`（未播种）：同机并行的两个测试进程拿到同一串数，
+// 目录与日志会互相覆盖——读到别人的输出，判据就假绿或假红。
+std::string unique_suffix() {
+  static unsigned long long seq = 0;
+#ifdef _WIN32
+  const unsigned long pid = GetCurrentProcessId();
+#else
+  const unsigned long pid = static_cast<unsigned long>(::getpid());
+#endif
+  return std::to_string(pid) + "-" + std::to_string(++seq);
 }
 
 #ifdef _WIN32
@@ -108,8 +132,8 @@ std::wstring quote_arg_wide(const std::string& arg) {
 
 int run_process(const std::vector<std::string>& args, std::string* output) {
 #ifdef _WIN32
-  const fs::path log = fs::temp_directory_path() /
-                       ("devcard-spawn-" + std::to_string(std::rand()) + ".log");
+  const fs::path log =
+      fs::temp_directory_path() / ("devcard-spawn-" + unique_suffix() + ".log");
   SECURITY_ATTRIBUTES inherit = {sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
   HANDLE sink = CreateFileW(log.wstring().c_str(), GENERIC_WRITE,
                             FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
@@ -149,26 +173,39 @@ int run_process(const std::vector<std::string>& args, std::string* output) {
   fs::remove(log);
   return code;
 #else
-  std::string command;
-  for (const auto& arg : args) {
-    if (!command.empty()) {
-      command += ' ';
-    }
-    command += quote_arg(arg);
-  }
-  command += " 2>&1";
-  FILE* pipe = popen(command.c_str(), "r");
-  if (pipe == nullptr) {
+  const fs::path log =
+      fs::temp_directory_path() / ("devcard-spawn-" + unique_suffix() + ".log");
+  FILE* sink = std::fopen(log.c_str(), "wb");
+  if (sink == nullptr) {
     return -1;
   }
-  char buffer[512];
-  while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    if (output != nullptr) {
-      *output += buffer;
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1);
+  for (const auto& arg : args) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_adddup2(&actions, fileno(sink), STDOUT_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, fileno(sink), STDERR_FILENO);
+  pid_t pid = 0;
+  const int spawned =
+      posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&actions);
+  std::fclose(sink);
+  int code = -1;
+  if (spawned == 0) {
+    int status = 0;
+    if (waitpid(pid, &status, 0) == pid) {
+      code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
   }
-  const int status = pclose(pipe);
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  if (output != nullptr) {
+    *output = read_bytes(log);
+  }
+  fs::remove(log);
+  return code;
 #endif
 }
 
@@ -336,6 +373,26 @@ std::vector<unsigned char> parse_hex_array(const std::string& generated,
   return bytes;
 }
 
+// cmake 的 message() 会按控制台宽度折行，路径一长就把「含 CR」拆成「含\n  CR」。
+// 断言前先把换行折成单空格，否则判定结果取决于路径长度而不是内容。
+std::string compact(const std::string& text) {
+  std::string joined;
+  bool space = false;
+  for (char c : text) {
+    if (c == '\n' || c == '\r') {
+      c = ' ';
+    }
+    if (c == ' ') {
+      if (!space) joined += c;
+      space = true;
+    } else {
+      joined += c;
+      space = false;
+    }
+  }
+  return joined;
+}
+
 struct RunResult {
   int code = -1;
   std::string output;
@@ -348,8 +405,7 @@ struct RunResult {
 RunResult generate(const std::string& name, const std::string& index_html) {
   RunResult result;
   const fs::path root = fs::temp_directory_path() /
-                        ("devcard-embed-" + name + "-" +
-                         std::to_string(std::rand()));
+                        ("devcard-embed-" + name + "-" + unique_suffix());
   fs::create_directories(root / "in");
   const fs::path input = root / "in";
   write_bytes(input / "index.html", index_html);
@@ -361,6 +417,9 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   // argv 在 Windows 上走宽命令行，参数按 UTF-8 给出，由 run_process 逐参数
   // MultiByteToWideChar 解成宽串；这里用 path_to_utf8 而不是 .string()，
   // 否则 ACP 字节会被当成 UTF-8 再解一次。
+  //
+  // `.string()` 的两种退化：中文目录给出 GBK 字节（再按 UTF-8 解码即乱码）；
+  // emoji 目录 ACP 表达不了，直接抛 std::system_error，未接住会带崩整个二进制。
   const std::vector<std::string> args = {
       DEVCARD_CMAKE_COMMAND,
       "-DINPUT_DIR=" + devcard::path_to_utf8(input),
@@ -458,7 +517,8 @@ int main() {
     const std::string crlf = "line1\r\nline2\r\nline3\r\n";
     const RunResult got = generate("newline-crlf", crlf);
     CHECK(got.code != 0);
-    CHECK(got.output.find("含 CR") != std::string::npos);
+    CHECK(!got.output.empty());  // 先保证读到过输出，否则下一条会静默通过
+    CHECK(compact(got.output).find("含 CR") != std::string::npos);
   }
 
   // 4) CR 检测（负向）：.gitattributes 锁了 LF 之后正常检出走不到这条路径，
@@ -466,7 +526,12 @@ int main() {
   {
     const RunResult bad = generate("reject-cr", "a\r\nb\n");
     CHECK(bad.code != 0);
-    CHECK(bad.output.find("含 CR") != std::string::npos);
+    CHECK(!bad.output.empty());
+    if (compact(bad.output).find("含 CR") == std::string::npos) {
+      std::cerr << "  reject-cr: code=" << bad.code << " 输出=" << bad.output
+                << "\n";
+    }
+    CHECK(compact(bad.output).find("含 CR") != std::string::npos);
     if (bad.code == 0) {
       std::cerr << "  期望失败，实际成功\n";
     }
@@ -494,8 +559,9 @@ int main() {
     // CR 必须报出字节偏移，而不是只说「有 CR」。
     const RunResult cr = generate("big-crlf", big + "\r\n");
     CHECK(cr.code != 0);
-    CHECK(cr.output.find("含 CR") != std::string::npos);
-    CHECK(cr.output.find("第 " + std::to_string(big.size()) + " 字节") !=
+    CHECK(!cr.output.empty());
+    CHECK(compact(cr.output).find("含 CR") != std::string::npos);
+    CHECK(compact(cr.output).find("第 " + std::to_string(big.size()) + " 字节") !=
           std::string::npos);
 
     // 对抗输入：反复 20 d1 的 hex 是 20d120d1…，"0d" 每次都在奇数位。

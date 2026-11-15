@@ -548,8 +548,10 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
 
   // 5) 宽→窄→宽往返的退化检查（`path.string() + "-wal"` vs 在 path 上 `+=`）。
   //    POSIX：窄编码就是 UTF-8，两种写法必然相等；
-  //    Windows/ACP：`.string()` 会把非 ASCII 段改坏，两者必须不等——这条 CHECK
-  //    在那种环境下会红，那正是「旧写法会退化」的证据，改回 `+=` 才绿。
+  //    Windows/ACP：`.string()` 走当前码页，ACP 表达不了的段不是「改坏」，而是
+  //    直接抛 std::system_error（实测 what()：No mapping for the Unicode character
+  //    exists in the target multi-byte code page）——本夹具带 emoji，必走 catch。
+  //    不接住会把整个二进制带崩（0xC0000409），红的原因反而看不出是编码问题。
   const std::filesystem::path db_file = dir / "devicedb.db";
   std::filesystem::path direct_wal = db_file;
   direct_wal += "-wal";
