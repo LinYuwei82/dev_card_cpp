@@ -64,29 +64,31 @@ def check_iss(root: pathlib.Path) -> list[str]:
     return issues
 
 
-def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, str | None, bool]:
-    """读真产物的 Info.plist。返回 (说明, 失败项或 None, 是否缺产物)。"""
+PLIST_KEYS = ("CFBundleShortVersionString", "CFBundleVersion")
+
+
+def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, list[str], bool]:
+    """读真产物的 Info.plist，双键都比。返回 (说明, 失败项, 是否缺产物)。"""
     path = root / APP_PLIST
     if not path.exists():
-        return (f"（没有 app bundle：{APP_PLIST} 不存在）", None, True)
-    match = re.search(
-        r"CFBundleShortVersionString</key>\s*<string>([^<]*)</string>",
-        path.read_text(encoding="utf-8", errors="replace"),
-    )
-    if not match:
-        return (
-            f"{APP_PLIST} 里没有 CFBundleShortVersionString",
-            f"{APP_PLIST}: 缺少 CFBundleShortVersionString",
-            False,
-        )
-    found = match.group(1).strip()
-    if found == version:
-        return (f"CFBundleShortVersionString={found}，与 VERSION.txt 一致", None, False)
-    return (
-        f"CFBundleShortVersionString={found}，与 VERSION.txt 不一致",
-        f"{APP_PLIST}: CFBundleShortVersionString {found} != VERSION.txt {version}",
-        False,
-    )
+        return (f"（没有 app bundle：{APP_PLIST} 不存在）", [], True)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    messages = []
+    failures = []
+    for key in PLIST_KEYS:
+        # 缺失也判失败：make_dmg.sh:123-134 是双键都比，缺一个就不算同源。
+        match = re.search(rf"{key}</key>\s*<string>([^<]*)</string>", text)
+        if not match:
+            messages.append(f"{key} 缺失")
+            failures.append(f"{APP_PLIST}: 缺少 {key}")
+            continue
+        found = match.group(1).strip()
+        if found == version:
+            messages.append(f"{key}={found}，一致")
+        else:
+            messages.append(f"{key}={found}，与 VERSION.txt 不一致")
+            failures.append(f"{APP_PLIST}: {key} {found} != VERSION.txt {version}")
+    return ("；".join(messages), failures, False)
 
 
 def setup_version(path: pathlib.Path) -> tuple[str, str] | None:
@@ -125,11 +127,10 @@ def main() -> int:
     else:
         print(f"  {ISS}：从 VERSION.txt 取，无第二处字面量")
 
-    print("macOS 产物 Info.plist（判据指向真产物）")
-    message, plist_failure, missing_bundle = check_app_plist(root, version)
+    print("macOS 产物 Info.plist（判据指向真产物，双键都比）")
+    message, plist_failures, missing_bundle = check_app_plist(root, version)
     print(f"  {message}")
-    if plist_failure:
-        failures.append(plist_failure)
+    failures.extend(plist_failures)
     frozen = root / FROZEN_PLIST
     if frozen.exists():
         print(f"  {FROZEN_PLIST}：旧 Qt 线冻结文件，不进产物、不参与判定")
