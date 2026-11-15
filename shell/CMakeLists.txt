@@ -1,10 +1,17 @@
-add_executable(DevCard MACOSX_BUNDLE mac/main.mm)
+# 应用图标：随 bundle 复制到 Contents/Resources/，由 CFBundleIconFile 指向。
+# 源文件用 .icns（已含 16–1024 全尺寸），不运行时生成，保证签名后图标哈希稳定。
+set(DEVCARD_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/mac/DevCard.icns")
+set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources")
+
+add_executable(DevCard MACOSX_BUNDLE mac/main.mm ${DEVCARD_APP_ICON})
 target_link_libraries(DevCard PRIVATE devcard_server "-framework Cocoa" "-framework WebKit"
     "-framework PDFKit" "-framework UniformTypeIdentifiers")
 
 set_target_properties(DevCard PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "DevCard"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.anye.devcard.new"
+    MACOSX_BUNDLE_ICON_FILE "DevCard.icns"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${DEVCARD_VERSION_STRING}"
     MACOSX_BUNDLE_BUNDLE_VERSION "${DEVCARD_VERSION_STRING}"
 )

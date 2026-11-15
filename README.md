@@ -62,7 +62,7 @@ tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 - 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
-- 本机实测（1.2.0，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,696,386 B（4.5M）**，SHA256 `569f6cda738c0a55f1820bff79f4af26f52392c9735387177da16d59c84533ae`；App 层身份：可执行文件 `26775a10…34e7b4`、`Info.plist` `ddec18a4…01ef86`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
+- 本机实测（1.2.0 + 图标，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,774,542 B（4.6M）**，SHA256 `0f026c69956781cd07d472c23e0af2b64054eee57b42820563ef243138c8d440`；App 层身份：可执行文件 `696116f4…edb868`、`Info.plist` `5dee3ad9…837d92`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
 
 ---
 
@@ -105,7 +105,7 @@ dev_card_cpp/
 以下均为**现状**，不是目标形态：
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版未公证，首次打开需手动放行。
-- 应用图标尚未接入：App 使用系统默认图标。
+- macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico` 与 web favicon 尚未接入。
 - Windows 安装器 `packaging/windows/DevCard.iss`（**在 Windows 线 `win/mac-build-scripts`，本分支不含 `packaging/` 目录**；每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已在 Windows 线编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点、`web\*` 挂了 `skipifsourcedoesntexist` 导致「带 web 资源」形态未验，补齐前不写「安装包已完整验收」。旧线绿色版打包脚本已随旧线删除，新架构的绿色版打包脚本尚未实现。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - 无 CI、无许可证声明。（`tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
