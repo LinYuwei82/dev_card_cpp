@@ -7,19 +7,7 @@
 >
 > 开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 >
-> 改造前的旧 Qt 线已从仓库删除；`v1.1.3` tag 保留，旧包只从该 tag 重建。
-
-## 历史版本（v1.1.3，仅存档）
-
-| 平台 | 产物 | 状态 |
-|---|---|---|
-| macOS | `DevCard-1.1.3-macos-arm64.dmg` | 已发布到 Gitee / GitHub Release；67 MiB；SHA256 `a4aac2045131bc43aa68c78d2f8856b095f4493a52a06515c175651f28446946` |
-| Windows | `DevCard-1.1.3-portable.zip` | 未产出 |
-
-- Release：<https://github.com/LinYuwei82/dev_card_cpp/releases/tag/v1.1.3>、<https://gitee.com/lin-yuwei168/dev_card_cpp/releases/tag/v1.1.3>
-- macOS 版为 ad-hoc 签名、未公证；首次打开需在 Gatekeeper 中手动放行。
-- 最低 macOS 15，对应 D7 已定口径：Homebrew 的 libharu/libzip/libxlsxwriter 均按 15.0 构建；13/14 不在支持范围。
-- tag `v1.1.3` 当前指向 `bf3e2b4`；曾从 `8b61937` 强制移动一次，原因见改造方案 §0.1。
+> 改造前的旧 Qt 线已从仓库删除，仓库内不再保留旧线的归档指向。
 
 ## 1. 项目定位
 
@@ -126,7 +114,7 @@ dev_card_cpp/
 
 **当前已知边界（照实写）**：
 
-- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**。旧 Qt 线已从仓库删除，历史版本只能从 `v1.1.3` tag 重建。
+- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**。旧 Qt 线已从仓库删除，仓库内不再保留其归档指向。
 - **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段，**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成（`a4cda3a`，闸门与状态码表 `6f425fd`），阶段二、三未动**。阶段一只用假 curl + 本地清单验过，**真实 GitHub 下载未验**。无 Authenticode / 公证，信任锚只有「固定 HTTPS 域名 + 清单版本与哈希」，挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
 - **Windows 侧只走到「静默安装跑通」**：Windows 壳（WebView2）已编译，`/VERYSILENT` 安装（无 UAC、落 `%LOCALAPPDATA%\Programs\DevCard`、`health=200`）与卸载（数据目录逐文件 SHA256 前后一致）已实测；`ctest` 4/4 通过，**中文路径转换层**已在 ACP 默认代码页的机器上验过（调用点待 Windows 线收口后复跑）。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归、emoji 路径、真实下载跑完并校验，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
