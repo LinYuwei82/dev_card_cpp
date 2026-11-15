@@ -736,6 +736,16 @@ void run_company_name_case(const std::filesystem::path& dir) {
   CHECK(devcard::company_name_width(devcard::company_name(db)) == 13.0);
   CHECK(devcard::company_print_name(db) == "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
 
+  // 边界：12 个汉字（12.0）+ 一个 ASCII（12.5）之后再来汉字就超宽了。
+  // 超宽字必须直接停，不能「跳过它继续收后面的窄字」，否则打印名不是原串的真前缀，
+  // 前端预览会和实际打印不一致（web/app.js truncateCompanyName 同口径）。
+  db.write([](sqlite3* conn) {
+    devcard::set_setting(conn, "print_company_name",
+                         "安安全全生产管理责任到位A汉A");
+  });
+  CHECK(devcard::company_name_width(devcard::company_name(db)) == 14.0);
+  CHECK(devcard::company_print_name(db) == "安安全全生产管理责任到位A");
+
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。

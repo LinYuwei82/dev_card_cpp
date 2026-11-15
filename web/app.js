@@ -1214,12 +1214,15 @@
   function truncateCompanyName(value) {
     var width = 0;
     var out = '';
-    Array.from(value).forEach(function (ch) {
-      var w = ch.codePointAt(0) < 0x80 ? 0.5 : 1;
-      if (width + w > state.companyNameMaxWidth + 1e-9) return;
+    // 与服务端 truncate_company_name 同语义：第一次超宽就停，不跳过该字继续收后面的窄字，
+    // 否则预览里会出现「中间少一个字、后面还被接上」的伪前缀，与实际打印不一致。
+    var chars = Array.from(value);
+    for (var i = 0; i < chars.length; i++) {
+      var w = chars[i].codePointAt(0) < 0x80 ? 0.5 : 1;
+      if (width + w > state.companyNameMaxWidth + 1e-9) break;
       width += w;
-      out += ch;
-    });
+      out += chars[i];
+    }
     return out;
   }
 
@@ -1266,8 +1269,9 @@
     el.companyHint.classList.toggle('is-over', over);
     el.companyOver.hidden = !over;
     // 字体覆盖是另一件事：字放得下（宽度上限），但打印子集里没有这个字。
-    // 口径见 companyFontCheck 上方：字少且塞得进就告知，塞不进就阻止导出。
-    var fontCheck = companyFontCheck(value);
+    // 只查真正会打印的那一段（截断后），否则会为永远打不出的字报警，
+    // 且与导出前 companyFontCheck(state.companyNamePrint) 的判定自相矛盾。
+    var fontCheck = companyFontCheck(truncateCompanyName(value));
     el.companyFontWarning.hidden = fontCheck.missing.length === 0;
     if (fontCheck.missing.length) {
       el.companyFontWarning.textContent = fontCheck.overflow
