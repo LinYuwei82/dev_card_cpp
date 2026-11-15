@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -698,6 +699,66 @@ void run_xlsx_template_case(const std::filesystem::path& dir) {
 
 }
 
+// M2 硬验收②：同一份文件连续导入两次——不去重、不合并、不跳过、不覆盖。
+// 判据按文档原话：第二次仍新增 N 条、重复只计数提示、两次后总数 2N，
+// 且重复行各自持有新的 id（COUNT(DISTINCT 三字段) 不变）。
+void run_xlsx_reimport_case(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "devicedb.db";
+  devcard::Db db(file);
+  devcard::migrate(db);
+  devcard::DeviceService service(db);
+
+  devcard::xlsx::Sheet data;
+  data.name = "设备台账";
+  data.rows.push_back(devcard::DeviceService::expected_header());
+  data.rows.push_back({"1号水泵", "B1栋", "1-3层", "13800000001"});
+  data.rows.push_back({"排风机", "B1栋", "屋顶", "13800000002"});
+  data.rows.push_back({"", "", "", ""});  // 四字段全空：跳过
+  data.rows.push_back({"消防泵", "A栋", "B1层", "13800000003"});
+  const std::string bytes = devcard::xlsx::write_workbook({data});
+  CHECK(!bytes.empty());
+
+  // 两次都从同一份字节重新解析，模拟「同一个文件上传两次」。
+  const auto first_rows = devcard::xlsx::read(bytes);
+  CHECK(first_rows.size() == 5);
+  const devcard::ImportReport first = service.import_rows(first_rows);
+  CHECK(first.imported == 3);
+  CHECK(first.skipped_empty == 1);
+  CHECK(first.duplicates == 0);
+  CHECK(service.export_rows().size() == 4);  // 表头 + 3
+
+  const auto second_rows = devcard::xlsx::read(bytes);
+  const devcard::ImportReport second = service.import_rows(second_rows);
+  CHECK(second.imported == 3);     // 不阻断、不跳过
+  CHECK(second.skipped_empty == 1);
+  CHECK(second.duplicates == 3);   // 仅提示
+  CHECK(service.export_rows().size() == 7);  // 表头 + 2N
+
+  // 主键必须各自独立：6 条不同 id，且三字段组合仍是 3 种。
+  devcard::DeviceDao dao;
+  devcard::DeviceQuery query;
+  const auto all = dao.list(db, query);
+  CHECK(all.size() == 6);
+  std::set<std::int64_t> ids;
+  std::set<std::string> triples;
+  for (const auto& item : all) {
+    ids.insert(item.id);
+    triples.insert(item.dev_name + "|" + item.location + "|" + item.control_range);
+  }
+  CHECK(ids.size() == 6);
+  CHECK(triples.size() == 3);
+
+  // 先插入的 3 条没有被覆盖：第一次导入的内容原样还在。
+  bool found_pump = false;
+  for (const auto& item : all) {
+    if (item.dev_name == "1号水泵" && item.phone == "13800000001" &&
+        item.control_range == "1-3层") {
+      found_pump = true;
+    }
+  }
+  CHECK(found_pump);
+}
+
 int run_all_tests() {
   const std::filesystem::path file = temp_db();
   {
@@ -1061,6 +1122,15 @@ int run_all_tests() {
     // 导入模板：第一个工作表只有表头，且与导入校验共用同一份常量。
     const std::filesystem::path dir = temp_db().parent_path();
     run_xlsx_template_case(dir);
+    check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // M2 硬验收②：同一文件连续导入两次，不覆盖、不合并、不跳过。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_xlsx_reimport_case(dir);
     check_db_closed(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
