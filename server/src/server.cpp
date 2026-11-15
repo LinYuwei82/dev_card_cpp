@@ -505,6 +505,21 @@ void destroy_session(ServerState& state, const httplib::Request& request) {
   state.sessions.erase(token);
 }
 
+// 账号被删除或密码被重置后，该账号的所有旧会话必须立刻失效；
+// 否则 12 小时滑动 TTL 内拿着旧 cookie 还能继续操作，等于改密 / 删号没生效。
+// keep_token 用于「自己改自己的密码」：当前这台设备保持登录，其余会话全部作废。
+void drop_sessions_for(ServerState& state, const std::string& user,
+                       const std::string& keep_token = {}) {
+  std::lock_guard<std::mutex> lock(state.sessions_mutex);
+  for (auto it = state.sessions.begin(); it != state.sessions.end();) {
+    if (it->second.user == user && it->first != keep_token) {
+      it = state.sessions.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 void set_session_cookie(httplib::Response& response, const std::string& token) {
   response.set_header("Set-Cookie",
                       "sid=" + token +
@@ -689,7 +704,15 @@ void audit_event(ServerState& state, AuditEntry entry) {
 User current_user(ServerState& state, const httplib::Request& request) {
   const std::string name = session_user(state, request);
   if (name.empty()) throw AppError("unauthorized", "未登录或会话已过期");
-  return state.users->get(name);
+  try {
+    return state.users->get(name);
+  } catch (const AppError& error) {
+    // 账号已被删除、但会话还没到期：按未登录处理，别把 not_found 当 404 透给前端。
+    if (error.code() == "not_found") {
+      throw AppError("unauthorized", "账号已不存在，请重新登录");
+    }
+    throw;
+  }
 }
 
 User require_admin(ServerState& state, const httplib::Request& request) {
@@ -1594,6 +1617,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     const User actor = require_admin(state, request);
     const std::string name = request.get_param_value("name");
     state.users->remove(name, actor.user_name);
+    drop_sessions_for(state, name);
     set_json(response, json{{"ok", true}});
   });
 
@@ -1638,6 +1662,13 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         if (!state.users->any_must_change()) {
                           remove_seed_password_file(state.data_dir);
                         }
+                        // 改密 / 重置后旧会话一律作废；改自己的密码时保留当前这条，
+                        // 免得刚改完就把自己踢回登录页。
+                        const std::string keep =
+                            target == actor.user_name
+                                ? cookie_value(request, "sid")
+                                : std::string{};
+                        drop_sessions_for(state, target, keep);
                         set_json(response, json{{"ok", true}, {"user_name", target}});
                       } catch (const AppError&) {
                         rate_limit_record_failure(state, request.remote_addr,
