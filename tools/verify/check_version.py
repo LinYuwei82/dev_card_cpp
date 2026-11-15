@@ -26,7 +26,7 @@
 
 故意造坏输入的示例（应得到退出码 1）：
     python3 tools/verify/check_version.py --setup dist/DevCard-1.1.3-setup.exe
-    （在 VERSION.txt 为 0.1.0 时）
+    （在 VERSION.txt 为 1.2.0 时）
 """
 
 import argparse

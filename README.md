@@ -41,7 +41,7 @@ ctest --test-dir build-new --output-on-failure
 - **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
 - **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。目前只有本地监听与浏览器访问，`--server` 独立的局域网服务模式属 M7，尚未实现。
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`（代码实值，见 `server/src/platform_paths.cpp`）；Windows 安装版 `%LOCALAPPDATA%\DevCard\data`、便携版 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。**旧版数据不再支持导入**：数据目录里若是旧版库（只有 `tb_device`/`tb_user`、无 `schema_migration`），启动直接报 `legacy_db` 并拒绝在原库上建表；导入器与 `--import-legacy` 已删除。
-- **版本**：只改根目录 `VERSION.txt`（当前 `0.1.0` 开发期；对外发布时改为 `1.2.0`），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
+- **版本**：只改根目录 `VERSION.txt`（当前 `1.2.0`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
 - **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
 - **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**只下载、不替换**；**阶段二、三未动**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一只用假 curl + 本地清单验过，真实下载仅验到「真实进程按这条链去拉」，没有完整下完并校验；**换下载器必须重验白名单与代理口径**。
@@ -62,7 +62,7 @@ tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 - 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
-- 本机实测（0.1.0，2026-11-14）：`dist/DevCard-0.1.0-macos-arm64.dmg`，**4,593,677 B（4.4M）**，SHA256 `531f9fc42593e77e31c0362e907da04ec5c6527027e8ddff23381191cdc5ec23`。构成为主程序 2,967,552 B + `Resources/fonts` 下两个子集字体 4,560,472 B；上一版不含字体时为 1,651,241 B（`24bdae6c…cd13e`）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
+- 本机实测（1.2.0，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,696,386 B（4.5M）**，SHA256 `569f6cda738c0a55f1820bff79f4af26f52392c9735387177da16d59c84533ae`；App 层身份：可执行文件 `26775a10…34e7b4`、`Info.plist` `ddec18a4…01ef86`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
 
 ---
 
