@@ -75,16 +75,19 @@ button { cursor: pointer; }
   body:not(.is-export) .app:not(.is-print) .page > * { flex-shrink: 0; }
   body:not(.is-export) .app:not(.is-print) .statusbar {
     position: static;
-    height: 32px;
-    padding: 0 16px;
+    min-height: 32px;
+    padding: 4px 16px;
     flex: none;
   }
 }
 
 @media screen and (max-width: 900px) {
-  .statusbar { gap: 10px; padding: 0 10px; }
-  .statusbar .status-link { max-width: 150px; }
-  .statusbar .status-right { gap: 8px; }
+  .statusbar { column-gap: 10px; padding: 4px 10px; }
+  .statusbar .status-right {
+    flex: 1 1 100%; margin-left: 0; justify-content: flex-start;
+    column-gap: 10px;
+  }
+  .statusbar .status-link { max-width: 100%; }
 }
 
 .sidebar {
@@ -201,18 +204,24 @@ td.col-actions { text-align: right; white-space: nowrap; }
 /* 底部状态栏（M4.2）：左 用户/模式，中 条数，右 版本/schema/数据目录 */
 .statusbar {
   grid-column: 1 / -1; position: sticky; bottom: 0; z-index: 6;
-  display: flex; align-items: center; gap: 16px;
-  padding: 6px 16px;
+  display: flex; flex-wrap: wrap; align-items: center;
+  column-gap: 16px; row-gap: 2px;
+  padding: 4px 16px; min-width: 0; max-width: 100%;
   background: var(--surface); border-top: 1px solid var(--border);
   color: var(--text-3); font-size: 12px;
 }
+.statusbar .status-left { flex: 0 0 auto; white-space: nowrap; }
 .statusbar .status-dot { margin: 0 6px; }
-.statusbar .status-count { color: var(--text); }
+.statusbar .status-count { flex: 0 0 auto; white-space: nowrap; color: var(--text); }
 .statusbar .status-right {
-  margin-left: auto; display: flex; align-items: center; gap: 14px; min-width: 0;
+  margin-left: auto; display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: flex-end; column-gap: 14px; row-gap: 2px;
+  min-width: 0; max-width: 100%;
 }
+.statusbar .status-right > span { flex: 0 0 auto; white-space: nowrap; }
 .statusbar .status-link {
-  max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border: 0; background: transparent; color: var(--brand-600);
   font-size: 12px; padding: 2px 6px; border-radius: 6px;
 }
@@ -220,7 +229,10 @@ td.col-actions { text-align: right; white-space: nowrap; }
 .statusbar.is-error { background: var(--danger-50); border-top-color: var(--danger); }
 .statusbar.is-error .status-count,
 .statusbar.is-error .status-right { display: none; }
-.statusbar .status-error { color: var(--danger); }
+.statusbar .status-error {
+  flex: 1 1 100%; min-width: 0; color: var(--danger);
+  overflow-wrap: anywhere;
+}
 .statusbar .status-retry { margin-left: auto; height: 26px; }
 
 .scrim {
@@ -328,9 +340,11 @@ td.col-actions { text-align: right; white-space: nowrap; }
   width: 16px; height: 16px; fill: none; stroke: currentColor;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
-.password-eye .eye-off { display: none; }
-.password-eye.is-visible .eye-open { display: none; }
-.password-eye.is-visible .eye-off { display: block; }
+/* 图标表示当前状态：密文时闭眼（斜线），明文时睁眼 */
+.password-eye .eye-open { display: none; }
+.password-eye .eye-off { display: block; }
+.password-eye.is-visible .eye-open { display: block; }
+.password-eye.is-visible .eye-off { display: none; }
 
 @media (max-width: 980px) {
   .app { grid-template-columns: 1fr; }

@@ -256,6 +256,7 @@
     el.statusVersion.textContent = 'v' + (state.version || '—');
     el.statusSchema.textContent = 'schema ' + (state.schemaVersion || '—');
     el.statusDatadir.textContent = state.dataDir || '—';
+    el.statusDatadir.title = '打开数据目录：' + (state.dataDir || '—');
   }
 
   function filtersActive() {
