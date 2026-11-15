@@ -70,24 +70,29 @@ button { cursor: pointer; }
   }
   body:not(.is-export) .app:not(.is-print) .sidebar { min-height: 0; overflow-y: auto; }
   body:not(.is-export) .app:not(.is-print) .main { min-height: 0; }
-  body:not(.is-export) .app:not(.is-print) .page { flex: 1; min-height: 0; overflow-y: auto; }
+  body:not(.is-export) .app:not(.is-print) .page {
+    flex: 1; min-height: 0; overflow-y: auto;
+    /* 宽屏统一基线：表格与设置卡片同宽同位，超宽时居中留白 */
+    width: 100%; max-width: 1000px; margin-left: auto; margin-right: auto;
+  }
   /* 页面容器定高后，子项默认会收缩；表格区禁止收缩，内容才会溢出成滚动 */
   body:not(.is-export) .app:not(.is-print) .page > * { flex-shrink: 0; }
   body:not(.is-export) .app:not(.is-print) .statusbar {
     position: static;
-    min-height: 32px;
+    height: 32px;
+    flex: 0 0 32px;
     padding: 4px 16px;
-    flex: none;
   }
-}
-
-@media screen and (max-width: 900px) {
-  .statusbar { column-gap: 10px; padding: 4px 10px; }
-  .statusbar .status-right {
-    flex: 1 1 100%; margin-left: 0; justify-content: flex-start;
-    column-gap: 10px;
+  /* 打印预览同样锁死不参与分配：中间内容区吸收剩余空间。 */
+  body:not(.is-export) .app.is-print {
+    height: 100vh; min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
   }
-  .statusbar .status-link { max-width: 100%; }
+  body:not(.is-export) .app.is-print .main { flex: 1 1 auto; min-height: 0; }
+  body:not(.is-export) .app.is-print .page { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  body:not(.is-export) .app.is-print .statusbar {
+    position: static;
+  }
 }
 
 .sidebar {
@@ -207,6 +212,8 @@ td.col-actions { text-align: right; white-space: nowrap; }
   display: flex; flex-wrap: wrap; align-items: center;
   column-gap: 16px; row-gap: 2px;
   padding: 4px 16px; min-width: 0; max-width: 100%;
+  /* 固定占位，不参与剩余空间分配：高度锁死，避免打印态被 grid 拉伸。 */
+  height: 32px; flex: 0 0 32px; align-self: end; box-sizing: border-box;
   background: var(--surface); border-top: 1px solid var(--border);
   color: var(--text-3); font-size: 12px;
 }
@@ -220,13 +227,20 @@ td.col-actions { text-align: right; white-space: nowrap; }
 }
 .statusbar .status-right > span { flex: 0 0 auto; white-space: nowrap; }
 .statusbar .status-link {
-  flex: 0 1 auto; min-width: 0; max-width: 340px;
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border: 0; background: transparent; color: var(--brand-600);
   font-size: 12px; padding: 2px 6px; border-radius: 6px;
 }
 .statusbar .status-link:hover { background: var(--brand-50); }
 .statusbar.is-error { background: var(--danger-50); border-top-color: var(--danger); }
+/* 错误态放两行：定高 51px（与窄屏两行态一致），再长就裁掉，不压住上方内容。
+   带上 app 前缀是因为锁高规则的特异性更高，裸类名会被它盖掉。 */
+.statusbar.is-error,
+body:not(.is-export) .app:not(.is-print) .statusbar.is-error,
+body:not(.is-export) .app.is-print .statusbar.is-error {
+  height: 51px; flex: 0 0 51px; overflow: hidden;
+}
 .statusbar.is-error .status-count,
 .statusbar.is-error .status-right { display: none; }
 .statusbar .status-error {
@@ -234,6 +248,22 @@ td.col-actions { text-align: right; white-space: nowrap; }
   overflow-wrap: anywhere;
 }
 .statusbar .status-retry { margin-left: auto; height: 26px; }
+
+@media screen and (max-width: 900px) {
+  /* 带上与锁高规则同特异性的选择器，否则会被上面 32px 的 app 规则压住。 */
+  .statusbar,
+  body:not(.is-export) .app:not(.is-print) .statusbar,
+  body:not(.is-export) .app.is-print .statusbar {
+    column-gap: 10px; padding: 4px 10px;
+    /* 两行态也给固定高度，不留开放高度。 */
+    height: 51px; flex: 0 0 51px;
+  }
+  .statusbar .status-right {
+    flex: 1 1 100%; margin-left: 0; justify-content: flex-start;
+    column-gap: 10px;
+  }
+  .statusbar .status-link { max-width: 100%; }
+}
 
 .scrim {
   position: fixed; inset: 0; background: rgba(10, 25, 27, .28);
@@ -347,11 +377,16 @@ td.col-actions { text-align: right; white-space: nowrap; }
 .password-eye.is-visible .eye-off { display: none; }
 
 @media (max-width: 980px) {
-  .app { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
   .topbar, .page { padding-left: 18px; padding-right: 18px; }
   .search input { width: 180px; }
   .drawer { width: min(400px, 92vw); }
+}
+
+/* 侧栏收起必须晚于壳内窗口最小宽度（960），否则 960–980 区间既没有侧栏
+   也没有替代导航，切不到「卡片打印 / 用户管理」。这条只在浏览器拖得更窄时生效。 */
+@media (max-width: 880px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
 }
 
 /* 打印设置：公司名与图标 */

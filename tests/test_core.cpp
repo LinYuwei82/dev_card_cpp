@@ -189,6 +189,35 @@ void run_update_package_case(const std::filesystem::path& dir) {
   CHECK(!wrong_hash.ok);
   CHECK(wrong_hash.error.find("SHA256") != std::string::npos);
 
+  // 搬到用户选定位置：成功时源消失、目标存在；目标不可写时源保持原样、不留残件。
+  {
+    const std::filesystem::path src = dir / "pkg-src.dmg";
+    {
+      std::ofstream out(src, std::ios::binary);
+      out << "payload";
+    }
+    const std::filesystem::path dst = dir / "chosen" / "DevCard-1.2.3.dmg";
+    std::filesystem::create_directories(dst.parent_path());
+    std::string move_error;
+    CHECK(relocate_update_package(src, dst, &move_error));
+    CHECK(move_error.empty());
+    CHECK(!std::filesystem::exists(src));
+    CHECK(std::filesystem::exists(dst));
+    CHECK(std::filesystem::file_size(dst) == 7u);
+
+    const std::filesystem::path src2 = dir / "pkg-src2.dmg";
+    {
+      std::ofstream out(src2, std::ios::binary);
+      out << "keep";
+    }
+    const std::filesystem::path unwritable = dir / "no-such-dir" / "x.dmg";
+    std::string err;
+    CHECK(!relocate_update_package(src2, unwritable, &err));
+    CHECK(!err.empty());
+    CHECK(std::filesystem::exists(src2));
+    CHECK(!std::filesystem::exists(dir / "no-such-dir" / "x.dmg.part"));
+  }
+
   UpdatePackageSpec spec;
   spec.version = "1.2.3";
   spec.file_name = "../DevCard-1.2.3.zip";

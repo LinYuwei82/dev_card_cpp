@@ -410,6 +410,8 @@ const StatusTable& error_status_table() {
       {"must_change_password", 403},
       {"bad_request", 400},
       {"bad_version", 400},
+      // 更新包落点必须是绝对路径：用户选了相对路径属于请求错误。
+      {"invalid_path", 400},
       {"invalid_device", 400},
       {"invalid_user", 400},
       {"weak_password", 400},
@@ -761,6 +763,7 @@ const std::vector<std::string>& route_error_codes() {
       "backup_failed",    "io_error",         "db_error",
       "db_exec",          "db_unexpected_row", "password_hash",
       "xlsx_write_failed", "bad_version",
+      "invalid_path",
       "bad_request",
   };
   return kCodes;
@@ -1061,6 +1064,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       if (compare_version(spec.version, version) <= 0) {
                         throw AppError("no_update", "没有可用的新版本");
                       }
+                      // 用户在壳层 NSSavePanel 里选的完整落点（可选）。给了就先下到
+                      // updates/ 校验，再整体挪到该路径，避免命令行出现非 ASCII 参数。
+                      std::filesystem::path save_path;
+                      const std::string save_path_text =
+                          body.value("save_path", "");
+                      if (!save_path_text.empty()) {
+                        save_path = path_from_utf8(save_path_text);
+                        if (!save_path.is_absolute()) {
+                          throw AppError("invalid_path",
+                                         "保存位置必须是绝对路径");
+                        }
+                      }
 
                       const std::filesystem::path updates_dir =
                           state.data_dir / "updates";
@@ -1084,9 +1099,23 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         download->code.clear();
                         download->error.clear();
                       }
-                      std::thread([download, updates_dir, spec]() {
-                        const UpdateDownloadOutcome outcome =
+                      std::thread([download, updates_dir, spec, save_path]() {
+                        UpdateDownloadOutcome outcome =
                             download_update_package(updates_dir, spec);
+                        // 校验通过后再搬到用户选的位置；搬失败就整体失败、不留残件，
+                        // 状态落到 failed 而不是卡在 running。
+                        if (outcome.ok && !save_path.empty()) {
+                          std::string move_error;
+                          if (!relocate_update_package(
+                                  path_from_utf8(outcome.path), save_path,
+                                  &move_error)) {
+                            outcome.ok = false;
+                            outcome.error_code = "save_failed";
+                            outcome.error = move_error;
+                          } else {
+                            outcome.path = path_to_utf8(save_path);
+                          }
+                        }
                         std::lock_guard<std::mutex> lock(download->mutex);
                         download->part_path.clear();
                         if (outcome.ok) {

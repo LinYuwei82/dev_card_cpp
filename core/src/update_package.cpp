@@ -438,4 +438,45 @@ void cleanup_update_partials(const std::filesystem::path& updates_dir) {
   }
 }
 
+bool relocate_update_package(const std::filesystem::path& source,
+                             const std::filesystem::path& target,
+                             std::string* error) {
+  std::error_code ec;
+  if (source.empty() || target.empty()) {
+    if (error) *error = "更新包保存失败：路径为空";
+    return false;
+  }
+  if (!std::filesystem::exists(source, ec)) {
+    if (error) *error = "更新包保存失败：源文件不存在";
+    return false;
+  }
+  ec.clear();
+  std::filesystem::rename(source, target, ec);
+  if (!ec) return true;
+
+  // 跨卷或目标已存在的特殊情形：先写到目标旁的 .part，再原子改名，最后删源。
+  std::filesystem::path staging = target;
+  staging += ".part";
+  std::error_code ignored;
+  std::filesystem::remove(staging, ignored);
+  ec.clear();
+  std::filesystem::copy_file(source, staging,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
+  if (ec) {
+    std::filesystem::remove(staging, ignored);
+    if (error) *error = "更新包保存失败：" + ec.message();
+    return false;
+  }
+  ec.clear();
+  std::filesystem::rename(staging, target, ec);
+  if (ec) {
+    std::filesystem::remove(staging, ignored);
+    if (error) *error = "更新包保存失败：" + ec.message();
+    return false;
+  }
+  std::filesystem::remove(source, ignored);
+  return true;
+}
+
 }  // namespace devcard

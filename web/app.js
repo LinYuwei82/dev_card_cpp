@@ -685,25 +685,67 @@
     closeUpdateModal();
   });
 
-  el.updateDownloadPackage.addEventListener('click', function () {
+  // 壳内走 NSSavePanel 先问落点：取消就什么都不发、不改状态；选好再让服务端
+  // 直接落到该路径（大文件不转 base64，服务端先下到 updates/ 校验再整体搬过去）。
+  function pickUpdateSavePath(filename) {
+    return new Promise(function (resolve) {
+      var bridge = window.webkit && window.webkit.messageHandlers &&
+                   window.webkit.messageHandlers.devcard;
+      if (!bridge) {
+        resolve(null);
+        return;
+      }
+      window.__devcardPathPicked = function (result) {
+        window.__devcardPathPicked = null;
+        resolve(result && result.status === 'ok' && result.path ? result.path : null);
+      };
+      bridge.postMessage({
+        action: 'pickSavePath',
+        filename: filename,
+        title: '保存更新包'
+      });
+    });
+  }
+
+  function startUpdateDownload(savePath) {
     var asset = state.updateAsset;
-    if (!asset || !asset.sha256 || !asset.size || state.updateDownloading) return;
     state.updateDownloading = true;
     el.updateDownloadPackage.disabled = true;
     setUpdateProgress('正在准备下载…');
-    api('POST', '/api/update/download', {
+    var payload = {
       version: state.updateAssetVersion,
       file_name: asset.name,
       url: asset.url,
       sha256: asset.sha256,
       size: asset.size
-    }).then(function () {
+    };
+    if (savePath) payload.save_path = savePath;
+    api('POST', '/api/update/download', payload).then(function () {
       pollUpdateDownload();
     }).catch(function (error) {
       state.updateDownloading = false;
       el.updateDownloadPackage.disabled = false;
       setUpdateProgress('下载未开始：' + error.message +
         '（可用下载页手动更新）', true);
+    });
+  }
+
+  el.updateDownloadPackage.addEventListener('click', function () {
+    var asset = state.updateAsset;
+    if (!asset || !asset.sha256 || !asset.size || state.updateDownloading) return;
+    var bridge = window.webkit && window.webkit.messageHandlers &&
+                 window.webkit.messageHandlers.devcard;
+    if (!window.__devcardShell || !bridge) {
+      startUpdateDownload('');
+      return;
+    }
+    // 默认名用清单里的资产名（已含版本号与平台）；缺失时按版本号补一个 dmg 名。
+    var has_ext = /\.[A-Za-z0-9]+$/.test(asset.name || '');
+    var filename = has_ext ? asset.name
+                           : 'DevCard-' + state.updateAssetVersion + '.dmg';
+    pickUpdateSavePath(filename).then(function (path) {
+      if (!path) return;  // 取消：安静退出，不落文件、不改任何状态
+      startUpdateDownload(path);
     });
   });
 
@@ -1363,24 +1405,78 @@
       });
   });
 
-  el.exportBtn.addEventListener('click', function () {
-    el.exportBtn.disabled = true;
-    fetch('/api/devices/export')
+  // 导出/模板统一出口：内容先由页面取好（带会话），落到哪里由用户决定。
+  // 壳内交给壳层弹 NSSavePanel（原子写入，取消不落文件）；浏览器里退回原本的下载。
+  function bytesToBase64(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var chunks = [];
+    var step = 0x8000;
+    for (var i = 0; i < bytes.length; i += step) {
+      chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + step)));
+    }
+    return btoa(chunks.join(''));
+  }
+
+  function shellSaveFile(filename, blob, title) {
+    return blob.arrayBuffer().then(function (buffer) {
+      return new Promise(function (resolve) {
+        window.__devcardSaveResult = function (result) {
+          window.__devcardSaveResult = null;
+          resolve(result || { status: 'error', message: '没有拿到保存结果' });
+        };
+        window.webkit.messageHandlers.devcard.postMessage({
+          action: 'saveFile',
+          filename: filename,
+          title: title,
+          contentBase64: bytesToBase64(buffer)
+        });
+      });
+    });
+  }
+
+  function downloadInBrowser(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function saveXlsx(options) {
+    var bridge = window.webkit && window.webkit.messageHandlers &&
+                 window.webkit.messageHandlers.devcard;
+    return fetch(options.url)
       .then(function (response) {
-        if (!response.ok) throw new Error('导出失败（' + response.status + '）');
+        if (!response.ok) throw new Error(options.fail + '（' + response.status + '）');
         return response.blob();
       })
       .then(function (blob) {
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement('a');
-        link.href = url;
-        link.download = '设备台账.xlsx';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        toast('已导出 设备台账.xlsx');
-      })
+        if (!window.__devcardShell || !bridge) {
+          downloadInBrowser(blob, options.filename);
+          toast(options.okText);
+          return null;
+        }
+        return shellSaveFile(options.filename, blob, options.title).then(function (result) {
+          if (result.status === 'cancel') return null;   // 取消：安静退出，不提示不落文件
+          if (result.status !== 'ok') throw new Error(result.message || '写入文件失败');
+          toast(options.okText + '：' + result.path);
+          return null;
+        });
+      });
+  }
+
+  el.exportBtn.addEventListener('click', function () {
+    el.exportBtn.disabled = true;
+    saveXlsx({
+      url: '/api/devices/export',
+      filename: '设备台账.xlsx',
+      title: '导出设备台账',
+      fail: '导出失败',
+      okText: '已导出 设备台账.xlsx'
+    })
       .catch(function (error) {
         toast(error.message, 'error');
       })
@@ -1391,22 +1487,13 @@
 
   el.templateBtn.addEventListener('click', function () {
     el.templateBtn.disabled = true;
-    fetch('/api/devices/template')
-      .then(function (response) {
-        if (!response.ok) throw new Error('下载模板失败（' + response.status + '）');
-        return response.blob();
-      })
-      .then(function (blob) {
-        var url = URL.createObjectURL(blob);
-        var link = document.createElement('a');
-        link.href = url;
-        link.download = '设备导入模板.xlsx';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        toast('已下载 设备导入模板.xlsx，可直接上传（空模板导入 0 行）');
-      })
+    saveXlsx({
+      url: '/api/devices/template',
+      filename: '设备导入模板.xlsx',
+      title: '保存设备导入模板',
+      fail: '下载模板失败',
+      okText: '已下载 设备导入模板.xlsx，可直接上传（空模板导入 0 行）'
+    })
       .catch(function (error) {
         toast(error.message, 'error');
       })

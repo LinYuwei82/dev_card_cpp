@@ -41,9 +41,96 @@ NSPrintInfo* a4_print_info() {
 API_AVAILABLE(macos(11.0))
 @interface DownloadHandler : NSObject <WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
 @property(nonatomic, copy) void (^onDidFinish)(void);
+// 文件选择面板挂在窗口上（sheet），没有窗口时退回应用级模态。
+@property(nonatomic, assign) NSWindow* window;
 @end
 
 @implementation DownloadHandler
+
+// JS 的 alert/confirm 只有实现这几个回调才会真的弹出；不实现时 WebKit 直接
+// 当作用户取消（confirm 返回 false、alert 什么都不显示），删除账号 / 恢复备份
+// 就会变成「点了没反应」。统一挂成窗口 sheet，modal 结束再回报结果。
+- (void)presentPanelAlert:(NSAlert*)alert
+               completion:(void (^)(NSModalResponse))completion {
+  if (self.window != nil) {
+    [alert beginSheetModalForWindow:self.window completionHandler:completion];
+  } else {
+    completion([alert runModal]);
+  }
+}
+
+// 确认按钮按调用点语义命名：页面里的 confirm 文案已写明动作，这里只做识别，
+// 认不出时退回「确定」。取消永远是默认按钮，回车不会误执行破坏性操作。
+static NSString* DevCardConfirmActionTitle(NSString* message) {
+  if ([message rangeOfString:@"删除"].location != NSNotFound) return @"删除";
+  if ([message rangeOfString:@"覆盖"].location != NSNotFound) return @"覆盖";
+  if ([message rangeOfString:@"恢复"].location != NSNotFound) return @"恢复";
+  return @"确定";
+}
+
+- (void)webView:(WKWebView*)webView
+    runJavaScriptAlertPanelWithMessage:(NSString*)message
+                      initiatedByFrame:(WKFrameInfo*)frame
+                     completionHandler:(void (^)(void))completionHandler
+    API_AVAILABLE(macos(10.12)) {
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"设备管理卡";
+  alert.informativeText = message.length > 0 ? message : @"";
+  [alert addButtonWithTitle:@"好"];
+  [self presentPanelAlert:alert
+               completion:^(NSModalResponse response) { completionHandler(); }];
+}
+
+- (void)webView:(WKWebView*)webView
+    runJavaScriptConfirmPanelWithMessage:(NSString*)message
+                        initiatedByFrame:(WKFrameInfo*)frame
+                       completionHandler:(void (^)(BOOL))completionHandler
+    API_AVAILABLE(macos(10.12)) {
+  NSString* action = DevCardConfirmActionTitle(message);
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"确认操作";
+  alert.informativeText = message.length > 0 ? message : @"";
+  [alert addButtonWithTitle:@"取消"];
+  [alert addButtonWithTitle:action];
+  [self presentPanelAlert:alert completion:^(NSModalResponse response) {
+    completionHandler(response == NSAlertSecondButtonReturn);
+  }];
+}
+
+// 导入用的文件选择：WKWebView 不实现这个方法时，点 <input type=file> 完全无反应
+// （既不弹面板也不报错）。面板由壳层出，选中后把 URL 交回 WebKit，页面照常收到
+// change 事件再上传给服务端；取消则回 nil，页面什么也不做。
+- (void)webView:(WKWebView*)webView
+    runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
+              initiatedByFrame:(WKFrameInfo*)frame
+             completionHandler:(void (^)(NSArray<NSURL*>* _Nullable))completionHandler
+    API_AVAILABLE(macos(10.12)) {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.title = @"选择要导入的设备台账";
+  panel.message = @"仅支持 .xlsx（导入模板由「下载模板」生成）";
+  panel.prompt = @"导入";
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = NO;
+  panel.allowsOtherFileTypes = NO;
+  // 服务端只解析 xlsx（xlsx::read），放 csv 进来只会选完再报错。
+  UTType* xlsx = [UTType typeWithFilenameExtension:@"xlsx"];
+  if (xlsx != nil) panel.allowedContentTypes = @[ xlsx ];
+
+  void (^done)(NSModalResponse) = ^(NSModalResponse result) {
+    NSURL* url = (result == NSModalResponseOK) ? panel.URL : nil;
+    if (url != nil && url.path.length > 0) {
+      completionHandler(@[ url ]);
+    } else {
+      completionHandler(nil);
+    }
+  };
+  if (self.window != nil) {
+    [panel beginSheetModalForWindow:self.window completionHandler:done];
+  } else {
+    done([panel runModal]);
+  }
+}
 
 - (void)webView:(WKWebView*)webView
     decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
@@ -113,6 +200,13 @@ API_AVAILABLE(macos(11.0))
     [self exportPdfNamed:body[@"filename"]];
   } else if ([action isEqualToString:@"print"]) {
     [self printCards];
+  } else if ([action isEqualToString:@"saveFile"]) {
+    [self saveFileNamed:body[@"filename"]
+                  title:body[@"title"]
+                 base64:body[@"contentBase64"]];
+  } else if ([action isEqualToString:@"pickSavePath"]) {
+    // 只让用户选落点，不下发字节：更新包由服务端按这个路径落盘（大文件不转 base64）。
+    [self pickSavePathNamed:body[@"filename"] title:body[@"title"]];
   } else if ([action isEqualToString:@"openDataDir"]) {
     NSString* path = body[@"path"];
     if ([path isKindOfClass:[NSString class]] && path.length > 0) {
@@ -135,8 +229,119 @@ API_AVAILABLE(macos(11.0))
   }
 }
 
-- (void)exportPdfNamed:(NSString*)suggestedName {
-  NSString* name = suggestedName.length > 0 ? suggestedName : @"设备管理卡.pdf";
+// 页面导出 xlsx（设备台账 / 导入模板）统一走这里：内容由页面取好（带会话），
+// 壳层只负责「问路径 + 原子写入」。取消时不写任何字节，也不弹提示，
+// 只把 cancel 回给页面用于恢复按钮状态——与小兔进销存的导出桥同一口径。
+- (void)saveFileNamed:(NSString*)name
+                title:(NSString*)title
+               base64:(NSString*)base64 {
+  NSData* data = base64.length > 0
+                     ? [[NSData alloc] initWithBase64EncodedString:base64 options:0]
+                     : nil;
+  if (data.length == 0) {
+    [self finishSave:@"error" path:nil message:@"导出内容为空"];
+    return;
+  }
+  NSString* filename = name.length > 0 ? name : @"设备台账.xlsx";
+  NSSavePanel* panel = [NSSavePanel savePanel];
+  panel.title = title.length > 0 ? title : @"保存文件";
+  panel.nameFieldStringValue = filename;
+  panel.canCreateDirectories = YES;
+  NSString* ext = filename.pathExtension.lowercaseString;
+  if (ext.length > 0) {
+    UTType* type = [UTType typeWithFilenameExtension:ext];
+    if (type != nil) panel.allowedContentTypes = @[ type ];
+  }
+
+  void (^done)(NSModalResponse) = ^(NSModalResponse result) {
+    if (result != NSModalResponseOK || panel.URL == nil) {
+      [self finishSave:@"cancel" path:nil message:nil];
+      return;
+    }
+    NSURL* url = panel.URL;
+    NSError* error = nil;
+    if (![data writeToURL:url options:NSDataWritingAtomic error:&error]) {
+      [self finishSave:@"error"
+                  path:url.path
+               message:error.localizedDescription ?: @"无法写入目标文件"];
+      return;
+    }
+    [self finishSave:@"ok" path:url.path message:nil];
+  };
+  if (self.window != nil) {
+    [panel beginSheetModalForWindow:self.window completionHandler:done];
+  } else {
+    done([panel runModal]);
+  }
+}
+
+- (void)pickSavePathNamed:(NSString*)name title:(NSString*)title {
+  NSSavePanel* panel = [NSSavePanel savePanel];
+  panel.title = title.length > 0 ? title : @"保存文件";
+  panel.nameFieldStringValue =
+      name.length > 0 ? name : @"DevCard-update";
+  panel.canCreateDirectories = YES;
+  // 默认落在用户的下载目录（符合大多数人的预期）；没有下载目录就退到文稿，
+  // 绝不默认写进应用自己的数据目录或临时目录。
+  NSString* dir = NSSearchPathForDirectoriesInDomains(
+      NSDownloadsDirectory, NSUserDomainMask, YES).firstObject;
+  if (dir.length == 0 ||
+      ![[NSFileManager defaultManager] fileExistsAtPath:dir]) {
+    dir = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  }
+  if (dir.length > 0) {
+    panel.directoryURL = [NSURL fileURLWithPath:dir isDirectory:YES];
+  }
+  NSString* ext = panel.nameFieldStringValue.pathExtension.lowercaseString;
+  if (ext.length > 0) {
+    UTType* type = [UTType typeWithFilenameExtension:ext];
+    if (type != nil) panel.allowedContentTypes = @[ type ];
+  }
+  void (^done)(NSModalResponse) = ^(NSModalResponse result) {
+    if (result != NSModalResponseOK || panel.URL == nil) {
+      [self finishPath:@"cancel" path:nil];
+      return;
+    }
+    [self finishPath:@"ok" path:panel.URL.path];
+  };
+  if (self.window != nil) {
+    [panel beginSheetModalForWindow:self.window completionHandler:done];
+  } else {
+    done([panel runModal]);
+  }
+}
+
+- (void)finishPath:(NSString*)status path:(NSString*)path {
+  NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+  payload[@"status"] = status ?: @"cancel";
+  if (path.length > 0) payload[@"path"] = path;
+  NSData* data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+  NSString* json = data != nil
+                       ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+                       : @"{}";
+  NSString* js = [NSString
+      stringWithFormat:@"window.__devcardPathPicked && window.__devcardPathPicked(%@);",
+                       json];
+  [self.webView evaluateJavaScript:js completionHandler:nil];
+}
+
+- (void)finishSave:(NSString*)status path:(NSString*)path message:(NSString*)message {
+  NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+  payload[@"status"] = status ?: @"error";
+  if (path.length > 0) payload[@"path"] = path;
+  if (message.length > 0) payload[@"message"] = message;
+  NSData* data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+  NSString* json = data != nil
+                       ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+                       : @"{}";
+  NSString* js = [NSString
+      stringWithFormat:@"window.__devcardSaveResult && window.__devcardSaveResult(%@);",
+                       json];
+  [self.webView evaluateJavaScript:js completionHandler:nil];
+}
+
+- (void)exportPdfNamed:(NSString*)suggestedName {  NSString* name = suggestedName.length > 0 ? suggestedName : @"设备管理卡.pdf";
   // 先把页面切成 1:1、无工具栏的导出布局，再逐张 A4 截取。
   [self.webView
       evaluateJavaScript:@"window.__devcardExportLayout ? window.__devcardExportLayout() : null"
@@ -682,7 +887,7 @@ int main(int argc, const char* argv[]) {
     app_item.submenu = app_menu;
     NSApp.mainMenu = menu;
 
-    NSRect frame = NSMakeRect(0, 0, 1080, 720);
+    NSRect frame = NSMakeRect(0, 0, 1280, 840);
     NSWindow* window =
         [[NSWindow alloc] initWithContentRect:frame
                                     styleMask:(NSWindowStyleMaskTitled |
@@ -692,6 +897,9 @@ int main(int argc, const char* argv[]) {
                                       backing:NSBackingStoreBuffered
                                         defer:NO];
     window.title = @"设备管理卡";
+    // 与小兔进销存同口径：窗口外框最小 960×600（不用 contentMinSize），
+    // 保证 980 断点可触发、又不至于窄到内容挤成一列。
+    [window setMinSize:NSMakeSize(960, 600)];
     [window center];
 
     // 自检要的是「一次真实请求」，而正式节流是 24 小时：自检模式只清掉
@@ -722,6 +930,7 @@ int main(int argc, const char* argv[]) {
     WKWebView* web = [[WKWebView alloc] initWithFrame:frame configuration:config];
     web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     DownloadHandler* download_handler = [[DownloadHandler alloc] init];
+    download_handler.window = window;
     web.navigationDelegate = download_handler;
     web.UIDelegate = download_handler;
     window.contentView = web;
