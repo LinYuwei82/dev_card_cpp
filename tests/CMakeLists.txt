@@ -26,3 +26,13 @@ target_compile_definitions(devcard_embed_web_tests PRIVATE
     DEVCARD_CMAKE_COMMAND="${CMAKE_COMMAND}"
     DEVCARD_EMBED_SCRIPT="${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake")
 add_test(NAME devcard_embed_web_tests COMMAND devcard_embed_web_tests)
+
+# §10.7 性能基准与 M7 并发压测：手动入口，不注册 ctest（耗时且数字随机器变）。
+# 退出码语义：0 达标 / 1 未达标 / 3 环境不具备。
+add_executable(devcard_bench_core ${CMAKE_SOURCE_DIR}/tools/perf/bench_core.cpp)
+target_link_libraries(devcard_bench_core PRIVATE devcard_core)
+
+add_executable(devcard_bench_http ${CMAKE_SOURCE_DIR}/tools/perf/load_http.cpp)
+target_link_libraries(devcard_bench_http PRIVATE devcard_server)
+target_compile_definitions(devcard_bench_http PRIVATE
+    DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts")
