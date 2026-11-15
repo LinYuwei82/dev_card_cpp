@@ -52,7 +52,7 @@ magick png/icon-16.png png/icon-24.png png/icon-32.png png/icon-48.png \
 magick -background none icon.svg -define icon:auto-resize=256,128,64,48,32,24,16 icon.ico
 ```
 
-接入：qmake/CMake 把 `.ico` 写进 `RC_ICONS` / `version.rc`，Inno Setup 的 `SetupIconFile` 与快捷方式 `IconFilename` 复用同一文件。
+接入：CMake 把 `.ico` 写进 Windows 版本资源（`cmake/version.rc.in` 生成的 `version.rc`），Inno Setup 的 `SetupIconFile` 与快捷方式 `IconFilename` 复用同一文件。
 
 ## 小尺寸检查清单
 
@@ -62,4 +62,4 @@ magick -background none icon.svg -define icon:auto-resize=256,128,64,48,32,24,16
 - [ ] 深色任务栏与浅色桌面各看一次；
 - [ ] 与四页样张并排，颜色属于同一套（深青 + 暖白 + 铜）。
 
-> 图标与卡片上的公司 Logo（`resources/icons/logo.jpg`）是两件事：前者是产品标识，后者是甲方标识，不合并、不互相替代。
+> 图标与卡片上的公司 Logo 是两件事：前者是产品标识，后者是甲方标识——由管理员在运行期通过「打印设置」上传，存于数据目录 `assets/`（不进程序包、不进仓库）；两者不合并、不互相替代。
