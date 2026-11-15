@@ -1630,9 +1630,10 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                           rate_limit_check(state, request.remote_addr,
                                            actor.user_name);
                       if (limited.locked) throw_rate_limited(response, limited);
+                      std::string target;
                       try {
                         const json body = parse_body(request.body);
-                        std::string target = body.value("user_name", "");
+                        target = body.value("user_name", "");
                         if (target.empty()) target = actor.user_name;
                         const std::string new_password = body.value("new_password", "");
                         if (new_password.empty()) {
@@ -1671,8 +1672,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         drop_sessions_for(state, target, keep);
                         set_json(response, json{{"ok", true}, {"user_name", target}});
                       } catch (const AppError&) {
-                        rate_limit_record_failure(state, request.remote_addr,
-                                                  actor.user_name);
+                        // 只有冲着操作者自己来的失败才计数：管理员重置别人的密码失败
+                        // （比如用户名打错）不该把管理员自己锁在门外。
+                        if (target.empty() || target == actor.user_name) {
+                          rate_limit_record_failure(state, request.remote_addr,
+                                                    actor.user_name);
+                        }
                         throw;
                       }
                       rate_limit_clear(state, request.remote_addr, actor.user_name);
