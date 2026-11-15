@@ -84,19 +84,6 @@ const std::string kNewlineToken = " \"\\n\" ";
 //     走 shell 等于把引号与编码交给别人的解析器，路径里有空格、单引号、换行就变形。
 //   两侧共用同一套语义：输出重定向到临时文件，进程结束再整块读回来；
 //   退出码单独拿，所以「进程失败」与「输出内容不对」是两条可区分的判据。
-#ifdef _WIN32
-std::wstring widen_utf8(const std::string& text) {
-  if (text.empty()) return std::wstring();
-  const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(),
-                                       static_cast<int>(text.size()), nullptr, 0);
-  if (size <= 0) return std::wstring();
-  std::wstring wide(static_cast<size_t>(size), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                      wide.data(), size);
-  return wide;
-}
-#endif
-
 // 夹具目录与日志共用的唯一后缀：进程号 + 进程内自增。
 // 原先是 `std::rand()`（未播种）：同机并行的两个测试进程拿到同一串数，
 // 目录与日志会互相覆盖——读到别人的输出，判据就假绿或假红。

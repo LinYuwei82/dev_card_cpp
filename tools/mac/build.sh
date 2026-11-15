@@ -12,8 +12,8 @@
 #   3 环境不具备（非 macOS、架构不认识、缺 cmake/ninja/clang/Xcode CLT、cmake 版本太旧）
 #
 # 与既有脚本的调用关系（不复制实现）：
-#   configure 走 CMakePresets.json 的 macos-release preset（Ninja + DEVCARD_NEW_ARCH=ON
-#   + CMAKE_BUILD_TYPE=Release），产物落在仓库下 build-new/，与 tools/package/make_dmg.sh
+#   configure 走 CMakePresets.json 的 macos-release preset（Ninja +
+#   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build-new/，与 tools/package/make_dmg.sh
 #   的默认 BUILD_DIR（<repo>/build-new）是同一目录。本脚本只负责「编出来」；DMG 打包
 #   （依赖自检、ad-hoc 签名、hdiutil）仍由 make_dmg.sh 负责，构建完直接复用产物：
 #       tools/package/make_dmg.sh --skip-build
@@ -154,9 +154,9 @@ say ""
 say "前置检查：通过（Darwin / ${ARCH} / cmake ${CMAKE_VERSION} / ninja / 版本 ${VERSION}）"
 
 # ---------- 2. configure ----------
-# DEVCARD_NEW_ARCH=ON 由 preset 携带，不再在命令行重复一遍，避免两处真值。
+# preset 只带 Ninja 与 Release，不在命令行重复参数；版本由 VERSION.txt 读取。
 say ""
-say "configure：cmake --preset ${PRESET}（build-new，Release，DEVCARD_NEW_ARCH=ON）"
+say "configure：cmake --preset ${PRESET}（build-new，Release）"
 if ! (cd "$REPO_ROOT" && cmake --preset "$PRESET"); then
   fail "configure 未通过（preset ${PRESET}）。看上面的 CMake 输出；常见是缺 Xcode CLT 或字体子集文件。"
 fi
