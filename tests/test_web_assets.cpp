@@ -662,14 +662,9 @@ int check_status_map() {
     }
   }
 
-  // 源码扫描：server.cpp 里直接 throw 的码，要么在清单里，要么是启动期错误。
-  std::ifstream in(DEVCARD_SERVER_SOURCE, std::ios::binary);
-  if (!in) {
-    std::cerr << "[失败] 读不到 " << DEVCARD_SERVER_SOURCE << std::endl;
-    return failures + 1;
-  }
-  const std::string source{std::istreambuf_iterator<char>(in),
-                           std::istreambuf_iterator<char>()};
+  // 源码扫描：server/src 与 core/src 里直接 throw 的码，要么在清单里，要么是启动期错误。
+  // 扫整个目录而不是单个 server.cpp：config.cpp / platform_paths.cpp / apply_update.cpp
+  // 也会抛 AppError，只扫一个文件等于给它们开免责通道。
   // 扫描 AppError(<空白>"code" ...)：括号与引号之间允许换行。
   // 之前固定匹配 AppError(" 会漏掉换行写法（port_in_use、install_unsupported、
   // bad_version、bad_company_name 都这么写），等于给这类码开了后门。
@@ -699,30 +694,39 @@ int check_status_map() {
     }
   };
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
-  const std::set<std::string> startup_only = {"web_assets", "data_dir",
-                                              "font_missing", "font_corrupt",
-                                              "port_in_use", "instance_in_use",
-                                              "app_started_marker"};
-  scan_codes(source, "server.cpp", startup_only);
-
-  // core/src 也要扫：路由调用的 service / dao 层抛的码同样会经路由渲染成 HTTP。
-  // 只豁免启动期码（建库、打开库、迁移），它们在开始服务之前就结束了。
+  // bad_config / bad_listen / data_dir_unwritable 来自配置解析与数据目录选择，
+  // 同样发生在开始服务之前。
+  const std::set<std::string> startup_only = {
+      "web_assets",       "data_dir",          "font_missing",
+      "font_corrupt",     "port_in_use",       "instance_in_use",
+      "app_started_marker", "bad_config",      "bad_listen",
+      "data_dir_unwritable"};
+  // core/src 只豁免启动期码（建库、打开库、迁移），它们在开始服务之前就结束了。
   const std::set<std::string> core_startup_only = {
       "db_dir", "db_open", "schema_newer", "migration_checksum"};
+
   std::error_code dir_error;
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(
-           DEVCARD_CORE_SOURCE_DIR, dir_error)) {
-    if (!entry.is_regular_file() || entry.path().extension() != ".cpp") continue;
-    std::ifstream core_in(entry.path(), std::ios::binary);
-    if (!core_in) {
-      std::cerr << "[失败] 读不到 " << entry.path().string() << std::endl;
-      ++failures;
-      continue;
+  const auto scan_dir = [&](const std::string& root,
+                            const std::set<std::string>& exempt) {
+    dir_error.clear();
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             root, dir_error)) {
+      if (!entry.is_regular_file() || entry.path().extension() != ".cpp") {
+        continue;
+      }
+      std::ifstream file_in(entry.path(), std::ios::binary);
+      if (!file_in) {
+        std::cerr << "[失败] 读不到 " << entry.path().string() << std::endl;
+        ++failures;
+        continue;
+      }
+      const std::string text{std::istreambuf_iterator<char>(file_in),
+                             std::istreambuf_iterator<char>()};
+      scan_codes(text, entry.path().filename().string(), exempt);
     }
-    const std::string text{std::istreambuf_iterator<char>(core_in),
-                           std::istreambuf_iterator<char>()};
-    scan_codes(text, entry.path().filename().string(), core_startup_only);
-  }
+  };
+  scan_dir(DEVCARD_SERVER_SOURCE_DIR, startup_only);
+  scan_dir(DEVCARD_CORE_SOURCE_DIR, core_startup_only);
 
   if (failures == 0) {
     std::cout << "状态码自检通过：路由错误码 " << codes.size()

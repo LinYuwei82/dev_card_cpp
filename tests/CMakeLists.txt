@@ -8,7 +8,7 @@ add_executable(devcard_web_assets_tests test_web_assets.cpp)
 target_link_libraries(devcard_web_assets_tests PRIVATE devcard_server)
 target_compile_definitions(devcard_web_assets_tests PRIVATE
     DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts"
-    DEVCARD_SERVER_SOURCE="${CMAKE_SOURCE_DIR}/server/src/server.cpp"
+    DEVCARD_SERVER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/server/src"
     DEVCARD_CORE_SOURCE_DIR="${CMAKE_SOURCE_DIR}/core/src")
 add_test(NAME devcard_web_assets_tests COMMAND devcard_web_assets_tests)
 
