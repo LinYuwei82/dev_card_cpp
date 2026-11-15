@@ -78,7 +78,6 @@ dev_card_cpp/
 ├── web/                      # 原生 JS/CSS 前端（构建期内嵌进二进制）；web/fonts/ 放子集 TTF（随包进 Resources）
 ├── tools/fonts/              # 字体子集脚本（make_subset.sh：变量字体定字重 + pyftsubset，可 --verify）
 ├── tests/                    # ctest 4 条（core / web_assets / no_opposans / embed_web）+ fixture
-├── packaging/mac/            # 仅保留 DevCard.icns（新线尚未接入图标）
 ├── tools/package/            # macOS DMG 脚本（make_dmg.sh）
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
 ├── docs/                     # 技术文档、样张
@@ -106,7 +105,7 @@ dev_card_cpp/
 以下均为**现状**，不是目标形态：
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版未公证，首次打开需手动放行。
-- 应用图标尚未接入：`packaging/mac/DevCard.icns` 保留，但新架构代码与打包脚本均未引用（来源未确认，暂未删除）。
+- 应用图标尚未接入：App 使用系统默认图标。
 - Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点、`web\*` 挂了 `skipifsourcedoesntexist` 导致「带 web 资源」形态未验，补齐前不写「安装包已完整验收」。绿色版打包脚本尚未在新架构上实现。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - 无 CI、无许可证声明。（`tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
