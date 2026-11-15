@@ -43,7 +43,8 @@ DEVCARD_UPDATE_FIXTURE=$PWD/../tests/fixtures/release_latest_20261114T143647Z.js
   传输路径换成本地回放，响应体一个字节没改。
 - **不是**：真机联网验证。它证明的是「解析与提示链路对真实数据成立」，不单独证明网络可达。
   网络可达由另一条证据负责：`DEVCARD_SELFTEST_UPDATE=live` 真打 GitHub 接口，结果与快照
-  落在 `docs/assets/m6_update_live.json`、`docs/assets/m6_update_live.png`。
+  曾落在 `docs/assets/m6_update_live.json`、`docs/assets/m6_update_live.png`（这两个文件已删除，
+  仅存于 Git 历史，删除提交 `35cf20f`）。
 
 ## 联网 `Load failed` 的根因（2026-11-14）
 
