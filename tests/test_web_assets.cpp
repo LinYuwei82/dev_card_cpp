@@ -674,7 +674,7 @@ int check_status_map() {
   // 启动阶段（还没开始服务）抛的码不经过路由，不需要 HTTP 状态。
   const std::set<std::string> startup_only = {"web_assets", "data_dir",
                                               "font_missing", "font_corrupt",
-                                              "port_in_use", "instance_in_use",
+                                              "instance_in_use",
                                               "app_started_marker"};
   std::size_t pos = 0;
   while ((pos = source.find(needle, pos)) != std::string::npos) {
@@ -689,6 +689,40 @@ int check_status_map() {
                 << "\"：请同时加进 route_error_codes() 与 status_for 的表"
                 << std::endl;
       ++failures;
+    }
+  }
+
+  // core/src 也要扫：路由调用的 service / dao 层抛的码同样会经路由渲染成 HTTP。
+  // 只豁免启动期码（建库、打开库、迁移），它们在开始服务之前就结束了。
+  const std::set<std::string> core_startup_only = {
+      "db_dir", "db_open", "schema_newer", "migration_checksum"};
+  std::error_code dir_error;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(
+           DEVCARD_CORE_SOURCE_DIR, dir_error)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".cpp") continue;
+    std::ifstream core_in(entry.path(), std::ios::binary);
+    if (!core_in) {
+      std::cerr << "[失败] 读不到 " << entry.path().string() << std::endl;
+      ++failures;
+      continue;
+    }
+    const std::string text{std::istreambuf_iterator<char>(core_in),
+                           std::istreambuf_iterator<char>()};
+    std::size_t at = 0;
+    while ((at = text.find(needle, at)) != std::string::npos) {
+      at += needle.size();
+      const std::size_t stop = text.find('"', at);
+      if (stop == std::string::npos) break;
+      const std::string code = text.substr(at, stop - at);
+      at = stop;
+      if (core_startup_only.count(code)) continue;
+      if (!listed.count(code)) {
+        std::cerr << "[失败] " << entry.path().filename().string()
+                  << " 抛出了未登记的错误码 \"" << code
+                  << "\"：请同时加进 route_error_codes() 与 status_for 的表"
+                  << std::endl;
+        ++failures;
+      }
     }
   }
 

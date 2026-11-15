@@ -443,6 +443,11 @@ const StatusTable& error_status_table() {
       {"backup_failed", 500},
       {"io_error", 500},
       {"db_error", 500},
+      // core/src 里会抛、且能经路由走到的码：不登记就会落到 500 兜底，
+      // 前端拿到的 error 字段会从具体码变成空，排障时看不出是哪一层。
+      {"db_exec", 500},
+      {"db_unexpected_row", 500},
+      {"password_hash", 500},
       {"xlsx_write_failed", 500},
   };
   return kStatus;
@@ -754,6 +759,7 @@ const std::vector<std::string>& route_error_codes() {
       "update_package_missing", "install_package_invalid",
       "install_busy",     "install_failed",   "install_unsupported",
       "backup_failed",    "io_error",         "db_error",
+      "db_exec",          "db_unexpected_row", "password_hash",
       "xlsx_write_failed", "bad_version",
       "bad_request",
   };
