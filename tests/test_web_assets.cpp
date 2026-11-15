@@ -643,7 +643,7 @@ int check_status_map() {
     int status;
   };
   const Expected expected[] = {
-      // 6f425fd 七项 + 下载路由
+      // 重写历史前的提交（已不可引用）的七项 + 下载路由
       {"endpoint_not_allowed", 400}, {"no_update", 400},
       {"update_disabled", 403},      {"update_busy", 409},
       {"manifest_invalid", 502},     {"download_failed", 502},
