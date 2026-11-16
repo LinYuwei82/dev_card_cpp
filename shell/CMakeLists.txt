@@ -21,14 +21,21 @@ set_target_properties(DevCard PROPERTIES
     INSTALL_RPATH "@loader_path/../Frameworks"
 )
 
-# Sparkle.framework + Updater.app + XPCServices 都要 embed 进 Bundle；
-# 保留 symlinks（Versions/Current 指向 B），codesign deep 会一起签。
-# PROJECT_SOURCE_DIR 是根 CMakeLists.txt 设的，shell/ 被 add_subdirectory 时仍然可用。
-set(DEVCARD_BUNDLE_FRAMEWORK
+# Sparkle.framework 必须保留 symlink（Versions/Current -> B，顶层 Sparkle/Headers
+# 等均是指向 Versions/Current 的链接）。CMake 的 MACOSX_PACKAGE_LOCATION 拷贝会
+# 解引用 symlink，使 framework 结构非法、codesign 报 "bundle format is ambiguous"，
+# 因此改用 ditto（保留符号链接与资源分叉）在 POST_BUILD 阶段嵌入。
+set(DEVCARD_SPARKLE_FRAMEWORK
     "${PROJECT_SOURCE_DIR}/3rdparty/sparkle/Sparkle.framework")
-target_sources(DevCard PRIVATE "${DEVCARD_BUNDLE_FRAMEWORK}")
-set_source_files_properties("${DEVCARD_BUNDLE_FRAMEWORK}" PROPERTIES
-    MACOSX_PACKAGE_LOCATION "Frameworks")
+add_custom_command(
+    TARGET DevCard POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework"
+    COMMAND ditto "${DEVCARD_SPARKLE_FRAMEWORK}"
+            "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework"
+    COMMENT "嵌入 Sparkle.framework（ditto，保留 symlink）"
+    VERBATIM
+)
 
 # Sparkle 2：EdDSA 公钥固定（除非换密钥对），feed URL 发布时才填。
 # 开发期两键空时 Info.plist 里不写 Sparkle 键，Sparkle 不启动。

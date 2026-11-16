@@ -43,12 +43,23 @@ def main():
         d.append(ET.Element("string"))
         d[-1].text = v
 
-    plist("CFBundleDevelopmentRegion", "English")
+    # 开发区域设为中文：Sparkle 等第三方框架按 app 的首选本地化挑选资源，
+    # app 只声明 English 时会回退 Base（英文界面）。
+    plist("CFBundleDevelopmentRegion", "zh_CN")
     plist("CFBundleExecutable", args.name)
     plist("CFBundleGetInfoString", "")
     plist("CFBundleIconFile", "DevCard.icns")
     plist("CFBundleIdentifier", args.bundle_id)
     plist("CFBundleInfoDictionaryVersion", "6.0")
+
+    # 声明支持的语言，否则 Bundle.preferredLocalizations 只会返回 English，
+    # Sparkle.framework 自带的 zh_CN.lproj 不会被选中（更新对话框显示英文）。
+    d.append(ET.Element("key"))
+    d[-1].text = "CFBundleLocalizations"
+    _langs = ET.SubElement(d, "array")
+    for _lang in ("zh_CN", "en"):
+        ET.SubElement(_langs, "string").text = _lang
+
     plist("CFBundleLongVersionString", "")
     plist("CFBundleName", args.name)
     plist("CFBundlePackageType", "APPL")

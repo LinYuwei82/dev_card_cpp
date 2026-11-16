@@ -190,6 +190,44 @@ API_AVAILABLE(macos(11.0))
 @property(nonatomic, retain) PDFDocument* printDocument;
 // Sparkle 自更新控制器：Info.plist 里 SUFeedURL + SUPublicEDKey 都有值才初始化。
 @property(nonatomic, strong) SPUStandardUpdaterController* updaterController;
+// Sparkle 代理：把 feed 拉取/版本比较/安装结果写到 NSLog，便于端到端实测取证。
+@property(nonatomic, strong) id<SPUUpdaterDelegate> updaterDelegate;
+@end
+
+// Sparkle 更新事件日志代理。只做观测，不改变 Sparkle 的默认行为。
+@interface DevCardUpdaterDelegate : NSObject <SPUUpdaterDelegate>
+@end
+
+@implementation DevCardUpdaterDelegate
+
+- (void)updater:(SPUUpdater*)updater didFindValidUpdate:(SUAppcastItem*)item {
+  NSLog(@"[sparkle] didFindValidUpdate version=%@ display=%@ url=%@",
+        item.versionString, item.displayVersionString, item.fileURL);
+}
+
+- (void)updaterDidNotFindUpdate:(SPUUpdater*)updater error:(NSError*)error {
+  NSLog(@"[sparkle] didNotFindUpdate error=%@", error.localizedDescription);
+}
+
+- (void)updater:(SPUUpdater*)updater
+    didFailToFetchAppcastWithError:(NSError*)error {
+  NSLog(@"[sparkle] didFailToFetchAppcast error=%@ code=%ld",
+        error.localizedDescription, (long)error.code);
+}
+
+- (void)updater:(SPUUpdater*)updater didDownloadUpdate:(SUAppcastItem*)item {
+  NSLog(@"[sparkle] didDownloadUpdate version=%@", item.versionString);
+}
+
+- (void)updater:(SPUUpdater*)updater willInstallUpdate:(SUAppcastItem*)item {
+  NSLog(@"[sparkle] willInstallUpdate version=%@", item.versionString);
+}
+
+- (void)updater:(SPUUpdater*)updater didAbortWithError:(NSError*)error {
+  NSLog(@"[sparkle] didAbortWithError error=%@ code=%ld",
+        error.localizedDescription, (long)error.code);
+}
+
 @end
 
 @implementation PrintBridge
@@ -956,14 +994,31 @@ int main(int argc, const char* argv[]) {
       NSString* feed_url = bundle_info[@"SUFeedURL"];
       NSString* pub_key = bundle_info[@"SUPublicEDKey"];
       if (feed_url.length > 0 && pub_key.length > 0) {
+        DevCardUpdaterDelegate* del = [[DevCardUpdaterDelegate alloc] init];
+        bridge.updaterDelegate = del;
         bridge.updaterController =
             [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
-                                                            updaterDelegate:nil
+                                                            updaterDelegate:del
                                                         userDriverDelegate:nil];
+        NSLog(@"[sparkle] 初始化完成 feed=%@", feed_url);
       } else {
         NSLog(@"[sparkle] 跳过初始化：SUFeedURL=%@ SUPublicEDKey=%@",
               feed_url.length > 0 ? feed_url : @"(空)",
               pub_key.length > 0 ? @"(已填)" : @"(空)");
+      }
+
+      // 自动化验证：DEVCARD_SPARKLE_SELFTEST=1 时启动后自动发起一次更新检查，
+      // 便于脚本核对 feed 拉取、EdDSA 校验与版本比较。
+      if (bridge.updaterController &&
+          [NSProcessInfo.processInfo.environment[@"DEVCARD_SPARKLE_SELFTEST"]
+              isEqualToString:@"1"]) {
+        NSLog(@"[sparkle] SELFTEST 准备触发 checkForUpdates");
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+              NSLog(@"[sparkle] SELFTEST 触发 checkForUpdates");
+              [bridge.updaterController checkForUpdates:nil];
+            });
       }
     }
 
