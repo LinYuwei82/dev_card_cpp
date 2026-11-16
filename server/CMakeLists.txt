@@ -13,6 +13,16 @@ add_custom_command(
             "${WEB_DIR}/app.js"
             "${WEB_DIR}/logo.jpg"
             "${WEB_DIR}/favicon.ico"
+            "${WEB_DIR}/favicon-16x16.png"
+            "${WEB_DIR}/favicon-32x32.png"
+            "${WEB_DIR}/favicon-48x48.png"
+            "${WEB_DIR}/apple-touch-icon.png"
+            "${WEB_DIR}/icons/pwa-192x192.png"
+            "${WEB_DIR}/icons/pwa-512x512.png"
+            "${WEB_DIR}/icons/pwa-maskable-192x192.png"
+            "${WEB_DIR}/icons/pwa-maskable-512x512.png"
+            "${WEB_DIR}/og-image.png"
+            "${WEB_DIR}/site.webmanifest"
             "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
     VERBATIM
 )

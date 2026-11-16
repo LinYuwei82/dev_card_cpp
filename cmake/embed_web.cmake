@@ -162,6 +162,34 @@ emit_hex_literal(logo_hex "${INPUT_DIR}/logo.jpg")
 # 浏览器 favicon 同理：打包后没有磁盘 web/ 目录，必须随二进制内嵌。
 emit_hex_literal(favicon_hex "${INPUT_DIR}/favicon.ico")
 
+# 图标 / manifest 一类的静态资源：url|相对路径|MIME。
+set(STATIC_ASSETS
+  "/favicon-16x16.png|favicon-16x16.png|image/png"
+  "/favicon-32x32.png|favicon-32x32.png|image/png"
+  "/favicon-48x48.png|favicon-48x48.png|image/png"
+  "/apple-touch-icon.png|apple-touch-icon.png|image/png"
+  "/icons/pwa-192x192.png|icons/pwa-192x192.png|image/png"
+  "/icons/pwa-512x512.png|icons/pwa-512x512.png|image/png"
+  "/icons/pwa-maskable-192x192.png|icons/pwa-maskable-192x192.png|image/png"
+  "/icons/pwa-maskable-512x512.png|icons/pwa-maskable-512x512.png|image/png"
+  "/og-image.png|og-image.png|image/png"
+  "/site.webmanifest|site.webmanifest|application/manifest+json")
+
+set(static_decls "")
+set(static_rows "")
+set(static_index 0)
+foreach(spec IN LISTS STATIC_ASSETS)
+  string(REPLACE "|" ";" fields "${spec}")
+  list(GET fields 0 url)
+  list(GET fields 1 rel)
+  list(GET fields 2 mime)
+  set(var "static_${static_index}")
+  emit_hex_literal(${var} "${INPUT_DIR}/${rel}")
+  string(APPEND static_decls "const char* kStatic${static_index}Hex =\n${${var}};\n")
+  string(APPEND static_rows "  {\"${url}\", \"${mime}\", kStatic${static_index}Hex},\n")
+  math(EXPR static_index "${static_index} + 1")
+endforeach()
+
 foreach(name index.html styles.css app.js logo.jpg favicon.ico)
   file(SHA256 "${INPUT_DIR}/${name}" hash)
   file(SIZE "${INPUT_DIR}/${name}" size)
@@ -219,6 +247,23 @@ file(WRITE "${OUTPUT}"
 "    case EmbeddedAsset::kFaviconIco: return embedded_favicon_ico_sha256();\n"
 "  }\n"
 "  return \"\";\n"
+"}\n"
+"\n"
+"}  // namespace devcard\n")
+
+file(APPEND "${OUTPUT}"
+"namespace devcard {\n"
+"namespace {\n"
+"${static_decls}"
+"}  // namespace\n"
+"\n"
+"const StaticAsset kStaticAssets[] = {\n"
+"${static_rows}"
+"};\n"
+"\n"
+"const StaticAsset* embedded_static_assets() { return kStaticAssets; }\n"
+"std::size_t embedded_static_asset_count() {\n"
+"  return sizeof(kStaticAssets) / sizeof(kStaticAssets[0]);\n"
 "}\n"
 "\n"
 "}  // namespace devcard\n")

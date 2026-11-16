@@ -401,6 +401,18 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "app.js", "js\n");
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
   write_bytes(input / "favicon.ico", std::string("\x00\x00\x01\x00", 4));
+  // 生成器还会无条件读取这些图标 / manifest（见 embed_web.cmake 的 STATIC_ASSETS）。
+  write_bytes(input / "favicon-16x16.png", "png16");
+  write_bytes(input / "favicon-32x32.png", "png32");
+  write_bytes(input / "favicon-48x48.png", "png48");
+  write_bytes(input / "apple-touch-icon.png", "touch");
+  fs::create_directories(input / "icons");
+  write_bytes(input / "icons" / "pwa-192x192.png", "pwa192");
+  write_bytes(input / "icons" / "pwa-512x512.png", "pwa512");
+  write_bytes(input / "icons" / "pwa-maskable-192x192.png", "mask192");
+  write_bytes(input / "icons" / "pwa-maskable-512x512.png", "mask512");
+  write_bytes(input / "og-image.png", "og");
+  write_bytes(input / "site.webmanifest", "{}\n");
   const fs::path output = root / "out.cpp";
 
   // argv 在 Windows 上走宽命令行，参数按 UTF-8 给出，由 run_process 逐参数

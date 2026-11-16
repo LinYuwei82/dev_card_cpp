@@ -37,6 +37,17 @@ const char* embedded_favicon_ico_sha256();
 std::size_t embedded_source_size(EmbeddedAsset asset);
 const char* embedded_source_sha256(EmbeddedAsset asset);
 
+// Web 图标 / manifest 等静态资源（favicon PNG、PWA 图标、Touch 图标、OG 图、manifest）。
+// 与上面几个固定资源不同，这些只按路径取用，不参与自检哈希。
+struct StaticAsset {
+  const char* path;
+  const char* mime;
+  const char* hex;
+};
+
+const StaticAsset* embedded_static_assets();
+std::size_t embedded_static_asset_count();
+
 // 逐个核对内嵌内容与源文件是否一致；全部一致返回空串，否则返回第一条差异说明。
 std::string embedded_assets_error();
 

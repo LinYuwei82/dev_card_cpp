@@ -2082,6 +2082,34 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      response.body = std::move(bytes);
                    });
 
+  // Web 图标与 manifest：开发态（--web-dir）优先读磁盘，打包后回落到内嵌。
+  // 这些路径都在 /api/ 之外，认证中间件不介入。
+  for (std::size_t i = 0; i < embedded_static_asset_count(); ++i) {
+    // 按值捕获指针：asset 是循环内的引用变量，捕获它的引用会在下一轮迭代后悬垂。
+    const StaticAsset* asset = &embedded_static_assets()[i];
+    state.server.Get(
+        asset->path,
+        [&state, asset](const httplib::Request&, httplib::Response& response) {
+          std::string bytes;
+          if (!state.web_dir.empty()) {
+            // asset->path 以 / 开头，直接拼会覆盖 web_dir，必须先去掉。
+            bytes = read_file_bytes(state.web_dir / (asset->path + 1));
+          }
+          if (bytes.empty()) bytes = hex_to_bytes(asset->hex);
+          if (bytes.empty()) {
+            set_json(response,
+                     json{{"error", "not_found"},
+                          {"message", std::string(asset->path) + " 不存在"}},
+                     404);
+            return;
+          }
+          response.status = 200;
+          response.set_header("Content-Type", asset->mime);
+          response.set_header("Cache-Control", "public, max-age=86400");
+          response.body = std::move(bytes);
+        });
+  }
+
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
   state.server.set_pre_routing_handler(
       [&state](const httplib::Request& request, httplib::Response& response) {
