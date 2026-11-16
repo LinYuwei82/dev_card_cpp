@@ -58,6 +58,7 @@ resources/tb_device.xlsx
 # ===== 本地打包产物 =====
 /dist/
 /build-new/
+/build-win/
 
 # ===== 构建时下载的第三方 SDK（脚本取，不入库）=====
 /third_party/webview2/
