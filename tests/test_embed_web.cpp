@@ -385,10 +385,11 @@ struct RunResult {
   std::string output;
   Literal index;
   std::vector<unsigned char> logo;
+  std::vector<unsigned char> favicon;
   std::size_t artifact_bytes = 0;  // 生成的 .cpp 大小；>0 才说明外部进程真的跑过
 };
 
-// 造一个输入目录并跑生成器。other_files 用来补齐生成器要求的另外三个文件。
+// 造一个输入目录并跑生成器。其余文件用来补齐生成器要求的输入。
 RunResult generate(const std::string& name, const std::string& index_html) {
   RunResult result;
   const fs::path root = fs::temp_directory_path() /
@@ -399,6 +400,7 @@ RunResult generate(const std::string& name, const std::string& index_html) {
   write_bytes(input / "styles.css", "css\n");
   write_bytes(input / "app.js", "js\n");
   write_bytes(input / "logo.jpg", std::string("\xFF\xD8\xFF", 3));
+  write_bytes(input / "favicon.ico", std::string("\x00\x00\x01\x00", 4));
   const fs::path output = root / "out.cpp";
 
   // argv 在 Windows 上走宽命令行，参数按 UTF-8 给出，由 run_process 逐参数
@@ -421,6 +423,7 @@ RunResult generate(const std::string& name, const std::string& index_html) {
     if (!generated.empty()) {
       result.index = parse_array(generated, "kIndexHtml");
       result.logo = parse_hex_array(generated, "kLogoJpgHex");
+      result.favicon = parse_hex_array(generated, "kFaviconIcoHex");
     }
   }
   fs::remove_all(root);
@@ -441,6 +444,8 @@ void check_case(const std::string& name, const std::string& payload,
   // 二进制资产：抽 hex → 解码 → 与输入逐字节比。
   const std::vector<unsigned char> expected_logo = {0xFF, 0xD8, 0xFF};
   CHECK(got.logo == expected_logo);
+  const std::vector<unsigned char> expected_favicon = {0x00, 0x00, 0x01, 0x00};
+  CHECK(got.favicon == expected_favicon);
   CHECK(got.index.bytes == payload.size());
   CHECK(got.index.blocks == expected_blocks);
   CHECK(got.index.max_block <= 4096);

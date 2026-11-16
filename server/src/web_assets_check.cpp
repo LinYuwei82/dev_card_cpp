@@ -30,6 +30,39 @@ std::string check_one(const Asset& item) {
   return {};
 }
 
+// 二进制资产（logo.jpg / favicon.ico）内嵌的是十六进制串：
+// 先核对长度，再转回字节比哈希，避免「大小一样、内容不同」被放过去。
+std::string check_hex_asset(const char* name, const char* hex_text,
+                            EmbeddedAsset asset) {
+  const std::string_view hex(hex_text);
+  if (hex.size() % 2 != 0 ||
+      hex.size() / 2 != embedded_source_size(asset)) {
+    return std::string(name) + "：内嵌十六进制长度 " +
+           std::to_string(hex.size()) + " 与源文件字节数 " +
+           std::to_string(embedded_source_size(asset)) + " 不符";
+  }
+  auto nibble = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  std::string bytes;
+  bytes.reserve(hex.size() / 2);
+  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+    const int high = nibble(hex[i]);
+    const int low = nibble(hex[i + 1]);
+    if (high < 0 || low < 0) {
+      return std::string(name) + "：内嵌十六进制串含非法字符";
+    }
+    bytes.push_back(static_cast<char>((high << 4) | low));
+  }
+  if (sha256_hex(bytes) != embedded_source_sha256(asset)) {
+    return std::string(name) + "：内嵌内容 SHA256 与源文件不一致";
+  }
+  return {};
+}
+
 }  // namespace
 
 std::string embedded_assets_error() {
@@ -43,31 +76,12 @@ std::string embedded_assets_error() {
     if (!error.empty()) return error;
   }
 
-  // logo.jpg 内嵌的是十六进制串，要先转回字节再比哈希。
-  const std::string_view hex(embedded_logo_jpg_hex());
-  if (hex.size() % 2 != 0 || hex.size() / 2 != embedded_source_size(EmbeddedAsset::kLogoJpg)) {
-    return "logo.jpg：内嵌十六进制长度 " + std::to_string(hex.size()) +
-           " 与源文件字节数 " +
-           std::to_string(embedded_source_size(EmbeddedAsset::kLogoJpg)) + " 不符";
-  }
-  auto nibble = [](char c) -> int {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-  };
-  std::string bytes;
-  bytes.reserve(hex.size() / 2);
-  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
-    const int high = nibble(hex[i]);
-    const int low = nibble(hex[i + 1]);
-    if (high < 0 || low < 0) return "logo.jpg：内嵌十六进制串含非法字符";
-    bytes.push_back(static_cast<char>((high << 4) | low));
-  }
-  if (sha256_hex(bytes) != embedded_logo_jpg_sha256()) {
-    return "logo.jpg：内嵌内容 SHA256 与源文件不一致";
-  }
-  return {};
+  std::string error =
+      check_hex_asset("logo.jpg", embedded_logo_jpg_hex(),
+                      EmbeddedAsset::kLogoJpg);
+  if (!error.empty()) return error;
+  return check_hex_asset("favicon.ico", embedded_favicon_ico_hex(),
+                         EmbeddedAsset::kFaviconIco);
 }
 
 }  // namespace devcard

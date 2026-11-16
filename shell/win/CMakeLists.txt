@@ -20,8 +20,12 @@ if(NOT EXISTS "${DEVCARD_WEBVIEW2_INCLUDE}/WebView2.h"
         "无网环境：给该脚本传 -LocalPackage <nupkg 路径>。")
 endif()
 
-add_executable(DevCard WIN32 main.cpp app.manifest)
+add_executable(DevCard WIN32 main.cpp app.manifest app.rc)
 devcard_add_version_rc(DevCard)
+
+# app.rc 里的 IDI_ICON1 引用同目录的 DevCard.ico；把当前目录加入资源编译
+# 搜索路径，避免从别的构建目录调用时找不到图标。
+target_include_directories(DevCard PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_compile_definitions(DevCard PRIVATE UNICODE _UNICODE)
 target_include_directories(DevCard PRIVATE

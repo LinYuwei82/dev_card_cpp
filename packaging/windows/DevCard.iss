@@ -43,6 +43,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\DevCard.exe
+; 安装器图标与 exe 内嵌图标同源：tools/package/make_icons.sh 生成 shell/win/DevCard.ico。
+SetupIconFile=..\..\shell\win\DevCard.ico
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"

@@ -159,8 +159,10 @@ emit_text_literal(app_js "${INPUT_DIR}/app.js")
 # 打印卡片的 logo 以十六进制内嵌，运行时由壳/服务端转回二进制提供 /logo.jpg，
 # 打包时不必在可执行文件旁另放资源目录。
 emit_hex_literal(logo_hex "${INPUT_DIR}/logo.jpg")
+# 浏览器 favicon 同理：打包后没有磁盘 web/ 目录，必须随二进制内嵌。
+emit_hex_literal(favicon_hex "${INPUT_DIR}/favicon.ico")
 
-foreach(name index.html styles.css app.js logo.jpg)
+foreach(name index.html styles.css app.js logo.jpg favicon.ico)
   file(SHA256 "${INPUT_DIR}/${name}" hash)
   file(SIZE "${INPUT_DIR}/${name}" size)
   set(hash_${name} "${hash}")
@@ -177,12 +179,14 @@ file(WRITE "${OUTPUT}"
 "const char kStylesCss[] =\n${styles_css};\n"
 "const char kAppJs[] =\n${app_js};\n"
 "const char kLogoJpgHex[] =\n${logo_hex};\n"
+"const char kFaviconIcoHex[] =\n${favicon_hex};\n"
 "}  // namespace\n"
 "\n"
 "const char* embedded_index_html() { return kIndexHtml; }\n"
 "const char* embedded_styles_css() { return kStylesCss; }\n"
 "const char* embedded_app_js() { return kAppJs; }\n"
 "const char* embedded_logo_jpg_hex() { return kLogoJpgHex; }\n"
+"const char* embedded_favicon_ico_hex() { return kFaviconIcoHex; }\n"
 "\n"
 "std::size_t embedded_index_html_size() { return sizeof(kIndexHtml) - 1; }\n"
 "std::size_t embedded_styles_css_size() { return sizeof(kStylesCss) - 1; }\n"
@@ -193,6 +197,7 @@ file(WRITE "${OUTPUT}"
 "const char* embedded_styles_css_sha256() { return \"${hash_styles.css}\"; }\n"
 "const char* embedded_app_js_sha256() { return \"${hash_app.js}\"; }\n"
 "const char* embedded_logo_jpg_sha256() { return \"${hash_logo.jpg}\"; }\n"
+"const char* embedded_favicon_ico_sha256() { return \"${hash_favicon.ico}\"; }\n"
 "\n"
 "std::size_t embedded_source_size(EmbeddedAsset asset) {\n"
 "  switch (asset) {\n"
@@ -200,6 +205,7 @@ file(WRITE "${OUTPUT}"
 "    case EmbeddedAsset::kStylesCss: return ${size_styles.css};\n"
 "    case EmbeddedAsset::kAppJs: return ${size_app.js};\n"
 "    case EmbeddedAsset::kLogoJpg: return ${size_logo.jpg};\n"
+"    case EmbeddedAsset::kFaviconIco: return ${size_favicon.ico};\n"
 "  }\n"
 "  return 0;\n"
 "}\n"
@@ -210,6 +216,7 @@ file(WRITE "${OUTPUT}"
 "    case EmbeddedAsset::kStylesCss: return embedded_styles_css_sha256();\n"
 "    case EmbeddedAsset::kAppJs: return embedded_app_js_sha256();\n"
 "    case EmbeddedAsset::kLogoJpg: return embedded_logo_jpg_sha256();\n"
+"    case EmbeddedAsset::kFaviconIco: return embedded_favicon_ico_sha256();\n"
 "  }\n"
 "  return \"\";\n"
 "}\n"

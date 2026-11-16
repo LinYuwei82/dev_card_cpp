@@ -75,6 +75,7 @@
     prev: document.getElementById('prev'),
     next: document.getElementById('next'),
     add: document.getElementById('add'),
+    dedupeBtn: document.getElementById('dedupe-btn'),
     importBtn: document.getElementById('import-btn'),
     exportBtn: document.getElementById('export-btn'),
     templateBtn: document.getElementById('template-btn'),
@@ -812,6 +813,7 @@
     el.userChip.textContent =
       data.user.user_name + (data.user.role === 'admin' ? ' · 管理员' : ' · 用户');
     el.navUsers.hidden = data.user.role !== 'admin';
+    el.dedupeBtn.hidden = data.user.role !== 'admin';
     el.version.textContent = 'v' + data.version;
     el.health.textContent = '服务正常 · schema ' + data.schema_version;
     state.version = data.version || '';
@@ -1149,6 +1151,28 @@
 
   el.add.addEventListener('click', function () {
     openDrawer(null);
+  });
+
+  // 合并重复：三字段（名称 + 位置 + 控制范围）完全相同的记录，每组只保留最早一条。
+  // 不可撤销，模型与恢复备份一致，用浏览器原生确认框，不再新造一层弹窗。
+  el.dedupeBtn.addEventListener('click', function () {
+    if (!window.confirm(
+      '将删除名称、位置、控制范围完全相同的重复记录，每组只保留最早一条；' +
+      '保留行电话为空时，会从重复行里补齐。此操作不可撤销，建议先备份。确定继续？'
+    )) return;
+    el.dedupeBtn.disabled = true;
+    api('POST', '/api/devices/dedupe', { confirm: 'MERGE_DUPLICATES' })
+      .then(function (data) {
+        toast('已合并重复：删除 ' + data.removed + ' 条，剩余 ' + data.remaining + ' 条');
+        return loadOptions().then(load);
+      })
+      .catch(function (error) {
+        if (handleAuthFailure(error)) return;
+        toast(error.message, 'error');
+      })
+      .then(function () {
+        el.dedupeBtn.disabled = false;
+      });
   });
 
   el.importBtn.addEventListener('click', function () {

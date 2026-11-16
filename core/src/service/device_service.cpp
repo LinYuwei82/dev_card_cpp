@@ -260,6 +260,22 @@ DeviceOptions DeviceService::options() const {
   return {dao_.distinct_names(db_), dao_.distinct_locations(db_)};
 }
 
+DedupeReport DeviceService::dedupe(const AuditContext& audit) {
+  DedupeReport report;
+  db_.write([&](sqlite3* conn) {
+    report.removed = dao_.dedupe(conn, audit.actor);
+    if (audit.enabled()) {
+      // 删除是整批动作，只记一条汇总；逐行记会让审计里塞满同类条目。
+      AuditEntry entry = device_audit(
+          audit, "dedupe", 0,
+          "合并重复设备：删除 " + std::to_string(report.removed) + " 条");
+      record_audit(conn, entry);
+    }
+  });
+  report.remaining = dao_.count(db_, DeviceQuery{});
+  return report;
+}
+
 const std::vector<std::string>& DeviceService::expected_header() {
   static const std::vector<std::string> header = {"设备名称", "位置", "控制范围",
                                                   "维护电话"};

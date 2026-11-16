@@ -77,6 +77,7 @@ void print_usage() {
       << "  --allow-any            允许 --listen 0.0.0.0（默认拒绝）\n"
       << "  --data-dir PATH        数据目录（命令行 → 环境变量 → 配置文件 → 形态默认）\n"
       << "  --config PATH          配置文件（默认 exe 同目录 devcard-server.json）\n"
+      << "  --web-dir PATH         开发态：静态页直读该目录（改完刷新即生效，无需重新构建）\n"
       << "  --set-password USER    重置本机账号密码后退出（密码从标准输入读取）\n"
       << "  --backup               立即备份后退出\n"
       << "  --restore NAME         从 backups/ 下的备份恢复后退出\n"
@@ -113,6 +114,9 @@ int main(int argc, char** argv) {
   std::string apply_result;
   std::string apply_relaunch;
   std::vector<std::string> apply_relaunch_args;
+  // 开发态前端目录；相对路径按当前工作目录解析成绝对路径，
+  // 避免切换工作目录后同一个参数指向不同位置。
+  std::filesystem::path web_dir;
 
   try {
     for (int i = 1; i < argc; ++i) {
@@ -136,6 +140,8 @@ int main(int argc, char** argv) {
         cli.config = std::filesystem::path(next("--config"));
       } else if (arg == "--data-dir") {
         cli.data_dir = next("--data-dir");
+      } else if (arg == "--web-dir") {
+        web_dir = devcard::path_from_utf8(next("--web-dir"));
       } else if (arg == "--set-password") {
         set_password_user = next("--set-password");
       } else if (arg == "--restore") {
@@ -267,6 +273,10 @@ int main(int argc, char** argv) {
     options.port = config.port;
     options.network = server_mode;
     options.allowed_hosts = config.allowed_hosts;
+    if (!web_dir.empty()) {
+      if (web_dir.is_relative()) web_dir = std::filesystem::absolute(web_dir);
+      options.web_dir = web_dir;
+    }
     options.rate_limit.enabled = config.rate_limit_enabled;
     options.rate_limit.max_failures = config.rate_limit_max_failures;
     options.rate_limit.window_seconds = config.rate_limit_window_seconds;
@@ -287,7 +297,12 @@ int main(int argc, char** argv) {
               << config.data_dir_source << "）\n"
               << "安装形态: " << (devcard::is_installed_layout() ? "安装版" : "便携版")
               << "\n"
-              << "数据库:   " << devcard::path_to_utf8(config.data_dir / "devicedb.db") << "\n"
+              << "数据库:   " << devcard::path_to_utf8(config.data_dir / "devicedb.db") << "\n";
+    if (!web_dir.empty()) {
+      std::cout << "前端目录: " << devcard::path_to_utf8(web_dir)
+                << "（来源：--web-dir，开发态直读磁盘）\n";
+    }
+    std::cout
               << "监听地址: " << listen << ":" << server->port() << "（来源："
               << listen_source << "，端口来源：" << config.port_source << "）\n";
     std::cout << "登录限流: ";

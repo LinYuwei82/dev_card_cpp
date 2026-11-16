@@ -64,6 +64,18 @@ tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
 - 本机实测（1.2.0 + 图标，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,774,542 B（4.6M）**，SHA256 `0f026c69956781cd07d472c23e0af2b64054eee57b42820563ef243138c8d440`；App 层身份：可执行文件 `696116f4…edb868`、`Info.plist` `5dee3ad9…837d92`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
 
+### 2.2 Windows 打包（绿色版）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
+powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1 -SkipBuild
+```
+
+- 产物：`dist\DevCard-<版本>-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
+- 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
+- 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
+- 安装版仍用 Inno Setup 6 编译 `packaging/windows/DevCard.iss`。
+
 ---
 
 ## 3. 目录结构
@@ -105,10 +117,10 @@ dev_card_cpp/
 以下均为**现状**，不是目标形态：
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版未公证，首次打开需手动放行。
-- macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico` 与 web favicon 尚未接入。
-- Windows 安装器 `packaging/windows/DevCard.iss`（**在 Windows 线 `win/mac-build-scripts`，本分支不含 `packaging/` 目录**；每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已在 Windows 线编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点、`web\*` 挂了 `skipifsourcedoesntexist` 导致「带 web 资源」形态未验，补齐前不写「安装包已完整验收」。旧线绿色版打包脚本已随旧线删除，新架构的绿色版打包脚本尚未实现。
+- macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico`（`shell/win/DevCard.ico`）与 web favicon（`web/favicon.ico`）也已接入，三者由 `tools/package/make_icons.sh` 从同一份母版生成。
+- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/make_portable_win.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
-- 无 CI。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。（`tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
+- CI 已接 GitHub Actions（`.github/workflows/ci.yml`：Windows + macOS 构建并运行 4 条 `ctest`：core / web_assets / no_opposans / embed_web）。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
 **当前已知边界（照实写）**：

@@ -12,6 +12,7 @@ add_custom_command(
             "${WEB_DIR}/styles.css"
             "${WEB_DIR}/app.js"
             "${WEB_DIR}/logo.jpg"
+            "${WEB_DIR}/favicon.ico"
             "${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake"
     VERBATIM
 )

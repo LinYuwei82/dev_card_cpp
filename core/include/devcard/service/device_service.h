@@ -32,6 +32,12 @@ struct ImportReport {
   int truncated = 0;      // 有字段被截断的行
 };
 
+// 合并重复的结果：删除的行数与合并后剩余总数。
+struct DedupeReport {
+  std::int64_t removed = 0;
+  std::int64_t remaining = 0;
+};
+
 // 乐观锁冲突时的现场：库里最新一行 + 与提交值不同的字段名。
 struct ConflictSnapshot {
   Device current;
@@ -70,6 +76,9 @@ class DeviceService {
   Device force_update(std::int64_t id, Device device, const AuditContext& audit);
   void remove(std::int64_t id, std::int64_t version);
   void remove(std::int64_t id, std::int64_t version, const AuditContext& audit);
+  // 合并三字段重复：每组保留 id 最小的一行，电话为空时从重复行补齐。
+  // 与导入策略（D5：照插、只统计）不冲突——这是用户显式触发的一次性清理。
+  DedupeReport dedupe(const AuditContext& audit);
   DeviceOptions options() const;
 
   // 导入：表头必须与预期四列一致，否则整批拒绝（不允许错位）。

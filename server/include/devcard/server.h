@@ -39,6 +39,9 @@ struct ServerOptions {
   bool network = false;
   std::vector<std::string> allowed_hosts;
   RateLimitOptions rate_limit;
+  // 开发态前端目录：非空时不使用编译期内嵌资源，每次请求直读磁盘。
+  // 改页面/样式/脚本后刷新即可生效，不必重新 cmake --build。
+  std::filesystem::path web_dir;
 };
 
 class ServerHandle {

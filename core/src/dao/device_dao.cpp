@@ -195,6 +195,44 @@ bool DeviceDao::erase(sqlite3* conn, std::int64_t id,
 
 void DeviceDao::erase_all(sqlite3* conn) const { exec_sql(conn, "DELETE FROM device"); }
 
+std::int64_t DeviceDao::dedupe(sqlite3* conn,
+                               std::string_view updated_by) const {
+  const std::string actor(updated_by);
+
+  // 1) 补电话：只动每组 id 最小的那一行，且仅当它电话为空、组内还有非空电话。
+  //    电话是从重复行里「捡回来」的，不是覆盖：有值的那行才是原始数据。
+  {
+    Stmt stmt(conn,
+              "UPDATE device SET"
+              " phone=(SELECT d2.phone FROM device d2"
+              "        WHERE d2.dev_name=device.dev_name"
+              "          AND d2.location=device.location"
+              "          AND d2.control_range=device.control_range"
+              "          AND d2.phone<>'' ORDER BY d2.id LIMIT 1),"
+              " updated_at=?,"
+              " updated_by=CASE WHEN ?='' THEN updated_by ELSE ? END,"
+              " version=version+1"
+              " WHERE phone=''"
+              "   AND id IN (SELECT MIN(id) FROM device"
+              "              GROUP BY dev_name, location, control_range)"
+              "   AND EXISTS (SELECT 1 FROM device d2"
+              "               WHERE d2.dev_name=device.dev_name"
+              "                 AND d2.location=device.location"
+              "                 AND d2.control_range=device.control_range"
+              "                 AND d2.phone<>'')");
+    stmt.bind(1, now_text()).bind(2, actor).bind(3, actor);
+    stmt.run();
+  }
+
+  // 2) 删重复：每组只保留 id 最小的一行，其余删掉。
+  Stmt stmt(conn,
+            "DELETE FROM device WHERE id NOT IN"
+            " (SELECT MIN(id) FROM device"
+            "  GROUP BY dev_name, location, control_range)");
+  stmt.run();
+  return sqlite3_changes(conn);
+}
+
 bool DeviceDao::exists_triplet(sqlite3* conn, std::string_view name,
                                std::string_view location,
                                std::string_view control_range) const {

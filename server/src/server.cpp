@@ -87,6 +87,8 @@ struct ServerState {
   std::unique_ptr<InstanceGuard> instance_guard;
   std::filesystem::path data_dir;
   std::filesystem::path font_dir;
+  // 开发态前端目录（--web-dir）：非空时静态资源直读磁盘，跳过内嵌自检。
+  std::filesystem::path web_dir;
   std::map<std::string, std::string> fonts;
   FontCoverage coverage;
   std::string local_token;
@@ -374,15 +376,23 @@ int hex_digit(char c) {
   return 0;
 }
 
-const std::string& logo_jpeg() {  static const std::string bytes = [] {
-    const std::string hex = embedded_logo_jpg_hex();
-    std::string out;
-    out.reserve(hex.size() / 2);
-    for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
-      out.push_back(static_cast<char>((hex_digit(hex[i]) << 4) | hex_digit(hex[i + 1])));
-    }
-    return out;
-  }();
+std::string hex_to_bytes(std::string_view hex) {
+  std::string out;
+  out.reserve(hex.size() / 2);
+  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+    out.push_back(
+        static_cast<char>((hex_digit(hex[i]) << 4) | hex_digit(hex[i + 1])));
+  }
+  return out;
+}
+
+const std::string& logo_jpeg() {
+  static const std::string bytes = hex_to_bytes(embedded_logo_jpg_hex());
+  return bytes;
+}
+
+const std::string& favicon_ico() {
+  static const std::string bytes = hex_to_bytes(embedded_favicon_ico_hex());
   return bytes;
 }
 
@@ -808,14 +818,23 @@ bool ServerHandle::stop_requested() const {
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
   // 这里比对的是「直读 web/ 源文件」的字节数与 SHA256，不是生成出来的 .cpp。
-  const std::string asset_error = embedded_assets_error();
-  if (!asset_error.empty()) {
-    throw AppError("web_assets", "内嵌前端与源文件不一致：" + asset_error);
+  // --web-dir 开发态不用内嵌资源，自然不查；但仍要求目录里有 index.html，
+  // 免得服务起来了才发现首屏 404。
+  if (options.web_dir.empty()) {
+    const std::string asset_error = embedded_assets_error();
+    if (!asset_error.empty()) {
+      throw AppError("web_assets", "内嵌前端与源文件不一致：" + asset_error);
+    }
+  } else if (!std::filesystem::is_regular_file(options.web_dir / "index.html")) {
+    throw AppError("bad_config",
+                   "--web-dir 下找不到 index.html：" +
+                       path_to_utf8(options.web_dir));
   }
 
   auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
   ServerState& state = *handle->impl_;
   state.data_dir = options.data_dir;
+  state.web_dir = options.web_dir;
   state.network = options.network;
   state.allowed_hosts = options.allowed_hosts;
   state.rate_limit = options.rate_limit;
@@ -1619,6 +1638,25 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         }
                       });
 
+  // 合并重复：删除三字段完全相同的多余记录（每组保留最早一条）。
+  // 删除是管理员动作且不可撤销，因此要求显式确认串，避免误触。
+  state.server.Post("/api/devices/dedupe",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      const User actor = require_admin(state, request);
+                      const json body = parse_body(request.body);
+                      if (body.value("confirm", "") != "MERGE_DUPLICATES") {
+                        throw AppError(
+                            "bad_request",
+                            "合并重复需要确认：请求体带 "
+                            "{\"confirm\":\"MERGE_DUPLICATES\"}");
+                      }
+                      const DedupeReport report = state.devices->dedupe(
+                          AuditContext{actor.user_name, request.remote_addr});
+                      set_json(response, json{{"removed", report.removed},
+                                              {"remaining", report.remaining}});
+                    });
+
   state.server.Get("/api/users", [&state](const httplib::Request& request,
                                           httplib::Response& response) {
     require_admin(state, request);
@@ -1941,7 +1979,13 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   });
 
   state.server.Get("/", [&state](const httplib::Request&, httplib::Response& response) {
-    std::string html = embedded_index_html();
+    // 开发态（--web-dir）每次请求都重读磁盘，改完刷新即生效。
+    std::string html = state.web_dir.empty()
+                           ? std::string(embedded_index_html())
+                           : read_file_bytes(state.web_dir / "index.html");
+    if (html.empty()) {
+      throw AppError("not_found", "前端文件不存在：index.html");
+    }
     // 本地窗口模式注入一次性令牌供壳自动登录；网络模式绝不注入：
     // 否则任何能打开首页的人都能拿到本地自动登录令牌。
     if (!state.network) {
@@ -1952,11 +1996,19 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
     set_asset(response, html, "text/html; charset=utf-8");
   });
-  state.server.Get("/styles.css", [](const httplib::Request&, httplib::Response& response) {
-    set_asset(response, embedded_styles_css(), "text/css; charset=utf-8");
+  state.server.Get("/styles.css", [&state](const httplib::Request&,
+                                           httplib::Response& response) {
+    std::string css = state.web_dir.empty() ? std::string(embedded_styles_css())
+                                            : read_file_bytes(state.web_dir / "styles.css");
+    if (css.empty()) throw AppError("not_found", "前端文件不存在：styles.css");
+    set_asset(response, css, "text/css; charset=utf-8");
   });
-  state.server.Get("/app.js", [](const httplib::Request&, httplib::Response& response) {
-    set_asset(response, embedded_app_js(), "application/javascript; charset=utf-8");
+  state.server.Get("/app.js", [&state](const httplib::Request&,
+                                       httplib::Response& response) {
+    std::string js = state.web_dir.empty() ? std::string(embedded_app_js())
+                                           : read_file_bytes(state.web_dir / "app.js");
+    if (js.empty()) throw AppError("not_found", "前端文件不存在：app.js");
+    set_asset(response, js, "application/javascript; charset=utf-8");
   });
   // 子集字体：@font-face 从这里取，界面与打印共用同一份。
   // 只认白名单里的两个文件名，字体目录不整体开放成静态目录。
@@ -2008,6 +2060,27 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     response.set_header("Cache-Control", "public, max-age=86400");
     response.body = logo_jpeg();
   });
+  // 浏览器标签图标：开发态（--web-dir）优先读磁盘，打包后回落内嵌。
+  state.server.Get("/favicon.ico",
+                   [&state](const httplib::Request&,
+                            httplib::Response& response) {
+                     std::string bytes;
+                     if (!state.web_dir.empty()) {
+                       bytes = read_file_bytes(state.web_dir / "favicon.ico");
+                     }
+                     if (bytes.empty()) bytes = favicon_ico();
+                     if (bytes.empty()) {
+                       set_json(response,
+                                json{{"error", "not_found"},
+                                     {"message", "favicon.ico 不存在"}},
+                                404);
+                       return;
+                     }
+                     response.status = 200;
+                     response.set_header("Content-Type", "image/x-icon");
+                     response.set_header("Cache-Control", "no-store");
+                     response.body = std::move(bytes);
+                   });
 
   // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
   state.server.set_pre_routing_handler(

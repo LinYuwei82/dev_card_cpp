@@ -1,0 +1,6 @@
+// Windows 应用图标资源。
+// DevCard.ico 由 tools/package/make_icons.sh 从 docs/design/icon 母版生成，
+// 不手工维护；exe、安装器与开始菜单快捷方式共用这一份。
+#include <windows.h>
+
+IDI_ICON1 ICON "DevCard.ico"

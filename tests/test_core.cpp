@@ -879,6 +879,50 @@ void run_xlsx_reimport_case(const std::filesystem::path& dir) {
   CHECK(found_pump);
 }
 
+// 合并重复：三字段完全相同的记录每组只留最早一条；保留行电话为空时从重复行补齐，
+// 已有电话不覆盖；电话没变的行版本号不动，旧页面仍能正常编辑。
+void run_dedupe_case(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "devicedb.db";
+  devcard::Db db(file);
+  devcard::migrate(db);
+  devcard::DeviceService service(db);
+
+  devcard::xlsx::Sheet data;
+  data.name = "设备台账";
+  data.rows.push_back(devcard::DeviceService::expected_header());
+  data.rows.push_back({"1号水泵", "B1栋", "1-3层", ""});             // 保留行，电话为空
+  data.rows.push_back({"1号水泵", "B1栋", "1-3层", "13800000001"});  // 重复：补电话
+  data.rows.push_back({"排风机", "B1栋", "屋顶", "13800000002"});    // 保留行，已有电话
+  data.rows.push_back({"排风机", "B1栋", "屋顶", "13900000000"});    // 重复：不覆盖
+  data.rows.push_back({"消防泵", "A栋", "B1层", "13800000003"});     // 唯一：不动
+  const auto rows = devcard::xlsx::read(devcard::xlsx::write_workbook({data}));
+  CHECK(service.import_rows(rows).imported == 5);
+
+  const devcard::DedupeReport merged = service.dedupe(devcard::AuditContext{});
+  CHECK(merged.removed == 2);
+  CHECK(merged.remaining == 3);
+
+  devcard::DeviceDao dao;
+  const auto all = dao.list(db, devcard::DeviceQuery{});
+  CHECK(all.size() == 3);
+  for (const auto& item : all) {
+    if (item.dev_name == "1号水泵") {
+      CHECK(item.phone == "13800000001");  // 空电话从重复行补齐
+      CHECK(item.version == 2);            // 内容变了，版本必须前移
+    } else if (item.dev_name == "排风机") {
+      CHECK(item.phone == "13800000002");  // 不覆盖已有值
+      CHECK(item.version == 1);            // 内容没变，版本不动
+    } else {
+      CHECK(item.version == 1);
+    }
+  }
+
+  // 幂等：没有重复时一条都不删。
+  const devcard::DedupeReport again = service.dedupe(devcard::AuditContext{});
+  CHECK(again.removed == 0);
+  CHECK(again.remaining == 3);
+}
+
 int run_all_tests() {
   const std::filesystem::path file = temp_db();
   {
@@ -1251,6 +1295,15 @@ int run_all_tests() {
     // M2 硬验收②：同一文件连续导入两次，不覆盖、不合并、不跳过。
     const std::filesystem::path dir = temp_db().parent_path();
     run_xlsx_reimport_case(dir);
+    check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 合并重复：每组保留最早一条、补空电话、幂等。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_dedupe_case(dir);
     check_db_closed(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));

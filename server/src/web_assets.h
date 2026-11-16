@@ -10,6 +10,7 @@ enum class EmbeddedAsset {
   kStylesCss,
   kAppJs,
   kLogoJpg,
+  kFaviconIco,
 };
 
 const char* embedded_index_html();
@@ -18,6 +19,8 @@ const char* embedded_app_js();
 
 // 打印卡片 Logo，十六进制字符串（构建时由 web/logo.jpg 生成）。
 const char* embedded_logo_jpg_hex();
+// 浏览器 favicon，十六进制字符串（构建时由 web/favicon.ico 生成）。
+const char* embedded_favicon_ico_hex();
 
 // 由 cmake/embed_web.cmake 一并写入的期望值：直读 web/ 源文件得到的字节数与 SHA256。
 // 用途是抓 MSVC C2026 的「静默截断」——截断后页面仍能打开，只是内容少了几个字符。
@@ -29,6 +32,7 @@ const char* embedded_index_html_sha256();
 const char* embedded_styles_css_sha256();
 const char* embedded_app_js_sha256();
 const char* embedded_logo_jpg_sha256();
+const char* embedded_favicon_ico_sha256();
 
 std::size_t embedded_source_size(EmbeddedAsset asset);
 const char* embedded_source_sha256(EmbeddedAsset asset);

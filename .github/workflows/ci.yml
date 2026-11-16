@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows 壳依赖 WebView2 SDK（不入库），先按固定版本 + SHA256 取一次；
+      # 失败即失败，不降级跳过——否则「配置能过、壳编不了」会拖到发版才暴露。
+      - name: 取 WebView2 SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./shell/win/fetch-webview2.ps1
+
+      - name: 配置
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: 构建
+        run: cmake --build build --config Release --parallel
+
+      # 4 条：core / web_assets / no_opposans / embed_web。
+      # -C Release 对单配置生成器是空操作，对 VS 多配置生成器必填。
+      - name: 测试
+        run: ctest --test-dir build -C Release --output-on-failure
