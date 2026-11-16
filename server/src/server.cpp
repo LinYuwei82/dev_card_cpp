@@ -253,7 +253,7 @@ constexpr std::string_view kUpdateManifestName = "update.json";
 constexpr std::string_view kDefaultDownloadPage =
     "https://github.com/LinYuwei82/dev_card_cpp/releases";
 constexpr std::string_view kDefaultUpdateEndpoint =
-    "https://api.github.com/repos/LinYuwei82/dev_card_cpp/releases/latest";
+    "https://dl.xiaotu.online/devcard/update.json";
 constexpr long kDefaultUpdateIntervalHours = 24;
 
 bool parse_version(const std::string& text, std::vector<long>* parts) {

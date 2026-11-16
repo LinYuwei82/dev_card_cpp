@@ -177,6 +177,9 @@ bool is_trusted_update_url(std::string_view url) {
       "objects.githubusercontent.com",
       "release-assets.githubusercontent.com",
       "api.github.com",
+      // 自建 OSS 通道（macOS appcast 与 Windows 安装包同一个下载域）。
+      // 用固定域名而不是 *.aliyuncs.com：以后 OSS 迁回内地只改 DNS，白名单不动。
+      "dl.xiaotu.online",
   };
   for (const char* allowed : kHosts) {
     if (host == allowed) {

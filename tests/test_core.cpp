@@ -162,6 +162,11 @@ void run_update_package_case(const std::filesystem::path& dir) {
   CHECK(is_trusted_update_url(
       "https://github.com/LinYuwei82/dev_card_cpp/releases/download/v1/DevCard.dmg"));
   CHECK(is_trusted_update_url("https://objects.githubusercontent.com/pkg"));
+  // 自建 OSS 下载域：Windows 安装包与 macOS appcast 都从这里发。
+  CHECK(is_trusted_update_url(
+      "https://dl.xiaotu.online/devcard/DevCard-1.2.0-setup.exe"));
+  CHECK(!is_trusted_update_url("https://dl.xiaotu.online.evil.example/x"));
+  CHECK(!is_trusted_update_url("https://evil-dl.xiaotu.online/x"));
   CHECK(!is_trusted_update_url("http://github.com/x"));
   CHECK(!is_trusted_update_url("https://evil.example/x"));
   CHECK(!is_trusted_update_url("https://github.com.evil.example/x"));
