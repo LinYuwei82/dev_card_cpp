@@ -120,7 +120,7 @@ dev_card_cpp/
 - macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico`（`shell/win/DevCard.ico`）与 web favicon（`web/favicon.ico`）也已接入，三者由 `tools/package/make_icons.sh` 从同一份母版生成。
 - Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/make_portable_win.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
-- CI 已接 GitHub Actions（`.github/workflows/ci.yml`：Windows + macOS 构建并运行 4 条 `ctest`：core / web_assets / no_opposans / embed_web）。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
+- CI 已接 GitHub Actions（`.github/workflows/ci.yml`）：Windows job 取 WebView2 SDK 后构建、跑 4 条 `ctest`（core / web_assets / no_opposans / embed_web），并打绿色包上传 artifact；macOS job 构建并跑同一组测试。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
 **当前已知边界（照实写）**：

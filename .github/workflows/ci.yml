@@ -4,28 +4,59 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  windows-build:
+    name: Windows 构建
+    runs-on: windows-latest
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
 
-      # Windows 壳依赖 WebView2 SDK（不入库），先按固定版本 + SHA256 取一次；
+      # 桌面壳依赖 WebView2 SDK（不入库），先按固定版本 + SHA256 取一次；
       # 失败即失败，不降级跳过——否则「配置能过、壳编不了」会拖到发版才暴露。
       - name: 取 WebView2 SDK
-        if: runner.os == 'Windows'
         shell: pwsh
         run: ./shell/win/fetch-webview2.ps1
+
+      # 显式指定 x64：WebView2 SDK 的静态库只有 x64，不能让生成器自己挑。
+      - name: 配置
+        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: 构建
+        run: cmake --build build-win --config Release --parallel
+
+      # 4 条：core / web_assets / no_opposans / embed_web。
+      # -C Release 对 VS 多配置生成器必填。
+      - name: 测试
+        run: ctest --test-dir build-win -C Release --output-on-failure
+
+      # 产物与本地同一条路径：版本/内容自检不过就直接失败。
+      - name: 打绿色包
+        shell: pwsh
+        run: ./tools/package/make_portable_win.ps1 -SkipBuild -BuildDir build-win -OutDir dist
+
+      - name: 上传 Windows 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevCard-windows
+          path: |
+            dist/*.zip
+            build-win/server/Release/devcard-server.exe
+            build-win/shell/win/Release/DevCard.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-build:
+    name: macOS 构建
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
 
       - name: 配置
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -33,7 +64,6 @@ jobs:
       - name: 构建
         run: cmake --build build --config Release --parallel
 
-      # 4 条：core / web_assets / no_opposans / embed_web。
-      # -C Release 对单配置生成器是空操作，对 VS 多配置生成器必填。
+      # -C Release 对单配置生成器是空操作，保留是为了两个 job 命令一致。
       - name: 测试
         run: ctest --test-dir build -C Release --output-on-failure
