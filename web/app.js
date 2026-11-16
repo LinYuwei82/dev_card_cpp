@@ -392,7 +392,9 @@
   }
 
   function pickUpdateAsset(assets) {
-    var prefer = /Windows/i.test(navigator.userAgent) ? ['.zip', '.exe'] : ['.dmg'];
+    // Windows 优先安装包（.exe）：自动更新只认 .exe，绿色包 zip 只能手动替换。
+    // 顺序反了会让清单里同时有 zip 时选中不可安装的包。
+    var prefer = /Windows/i.test(navigator.userAgent) ? ['.exe', '.zip'] : ['.dmg'];
     for (var i = 0; i < prefer.length; i++) {
       for (var j = 0; j < assets.length; j++) {
         var name = String(assets[j].name || '').toLowerCase();
