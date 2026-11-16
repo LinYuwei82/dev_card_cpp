@@ -40,12 +40,49 @@ jobs:
         shell: pwsh
         run: ./tools/package/make_portable_win.ps1 -SkipBuild -BuildDir build-win -OutDir dist
 
+      # 安装包与更新清单也走脚本：避免手写 update.json 漏 digest/size。
+      # windows-latest 通常自带 Inno Setup 6，找不到时用 choco 补装。
+      - name: 打安装包
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+              "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+            ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { Write-Error "找不到 Inno Setup 6（ISCC.exe）"; exit 1 }
+
+          $stage = Join-Path $env:RUNNER_TEMP "devcard-installer"
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage "fonts") | Out-Null
+          Copy-Item -LiteralPath "build-win/shell/win/Release/DevCard.exe" -Destination $stage
+          Copy-Item -LiteralPath "build-win/server/Release/devcard-server.exe" -Destination $stage
+          Copy-Item -LiteralPath "web/fonts/NotoSansSC-Regular.subset.ttf" -Destination (Join-Path $stage "fonts")
+          Copy-Item -LiteralPath "web/fonts/NotoSansSC-Bold.subset.ttf" -Destination (Join-Path $stage "fonts")
+
+          & $iscc "/DSourceRoot=$stage" "packaging/windows/DevCard.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 生成更新清单
+        shell: pwsh
+        run: ./tools/package/make_update_json.ps1
+
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
           name: DevCard-windows
           path: |
             dist/*.zip
+            dist/*-setup.exe
+            dist/update.json
             build-win/server/Release/devcard-server.exe
             build-win/shell/win/Release/DevCard.exe
           if-no-files-found: error

@@ -56,26 +56,33 @@ ctest --test-dir build-new --output-on-failure
 ```bash
 tools/package/make_dmg.sh                # 构建 + 依赖自检 + Developer ID 签名 + 公证 + staple + DMG
 tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
+tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/appcast.xml
 ```
 
 - 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
+- **Sparkle 自检**：feed 默认 `https://dl.xiaotu.online/devcard/appcast.xml`，可用 `--feed-url` 或环境变量 `DEVCARD_SPARKLE_FEED_URL` 覆盖；打包时核对 `Info.plist` 的 `SUFeedURL` 与 `SUPublicEDKey`，缺失或不一致直接失败，避免发出「永远检查不到更新」的包。
 - **依赖自检按 `otool -L` 实测清单**，不写死文件列表：系统库只核对 `/usr/lib/`、`/System/Library/` 前缀（共享缓存里的库磁盘上没有文件），包外依赖必须已存在且收进 `.app`，否则失败。
 - 签名按 D13（2026-11-17 变更）用 Developer ID Application，逐层签、禁用 `--deep`，`codesign --verify --deep --strict` 通过；DMG 经 `notarytool submit --wait` 公证 + `stapler staple`，`spctl --assess` 显示 `Notarized Developer ID`。公证凭证存 Keychain profile `devcard-notary`，不进脚本与仓库。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
 - 本机实测（1.2.0 + 图标，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,774,542 B（4.6M）**，SHA256 `0f026c69956781cd07d472c23e0af2b64054eee57b42820563ef243138c8d440`；App 层身份：可执行文件 `696116f4…edb868`、`Info.plist` `5dee3ad9…837d92`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
 
-### 2.2 Windows 打包（绿色版）
+### 2.2 Windows 打包（绿色版 + 安装版）
 
 ```powershell
+# 绿色版
 powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
-powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1 -SkipBuild
+# 安装版（Inno Setup 6；SourceRoot 指向含两个 exe 与 fonts\ 的暂存目录）
+ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
+# 更新清单（默认读 dist\DevCard-<版本>-setup.exe，自动填 size 与 sha256）
+powershell -ExecutionPolicy Bypass -File tools\package\make_update_json.ps1
 ```
 
-- 产物：`dist\DevCard-<版本>-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
+- 绿色版产物：`dist\DevCard-<版本>-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
 - 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
-- 安装版仍用 Inno Setup 6 编译 `packaging/windows/DevCard.iss`。
+- 安装版产物：`dist\DevCard-<版本>-setup.exe`；`make_update_json.ps1` 生成的 `dist\update.json` 里 `digest` 为 `sha256:<hex>`、`download_url` 指向 OSS。上传后需同步一份到数据目录，本机服务才会读到。
+- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `update.json`，并作为 artifact 上传。
 
 ---
 

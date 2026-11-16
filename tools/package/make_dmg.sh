@@ -1,5 +1,5 @@
 #!/bin/bash
-# DevCard macOS DMG 打包：构建 → 依赖自检 → ad-hoc 签名 → DMG → 体积与 SHA256。
+# DevCard macOS DMG 打包：构建 → 依赖自检 → Developer ID 签名 → 公证 → DMG → 体积与 SHA256。
 #
 # 依赖清单不写死：从 otool -L 的实测输出推导。凡不是 /usr/lib 或
 # /System/Library 的依赖都必须随包提供，否则直接失败——不产出一个
@@ -9,8 +9,14 @@
 #   tools/package/make_dmg.sh                # 构建 + 打包
 #   tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 #   tools/package/make_dmg.sh --out dir      # 指定输出目录（默认 dist/）
+#   tools/package/make_dmg.sh --feed-url URL # 指定 Sparkle feed（默认线上 appcast）
 #
-# 签名口径见 D13：ad-hoc（codesign -s -），不公证；首次打开需 Gatekeeper 放行。
+# Sparkle feed 默认取 https://dl.xiaotu.online/devcard/appcast.xml，也可用
+# 环境变量 DEVCARD_SPARKLE_FEED_URL 覆盖；显式传空字符串表示不启用 Sparkle
+# （仅用于自测，正式包不要这么做：没有 SUFeedURL 的包永远不会自更新）。
+#
+# 签名口径见 D13：Developer ID Application 逐层签名 + 公证（notarytool + stapler）；
+# 公证凭证存 Keychain profile（默认 devcard-notary），不进脚本与仓库。
 
 set -euo pipefail
 
@@ -18,9 +24,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${DEVCARD_BUILD_DIR:-$REPO_ROOT/build-new}"
 OUT_DIR="${DEVCARD_DIST_DIR:-$REPO_ROOT/dist}"
 SKIP_BUILD=0
+FEED_URL="${DEVCARD_SPARKLE_FEED_URL:-https://dl.xiaotu.online/devcard/appcast.xml}"
 
 usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 fail() {
@@ -40,6 +47,11 @@ while [ $# -gt 0 ]; do
     --build-dir)
       [ $# -ge 2 ] || fail "--build-dir 需要一个目录参数"
       BUILD_DIR="$2"
+      shift
+      ;;
+    --feed-url)
+      [ $# -ge 2 ] || fail "--feed-url 需要一个地址（传空字符串表示不启用 Sparkle）"
+      FEED_URL="$2"
       shift
       ;;
     -h|--help)
@@ -73,7 +85,8 @@ PLIST="$APP/Contents/Info.plist"
 if [ "$SKIP_BUILD" -eq 0 ]; then
   echo "构建：${BUILD_DIR}（Release）"
   cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE=Release >/dev/null
+    -DCMAKE_BUILD_TYPE=Release \
+    -DDEVCARD_SPARKLE_FEED_URL="$FEED_URL" >/dev/null
   cmake --build "$BUILD_DIR" --target DevCard --parallel "$(sysctl -n hw.ncpu)" \
     >/dev/null
 else
@@ -132,6 +145,19 @@ if find "$APP" -type f \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \
   fail "应用包里混入了数据库文件"
 fi
 echo "包内容检查：通过（Info.plist 版本 ${PLIST_SHORT}/${PLIST_BUILD}，无运行期数据）"
+
+# ---------- 2c. Sparkle feed 自检 ----------
+# 没有 SUFeedURL 的包不会报错，只会永远「检查不到更新」——必须在打包时拦住。
+if [ -n "$FEED_URL" ]; then
+  PLIST_FEED="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST" 2>/dev/null || true)"
+  [ "$PLIST_FEED" = "$FEED_URL" ] || \
+    fail "Info.plist SUFeedURL（${PLIST_FEED:-空}）与 feed（${FEED_URL}）不一致；--skip-build 时请先重新构建"
+  PLIST_PUBKEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST" 2>/dev/null || true)"
+  [ -n "$PLIST_PUBKEY" ] || fail "Info.plist 缺少 SUPublicEDKey，Sparkle 不会启动"
+  echo "Sparkle 自检：通过（feed=${PLIST_FEED}）"
+else
+  echo "[警告] 未指定 Sparkle feed：该包不会自更新（仅用于自测）"
+fi
 
 # ---------- 2b. 子集字体随包自检 ----------
 # 界面与打印共用 web/fonts 下的同一份字体；没进包就会回落到系统字体，
