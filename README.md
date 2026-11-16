@@ -3,7 +3,7 @@
 物业设备台账与设备管理卡打印工具：维护设备名称 / 位置 / 控制范围 / 维护电话，按条件筛选后把结果排成 A4 版面（每页 3 列 × 4 行，共 12 张卡片）导出 PDF 打印。
 
 > **当前状态（重要）**
-> 仓库只保留新架构线（C++20 + SQLite + 系统 WebView）：**M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 第二段：Windows 壳已编译，`/VERYSILENT` 安装 + 卸载实测通过**（向导页、实物打印、SmartScreen 等仍待补）。**M6 的「检查 + 告知」已交付**（含 CSP `connect-src` 根因修复与断言）；自更新已拍板「下载 + 校验 + 替换 + 重启」，**阶段一（下载 + SHA256/字节数校验）已完成（`61fa9e2` + `f706b76`），阶段二、三未动**，见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
+> 仓库只保留新架构线（C++20 + SQLite + 系统 WebView）：**M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 第二段：Windows 壳已编译，`/VERYSILENT` 安装 + 卸载实测通过**（向导页、实物打印、SmartScreen 等仍待补）。**M6 的「检查 + 告知」已交付**（含 CSP `connect-src` 根因修复与断言）；自更新已拍板「下载 + 校验 + 替换 + 重启」：**阶段一（下载 + SHA256/字节数校验）已完成（`61fa9e2` + `f706b76`）；阶段二（Windows 替换与重启）已端到端实测通过（1.2.0 → 1.2.1）；macOS 改用 Sparkle 2.10.1，检查 → 下载 → EdDSA 验签 → 替换 → 重启全链路已端到端实测通过（1.2.0 → 1.2.1）**，见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
 >
 > 开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 >
@@ -44,7 +44,8 @@ ctest --test-dir build-new --output-on-failure
 - **版本**：只改根目录 `VERSION.txt`（当前 `1.2.0`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
 - **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
-- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**只下载、不替换**；**阶段二、三未动**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一只用假 curl + 本地清单验过，真实下载仅验到「真实进程按这条链去拉」，没有完整下完并校验；**换下载器必须重验白名单与代理口径**。
+- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**阶段二（Windows 替换与重启）已端到端实测通过，macOS 改由 Sparkle 承担替换与重启**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一只用假 curl + 本地清单验过，真实下载仅验到「真实进程按这条链去拉」，没有完整下完并校验；**换下载器必须重验白名单与代理口径**。
+- **macOS 自更新（Sparkle 2.10.1，已端到端实测）**：`3rdparty/sparkle/` 内嵌 framework，CMake POST_BUILD 用 `ditto` 嵌入（保留 symlink），并按官方要求删除 `XPCServices`（DevCard 不开 App Sandbox，保留会让 Sparkle 探测 `<bundle-id>-spks` 失败）。构建时 `-DDEVCARD_SPARKLE_FEED_URL=<appcast>` 同时注入 `SUFeedURL` 与 `SUPublicEDKey`，两者缺一则整段不写——普通开发构建不启用更新。前端「安装并重启」经壳层 `SPUStandardUpdaterController` 触发；appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。签名按官方要求从内到外逐层执行并禁用 `--deep`，XPC 组件加 `--preserve-metadata=entitlements`。**实测闭环（1.2.0 → 1.2.1）**：`didFindValidUpdate` → `didDownloadUpdate` → `willInstallUpdate`，重启后 `CFBundleShortVersionString=1.2.1`、`codesign --verify --deep --strict` 通过。界面已中文化（`CFBundleLocalizations=[zh_CN,en]`）。**注意**：本机系统代理对 OSS（香港）大文件限速明显，实测用本地 HTTP 源替代以排除网络因素；下载慢属基础设施问题，与集成无关。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（服务端按 `must_change_password` 判定），自助改密仍验旧密码；密码框支持明文/掩码切换。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」，超出时明确告知会截断。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0 / 公司名行 `x1-x0` = 44.35 mm，16 字那张截掉末尾「分公司」，整份文本层逐字相同。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构壳**已编译，`/VERYSILENT` 安装与卸载实测通过**，交互与实物打印仍待补（§10.9）。
@@ -53,13 +54,13 @@ ctest --test-dir build-new --output-on-failure
 ### 2.1 macOS 打包（一条命令）
 
 ```bash
-tools/package/make_dmg.sh                # 构建 + 依赖自检 + ad-hoc 签名 + DMG
+tools/package/make_dmg.sh                # 构建 + 依赖自检 + Developer ID 签名 + 公证 + staple + DMG
 tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 ```
 
 - 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
 - **依赖自检按 `otool -L` 实测清单**，不写死文件列表：系统库只核对 `/usr/lib/`、`/System/Library/` 前缀（共享缓存里的库磁盘上没有文件），包外依赖必须已存在且收进 `.app`，否则失败。
-- 签名按 D13 用 ad-hoc（`codesign --sign -`），`codesign --verify --deep --strict` 通过；不公证。
+- 签名按 D13（2026-11-17 变更）用 Developer ID Application，逐层签、禁用 `--deep`，`codesign --verify --deep --strict` 通过；DMG 经 `notarytool submit --wait` 公证 + `stapler staple`，`spctl --assess` 显示 `Notarized Developer ID`。公证凭证存 Keychain profile `devcard-notary`，不进脚本与仓库。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
 - 产物：`dist/DevCard-<版本>-macos-<arch>.dmg`，脚本最后打印字节数、可读体积与 SHA256；DMG 内含应用与「应用程序」快捷方式。
 - 本机实测（1.2.0 + 图标，2026-11-15）：`dist/DevCard-1.2.0-macos-arm64.dmg`，**4,774,542 B（4.6M）**，SHA256 `0f026c69956781cd07d472c23e0af2b64054eee57b42820563ef243138c8d440`；App 层身份：可执行文件 `696116f4…edb868`、`Info.plist` `5dee3ad9…837d92`（包内版本 1.2.0/1.2.0）。**该值随构建与工具链变化，只作当次记录，不作跨次基线**；每次出包以脚本末尾打印的字节数与 SHA256 为准。
@@ -105,10 +106,10 @@ dev_card_cpp/
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
-| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M5、M6 检查 + 告知与自更新阶段一；**Windows 阶段二已端到端实测通过**；阶段三 macOS 不做、Windows 未动） |
+| [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M5、M6 检查 + 告知与自更新阶段一；**Windows 阶段二已端到端实测通过**；**macOS 自更新改由 Sparkle 承担，已端到端实测通过**） |
 | [docs/M4-卡片打印样张-17条-2页.pdf](docs/M4-卡片打印样张-17条-2页.pdf) | 17 条实测数据导出的完整 2 页 A4 卡片样张（新架构打印链路产物） | 实测样张 |
 
-改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 为验收门槛；libharu 已随旧线删除，不再是待删项）；原生 JS/CSS + 两个通用件（实际未拆，全在 `app.js`）；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；SQL 主要在 DAO（`settings`/`audit`/`backup`/`heartbeat` 仍有裸 SQL，未完全收口）+ 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本尚未在新架构上实现）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
+改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 为验收门槛；libharu 已随旧线删除，不再是待删项）；原生 JS/CSS + 两个通用件（实际未拆，全在 `app.js`）；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；SQL 主要在 DAO（`settings`/`audit`/`backup`/`heartbeat` 仍有裸 SQL，未完全收口）+ 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG（**Developer ID 签名 + Apple 公证 + staple，2026-11 起，取代 ad-hoc**）；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本 `tools/package/make_portable_win.ps1` 已入库，待 Windows 实跑）；**macOS 自更新用 Sparkle 2.10.1**；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
 
 ---
 
@@ -125,10 +126,10 @@ dev_card_cpp/
 
 **当前已知边界（照实写）**：
 
-- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收（**libharu 已随旧线整体删除**，仓库里没有回退实现，G2 只剩验收意义）。旧 Qt 线已从仓库历史删除（历史已重写、tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
-- **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段：**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成，并用真实整包（48,710,744 B）跑通全链路**；**阶段二（Windows 协助器 + Inno Setup 静默升级）已在 Windows 端到端实测通过**（见 §5「已知限制」Windows 侧段落）；**阶段三已决定：macOS 本期不做自动替换**。无 Authenticode / 公证，信任锚只有「固定 HTTPS 域名 + 清单版本与哈希」，挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
+- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成、Windows 自更新阶段二与 macOS Sparkle 自更新均端到端实测通过**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收（**libharu 已随旧线整体删除**，仓库里没有回退实现，G2 只剩验收意义）。旧 Qt 线已从仓库历史删除（历史已重写、tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
+- **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段：**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成，并用真实整包（48,710,744 B）跑通全链路**；**阶段二（Windows 协助器 + Inno Setup 静默升级）已在 Windows 端到端实测通过**（见 §5「已知限制」Windows 侧段落）；**macOS 原定的「本期不做自动替换」已被 Sparkle 2.10.1 方案取代，检查 → 下载 → EdDSA 验签 → 替换 → 重启已端到端实测通过**。信任锚：Windows 无 Authenticode；macOS 为 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。单纯依赖「固定 HTTPS 域名 + 清单版本与哈希」挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- **Windows 侧自更新阶段二已端到端实测**：协助器（`devcard-server.exe --apply-update`）通过 `CreateProcessW(DETACHED_PROCESS)` 拉起，服务器进程停止 300 ms 后 Inno Setup 以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /LOG=` 静默替换，完成后读取 PE 版本写 `install-result.json`，最后拉起新版本。**1.2.0 → 1.2.1 实测闭环**：`install-result.json.exit_code=0`、`version_before=1.2.0`、`version_after=1.2.1`、磁盘 PE 号从 1.2.0 变成 1.2.1。**测试中修过一处路径 bug**：协助器内部两处 `write_apply_state` 传的是 `result.parent_path()`（即 `data_dir/updates/`），但函数会自动拼 `data_dir/updates`，导致 apply-state 被写到 `data_dir/updates/updates/`，服务器重启后读不到 Done 状态。已在 `server/src/apply_update.cpp` 修正为从 result 反推 `data_dir = result.parent_path().parent_path()`。**注意**：`DETACHED_PROCESS` 只有在父进程不处在 Job Object 时才可靠（Windows 壳 DevCard.exe 正常，PowerShell `Start-Process` 前台启动的 devcard-server 会进 Job Object，协助器随即被杀）；改 VERSION.txt 后必须重新 `cmake -S ... -B ...` configure，PE 版本号（ProductVersion）由 configure 阶段注入，增量 build 不更新。仍未做：阶段三（重启后的前端回读 install-result.json 展示）、安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归、emoji 路径，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
+- **Windows 侧自更新阶段二已端到端实测**：协助器（`devcard-server.exe --apply-update`）通过 `CreateProcessW(DETACHED_PROCESS)` 拉起，服务器进程停止 300 ms 后 Inno Setup 以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /LOG=` 静默替换，完成后读取 PE 版本写 `install-result.json`，最后拉起新版本。**1.2.0 → 1.2.1 实测闭环**：`install-result.json.exit_code=0`、`version_before=1.2.0`、`version_after=1.2.1`、磁盘 PE 号从 1.2.0 变成 1.2.1。**测试中修过一处路径 bug**：协助器内部两处 `write_apply_state` 传的是 `result.parent_path()`（即 `data_dir/updates/`），但函数会自动拼 `data_dir/updates`，导致 apply-state 被写到 `data_dir/updates/updates/`，服务器重启后读不到 Done 状态。已在 `server/src/apply_update.cpp` 修正为从 result 反推 `data_dir = result.parent_path().parent_path()`。**注意**：`DETACHED_PROCESS` 只有在父进程不处在 Job Object 时才可靠（Windows 壳 DevCard.exe 正常，PowerShell `Start-Process` 前台启动的 devcard-server 会进 Job Object，协助器随即被杀）；改 VERSION.txt 后必须重新 `cmake -S ... -B ...` configure，PE 版本号（ProductVersion）由 configure 阶段注入，增量 build 不更新。仍未做：安装完成后前端回读 `install-result.json` 展示、安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归、emoji 路径，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **旧版数据不再支持导入**：启动时若数据目录里是旧版 `devicedb.db`（只有 `tb_device`/`tb_user`、无 `schema_migration`），新版本会直接报 `legacy_db` 并拒绝在原库上建表；迁移路径、旧库导入器与 `--import-legacy` 已整体删除，不提供自动或手工迁移入口。
 
 ## 许可证
