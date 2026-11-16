@@ -597,10 +597,16 @@
     }
     var asset = state.updateAsset;
     var isAdmin = state.user && state.user.role === 'admin';
+    var ua = navigator.userAgent || '';
+    var isWindows = /Windows/i.test(ua);
+    // macOS 的替换与重启交给 Sparkle：只有桌面壳里有桥，浏览器里没有。
+    var canSparkle = /Macintosh|Mac OS X/i.test(ua) && hasNativeBridge();
     el.updateDownloadPackage.disabled =
       !(asset && asset.sha256 && asset.size && isAdmin);
     if (!asset) {
-      setUpdateProgress('发布清单里没有当前平台的安装包，请用下载页手动更新。');
+      setUpdateProgress(canSparkle
+        ? '发布清单里没有可直接下载的安装包；点下面的按钮交给 Sparkle 检查并安装。'
+        : '发布清单里没有当前平台的安装包，请用下载页手动更新。');
     } else if (!asset.sha256 || !asset.size) {
       setUpdateProgress('发布清单缺少 SHA256 或字节数，无法校验，已退回只提示；请用下载页手动更新。');
     } else if (!isAdmin) {
@@ -608,11 +614,11 @@
     } else {
       setUpdateProgress('');
     }
-    // 阶段二：只有 Windows 安装版的管理员能看到「安装并重启」。
-    // 按钮先禁用，下载并通过校验后才放开。
-    var isWindows = /Windows/i.test(navigator.userAgent || '');
-    el.updateInstall.hidden = !(isWindows && isAdmin);
-    el.updateInstall.disabled = true;
+    // 阶段二：Windows 安装版走安装器；macOS 走 Sparkle。
+    // Windows 按钮先禁用，下载并通过校验后才放开；Sparkle 自己下载，不需要先点「下载更新包」。
+    el.updateInstall.textContent = canSparkle ? '用 Sparkle 安装并重启' : '安装并重启';
+    el.updateInstall.hidden = !(isAdmin && (isWindows || canSparkle));
+    el.updateInstall.disabled = isWindows;
     state.updateInstalling = false;
     loadInstallResult();
     el.updateModal.hidden = false;
@@ -631,6 +637,8 @@
     el.updateInstallResult.textContent = '';
     el.updateInstallResult.classList.remove('is-error');
     if (!state.user || state.user.role !== 'admin') return;
+    // 安装结果只属于 Windows 安装器；macOS 的安装进度在 Sparkle 自己的窗口里。
+    if (!/Windows/i.test(navigator.userAgent || '')) return;
     api('GET', '/api/update/install-result').then(function (data) {
       if (!data || data.state !== 'done') return;
       var code = Number(data.exit_code);
@@ -651,6 +659,20 @@
 
   el.updateInstall.addEventListener('click', function () {
     if (state.updateInstalling) return;
+    // macOS：交给 Sparkle 完成检查、下载、安装与重启。
+    // 服务端 /api/update/install 只在 Windows 实现，mac 不走这条路。
+    if (/Macintosh|Mac OS X/i.test(navigator.userAgent || '')) {
+      state.updateInstalling = true;
+      el.updateInstall.disabled = true;
+      if (!sendToShell('checkForUpdates', {})) {
+        state.updateInstalling = false;
+        el.updateInstall.disabled = false;
+        setUpdateProgress('当前不在桌面壳内，无法调用 Sparkle；请用下载页手动更新。', true);
+        return;
+      }
+      setUpdateProgress('已请求 Sparkle 检查更新：按它弹出的窗口完成下载与安装。若没有弹出窗口，说明当前版本未启用 Sparkle，请用下载页手动更新。');
+      return;
+    }
     state.updateInstalling = true;
     el.updateInstall.disabled = true;
     setUpdateProgress('正在启动安装程序，服务即将停止…');
