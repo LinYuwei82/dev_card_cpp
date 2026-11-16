@@ -147,11 +147,23 @@ for font in NotoSansSC-Regular.subset.ttf NotoSansSC-Bold.subset.ttf; do
 done
 echo "字体自检：通过（Resources/fonts 与 web/fonts 逐字节一致）"
 
-# ---------- 3. ad-hoc 签名 ----------
-echo "签名：ad-hoc（codesign -s -）"
-codesign --force --deep --sign - "$APP"
+# ---------- 3. Developer ID 正式签名 ----------
+# 从 Keychain 动态读取 Developer ID Application 身份：证书名称含 "Developer ID Application"
+# 不硬编码团队名——续期时名称不变，万一换团队也自动适配。
+IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+  | grep 'Developer ID Application' \
+  | sed -E 's/^[[:space:]]*[0-9]+\) [A-F0-9]+ "(.+)"/\1/' \
+  | head -1)"
+[ -n "$IDENTITY" ] || fail "Keychain 里找不到 Developer ID Application 证书（security find-identity -v -p codesigning）"
+echo "签名：Developer ID Application（${IDENTITY}）"
+codesign --force --deep --sign "$IDENTITY" \
+  --timestamp \
+  --options runtime \
+  "$APP"
 codesign --verify --deep --strict "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP" | tail -1 || true
 echo "签名校验：通过（codesign --verify --deep --strict）"
+spctl --assess --type execute --verbose=2 "$APP" 2>&1 | tail -1 || true
 
 # ---------- 4. DMG ----------
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/devcard-dmg.XXXXXX")"
@@ -164,6 +176,41 @@ rm -f "$DMG"
 hdiutil create -quiet -volname "DevCard $VERSION" -srcfolder "$STAGE" \
   -ov -format UDZO "$DMG"
 hdiutil verify -quiet "$DMG"
+
+# ---------- 5. 公证 + staple ----------
+NOTARY_PROFILE="${DEVCARD_NOTARY_PROFILE:-devcard-notary}"
+NOTARY_WAIT_MIN="${DEVCARD_NOTARY_WAIT_MIN:-20}"
+
+echo "公证：提交到 Apple（keychain profile=${NOTARY_PROFILE}，最长等待 ${NOTARY_WAIT_MIN} 分钟）"
+NOTARY_LOG="$(mktemp "${TMPDIR:-/tmp}/devcard-notary.XXXXXX.log")"
+xcrun notarytool submit "$DMG" \
+  --keychain-profile "$NOTARY_PROFILE" \
+  --wait \
+  --timeout "$((NOTARY_WAIT_MIN * 60))s" \
+  2>&1 | tee "$NOTARY_LOG"
+
+# notarytool exit 0 + 输出含 "Accepted" = 公证通过
+grep -q 'Accepted' "$NOTARY_LOG" || {
+  echo "[失败] 公证未通过，完整日志：$NOTARY_LOG" >&2
+  exit 1
+}
+echo "公证：通过（Accepted）"
+
+echo "Stapling：给 DMG 贴公证票据"
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+echo "Stapling：通过"
+
+# spctl 最终评估——Gatekeeper 应该报 "accepted" 而非 "rejected" / "unnotarized"
+SPCTL_OUT="$(spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG" 2>&1)"
+echo "Gatekeeper 评估："
+echo "$SPCTL_OUT" | sed 's/^/  /'
+echo "$SPCTL_OUT" | grep -q 'accepted' || {
+  echo "[失败] Gatekeeper 未 accepted，拒绝原因：" >&2
+  echo "$SPCTL_OUT" >&2
+  exit 1
+}
+echo "Gatekeeper：accepted"
 
 BYTES="$(stat -f%z "$DMG")"
 HUMAN="$(du -h "$DMG" | awk '{print $1}')"
