@@ -5,10 +5,82 @@ set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources")
 
 add_executable(DevCard MACOSX_BUNDLE mac/main.mm ${DEVCARD_APP_ICON})
-target_link_libraries(DevCard PRIVATE devcard_server "-framework Cocoa" "-framework WebKit"
-    "-framework PDFKit" "-framework UniformTypeIdentifiers")
+
+# Sparkle 2 自更新框架：放在仓库 3rdparty/sparkle，随包分发。
+# CMAKE_FRAMEWORK_PATH 让 find_library 能找到；
+# -Wl,-rpath,@loader_path/../Frameworks 让可执行文件在 bundle 内搜 framework。
+set(SPARKLE_ROOT "${PROJECT_SOURCE_DIR}/3rdparty/sparkle")
+find_library(SPARKLE Sparkle PATHS "${SPARKLE_ROOT}" REQUIRED)
+target_link_libraries(DevCard PRIVATE devcard_server
+    "-framework Cocoa" "-framework WebKit"
+    "-framework PDFKit" "-framework UniformTypeIdentifiers"
+    "${SPARKLE}")
+target_include_directories(DevCard PRIVATE "${SPARKLE_ROOT}/Sparkle.framework/Headers")
+set_target_properties(DevCard PROPERTIES
+    BUILD_RPATH "@loader_path/../Frameworks"
+    INSTALL_RPATH "@loader_path/../Frameworks"
+)
+
+# Sparkle.framework + Updater.app + XPCServices 都要 embed 进 Bundle；
+# 保留 symlinks（Versions/Current 指向 B），codesign deep 会一起签。
+# PROJECT_SOURCE_DIR 是根 CMakeLists.txt 设的，shell/ 被 add_subdirectory 时仍然可用。
+set(DEVCARD_BUNDLE_FRAMEWORK
+    "${PROJECT_SOURCE_DIR}/3rdparty/sparkle/Sparkle.framework")
+target_sources(DevCard PRIVATE "${DEVCARD_BUNDLE_FRAMEWORK}")
+set_source_files_properties("${DEVCARD_BUNDLE_FRAMEWORK}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Frameworks")
+
+# Sparkle 2：EdDSA 公钥固定（除非换密钥对），feed URL 发布时才填。
+# 开发期两键空时 Info.plist 里不写 Sparkle 键，Sparkle 不启动。
+if(NOT DEVCARD_SPARKLE_PUBKEY)
+    set(DEVCARD_SPARKLE_PUBKEY "qYiCyNabGf5xZYo8rWFXRoRXkZA6sgfwcyGZ0JNGaXA=")
+endif()
+if(NOT DEVCARD_SPARKLE_FEED_URL)
+    set(DEVCARD_SPARKLE_FEED_URL "")
+endif()
+
+# Info.plist 用 Python 生成（tools/release/gen_info_plist.py，零依赖）。
+# configure 阶段先生成一份（CMAKE 要求 MACOSX_BUNDLE_INFO_PLIST 文件必须已存在），
+# 同时在 POST_BUILD 里保留（每次 cmake build 都会重新生成，确保 Sparkle 键更新）。
+set(DEVCARD_INFO_PLIST_PATH
+    "${CMAKE_CURRENT_BINARY_DIR}/DevCard.app/Contents/Info.plist")
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/DevCard.app/Contents")
+
+execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/tools/release/gen_info_plist.py"
+            --version "${DEVCARD_VERSION_STRING}"
+            --bundle-id "com.anye.devcard.new"
+            --name "DevCard"
+            --feed-url "${DEVCARD_SPARKLE_FEED_URL}"
+            --pubkey "${DEVCARD_SPARKLE_PUBKEY}"
+            --output "${DEVCARD_INFO_PLIST_PATH}"
+    RESULT_VARIABLE DEVCARD_PLIST_GEN_RESULT
+    OUTPUT_QUIET
+)
+if(NOT DEVCARD_PLIST_GEN_RESULT EQUAL 0)
+    message(FATAL_ERROR "gen_info_plist.py failed (rc=${DEVCARD_PLIST_GEN_RESULT})")
+endif()
+
+add_custom_command(
+    TARGET DevCard POST_BUILD
+    COMMAND ${Python3_EXECUTABLE}
+            "${PROJECT_SOURCE_DIR}/tools/release/gen_info_plist.py"
+            --version "${DEVCARD_VERSION_STRING}"
+            --bundle-id "com.anye.devcard.new"
+            --name "DevCard"
+            --feed-url "${DEVCARD_SPARKLE_FEED_URL}"
+            --pubkey "${DEVCARD_SPARKLE_PUBKEY}"
+            --output "${DEVCARD_INFO_PLIST_PATH}"
+    COMMENT "重新生成 Info.plist"
+    VERBATIM
+)
 
 set_target_properties(DevCard PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST "${DEVCARD_INFO_PLIST_PATH}"
     MACOSX_BUNDLE_BUNDLE_NAME "DevCard"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.anye.devcard.new"
     MACOSX_BUNDLE_ICON_FILE "DevCard.icns"

@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <PDFKit/PDFKit.h>
+#import <Sparkle/Sparkle.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
@@ -187,6 +188,8 @@ API_AVAILABLE(macos(11.0))
 @property(nonatomic, copy) void (^onExportResult)(BOOL ok, NSString* message);
 // 打印期间持有 PDFDocument，避免任务释放后文档被回收。
 @property(nonatomic, retain) PDFDocument* printDocument;
+// Sparkle 自更新控制器：Info.plist 里 SUFeedURL + SUPublicEDKey 都有值才初始化。
+@property(nonatomic, strong) SPUStandardUpdaterController* updaterController;
 @end
 
 @implementation PrintBridge
@@ -225,6 +228,15 @@ API_AVAILABLE(macos(11.0))
       [[NSWorkspace sharedWorkspace] openURL:target];
     } else {
       [self notify:@"下载页地址无效" kind:@"error"];
+    }
+  } else if ([action isEqualToString:@"checkForUpdates"]) {
+    // Sparkle 自更新：前端用户点「安装并重启」时转调 Sparkle。
+    // 开发期没有 SUFeedURL / SUPublicEDKey，updaterController 是 nil——
+    // 这种情况 fallback 到默认动作：让用户从菜单手动检查。
+    if (self.updaterController) {
+      [self.updaterController checkForUpdates:body[@"silent"] ? nil : nil];
+    } else {
+      [self notify:@"Sparkle 未启用（缺少签名公钥或 feed URL）" kind:@"error"];
     }
   }
 }
@@ -936,6 +948,24 @@ int main(int argc, const char* argv[]) {
     window.contentView = web;
     bridge.webView = web;
     bridge.window = window;
+
+    // Sparkle 2 自更新：Info.plist 里必须有 SUFeedURL + SUPublicEDKey。
+    // 开发期两键为空时跳过——updaterController 是 nil，前端调 checkForUpdates 会收到提示。
+    {
+      NSDictionary* bundle_info = [NSBundle mainBundle].infoDictionary;
+      NSString* feed_url = bundle_info[@"SUFeedURL"];
+      NSString* pub_key = bundle_info[@"SUPublicEDKey"];
+      if (feed_url.length > 0 && pub_key.length > 0) {
+        bridge.updaterController =
+            [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
+                                                            updaterDelegate:nil
+                                                        userDriverDelegate:nil];
+      } else {
+        NSLog(@"[sparkle] 跳过初始化：SUFeedURL=%@ SUPublicEDKey=%@",
+              feed_url.length > 0 ? feed_url : @"(空)",
+              pub_key.length > 0 ? @"(已填)" : @"(空)");
+      }
+    }
 
     // 自动化验证：把打印视图导出成 PDF 后退出，便于脚本核对页数与文字。
     NSString* selftest_pdf =
