@@ -33,7 +33,15 @@ add_custom_command(
             "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework"
     COMMAND ditto "${DEVCARD_SPARKLE_FRAMEWORK}"
             "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework"
-    COMMENT "嵌入 Sparkle.framework（ditto，保留 symlink）"
+    # DevCard 不开启 App Sandbox，官方文档明确：非沙盒应用应移除 Sparkle 的两个
+    # XPC 服务（Installer.xpc / Downloader.xpc），它们只在沙盒环境下配合
+    # SUEnableInstallerLauncherService / SUEnableDownloaderService 才生效。
+    # 保留它们会让 Sparkle 探测 <bundle-id>-spks 失败并卡在下载阶段。
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:DevCard>/Contents/Frameworks/Sparkle.framework/XPCServices"
+    COMMENT "嵌入 Sparkle.framework（ditto，保留 symlink；非沙盒移除 XPC 服务）"
     VERBATIM
 )
 

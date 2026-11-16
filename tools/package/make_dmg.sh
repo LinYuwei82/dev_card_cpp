@@ -156,10 +156,25 @@ IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
   | head -1)"
 [ -n "$IDENTITY" ] || fail "Keychain 里找不到 Developer ID Application 证书（security find-identity -v -p codesigning）"
 echo "签名：Developer ID Application（${IDENTITY}）"
-codesign --force --deep --sign "$IDENTITY" \
-  --timestamp \
-  --options runtime \
-  "$APP"
+# 按 Sparkle 官方要求从内到外逐层签名，禁止 --deep：
+# "please do not add --deep ... This is a common source of Sandboxing errors"
+# Downloader.xpc 自 2.6 起必须 --preserve-metadata=entitlements，否则其
+# entitlements 会被抹掉导致服务无法加载。
+# 非沙盒构建已在 CMake POST_BUILD 移除 XPCServices，这里存在才签。
+SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE_FW" ]; then
+  for nested in \
+    "$SPARKLE_FW/Versions/B/XPCServices/Installer.xpc" \
+    "$SPARKLE_FW/Versions/B/XPCServices/Downloader.xpc" \
+    "$SPARKLE_FW/Versions/B/Autoupdate" \
+    "$SPARKLE_FW/Versions/B/Updater.app"; do
+    [ -e "$nested" ] || continue
+    codesign --force --sign "$IDENTITY" --timestamp --options runtime \
+      --preserve-metadata=entitlements "$nested"
+  done
+  codesign --force --sign "$IDENTITY" --timestamp --options runtime "$SPARKLE_FW"
+fi
+codesign --force --sign "$IDENTITY" --timestamp --options runtime "$APP"
 codesign --verify --deep --strict "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP" | tail -1 || true
 echo "签名校验：通过（codesign --verify --deep --strict）"
