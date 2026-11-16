@@ -96,7 +96,7 @@ dev_card_cpp/
 | [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M5、M6 检查 + 告知与自更新阶段一；阶段二、三未动） |
 | [docs/M4-卡片打印样张-17条-2页.pdf](docs/M4-卡片打印样张-17条-2页.pdf) | 17 条实测数据导出的完整 2 页 A4 卡片样张（新架构打印链路产物） | 实测样张 |
 
-改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 才删 libharu）；原生 JS/CSS + 两个通用件；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；DAO 集中 SQL + 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本尚未在新架构上实现）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
+改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 为验收门槛；libharu 已随旧线删除，不再是待删项）；原生 JS/CSS + 两个通用件（实际未拆，全在 `app.js`）；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；SQL 主要在 DAO（`settings`/`audit`/`backup`/`heartbeat` 仍有裸 SQL，未完全收口）+ 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本尚未在新架构上实现）；macOS 暂不公证，继续 ad-hoc 签名；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
 
 ---
 
@@ -108,13 +108,21 @@ dev_card_cpp/
 - macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico` 与 web favicon 尚未接入。
 - Windows 安装器 `packaging/windows/DevCard.iss`（**在 Windows 线 `win/mac-build-scripts`，本分支不含 `packaging/` 目录**；每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已在 Windows 线编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点、`web\*` 挂了 `skipifsourcedoesntexist` 导致「带 web 资源」形态未验，补齐前不写「安装包已完整验收」。旧线绿色版打包脚本已随旧线删除，新架构的绿色版打包脚本尚未实现。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
-- 无 CI、无许可证声明。（`tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
+- 无 CI。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。（`tests/` 已有 4 条 `ctest`：core / web_assets / no_opposans / embed_web；CI 仍未接。）
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
 **当前已知边界（照实写）**：
 
-- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收，因此 **libharu 未删**。旧 Qt 线已从仓库历史删除（历史已重写、tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
+- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成**；M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收（**libharu 已随旧线整体删除**，仓库里没有回退实现，G2 只剩验收意义）。旧 Qt 线已从仓库历史删除（历史已重写、tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
 - **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段：**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成，并用真实整包（48,710,744 B）跑通全链路**；**阶段二机制已验、判据已补、产品路径未通（阻塞在发布物）**；**阶段三已决定：macOS 本期不做自动替换**。无 Authenticode / 公证，信任锚只有「固定 HTTPS 域名 + 清单版本与哈希」，挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
 - **Windows 侧只走到「静默安装跑通」**：Windows 壳（WebView2）已编译，`/VERYSILENT` 安装（无 UAC、落 `%LOCALAPPDATA%\Programs\DevCard`、`health=200`）与卸载（数据目录逐文件 SHA256 前后一致）已实测；`ctest` 4/4 通过，**中文路径转换层**已在 ACP 默认代码页的机器上验过（调用点待 Windows 线收口后复跑）。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归、emoji 路径，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **旧版数据不再支持导入**：启动时若数据目录里是旧版 `devicedb.db`（只有 `tb_device`/`tb_user`、无 `schema_migration`），新版本会直接报 `legacy_db` 并拒绝在原库上建表；迁移路径、旧库导入器与 `--import-legacy` 已整体删除，不提供自动或手工迁移入口。
+
+## 许可证
+
+本项目以 **GNU Affero General Public License v3.0** 发布，官方全文见 [LICENSE](LICENSE)。
+
+Copyright (C) 2026 linyw <458499311@qq.com>
+
+如需商业授权，请另行联系作者。
