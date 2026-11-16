@@ -389,9 +389,12 @@ int run_apply_update(const ApplyUpdateOptions& options) {
               {"finished_at", ""}};
 
   std::error_code ec;
+  // data_dir = result.parent_path().parent_path()，因为
+  // result = data_dir / "updates" / "install-result.json"
+  const auto data_dir = options.result.parent_path().parent_path();
   // 协助器已接管：从这里起，中断只可能是协助器被杀或机器重启。
   std::string state_error;
-  write_apply_state(options.result.parent_path(), ApplyState::Verifying,
+  write_apply_state(data_dir, ApplyState::Verifying,
                     "协助器已接管，正在调用安装器", &state_error);
   if (options.setup.empty() || !std::filesystem::exists(options.setup, ec)) {
     doc["error"] = "安装包不存在：" + path_to_utf8(options.setup);
@@ -416,7 +419,7 @@ int run_apply_update(const ApplyUpdateOptions& options) {
   // 四态闭环：安装器退出码 0 且没有启动失败才算 done，其余一律 failed。
   const int exit_code = doc["exit_code"].get<int>();
   const bool succeeded = exit_code == 0 && doc["error"].get<std::string>().empty();
-  write_apply_state(options.result.parent_path(),
+  write_apply_state(data_dir,
                     succeeded ? ApplyState::Done : ApplyState::Failed,
                     succeeded ? "安装器退出码 0"
                               : "安装器退出码 " + std::to_string(exit_code),
