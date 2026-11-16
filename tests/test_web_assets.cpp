@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "config.h"
+#include "devcard/error.h"
 #include "devcard/paths.h"
 #include "devcard/server.h"
 #include "devcard/sha256.h"
@@ -62,6 +63,118 @@ int check_fonts() {
               << " 份子集字体的字节数与 SHA256 与源文件一致" << std::endl;
   }
   return failures == 0 ? 0 : 1;
+}
+
+// 字体闸门的负向自检：正向清单只能证明「当前文件没问题」，证明不了坏字体真的会被拒绝。
+// 两种坏法各起一次服务：目录里没有字体 → font_missing；文件被截断 → font_corrupt。
+// 判据是 start_server 抛 AppError 且错误码与文案都对；若服务起来了，说明闸门形同虚设。
+int check_font_gate() {
+  namespace fs = std::filesystem;
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path root =
+      fs::temp_directory_path() / ("devcard_fontgate_" + std::to_string(stamp));
+  const fs::path empty_dir = root / "no-fonts";
+  const fs::path corrupt_dir = root / "corrupt";
+  std::error_code ec;
+  fs::create_directories(empty_dir, ec);
+  fs::create_directories(corrupt_dir, ec);
+
+  // 先复制一份完整字体，再把 Bold 截掉 100 字节：文件名不动，只让字节数对不上。
+  const std::string bold_name = "NotoSansSC-Bold.subset.ttf";
+  for (const auto& spec : devcard::kEmbeddedFonts) {
+    ec.clear();
+    fs::copy_file(fs::path(DEVCARD_WEB_FONTS_DIR) / spec.name,
+                  corrupt_dir / spec.name, fs::copy_options::overwrite_existing,
+                  ec);
+    if (ec) {
+      std::cerr << "[失败] 准备字体闸门用例时复制失败：" << spec.name << "："
+                << ec.message() << std::endl;
+      fs::remove_all(root);
+      return 1;
+    }
+  }
+  const fs::path truncated = corrupt_dir / bold_name;
+  ec.clear();
+  fs::resize_file(truncated, fs::file_size(truncated) - 100, ec);
+  if (ec) {
+    std::cerr << "[失败] 截断字体失败：" << ec.message() << std::endl;
+    fs::remove_all(root);
+    return 1;
+  }
+
+  std::string old_font_dir;
+  const bool had_old = std::getenv("DEVCARD_FONT_DIR") != nullptr;
+  if (had_old) old_font_dir = std::getenv("DEVCARD_FONT_DIR");
+  const auto set_font_dir = [](const std::string& value) {
+#ifdef _WIN32
+    _putenv_s("DEVCARD_FONT_DIR", value.c_str());
+#else
+    setenv("DEVCARD_FONT_DIR", value.c_str(), 1);
+#endif
+  };
+
+  int failures = 0;
+  const auto expect_gate = [&](const fs::path& font_dir, const fs::path& data_dir,
+                               const char* want_code, const char* want_text,
+                               const char* label) {
+    set_font_dir(font_dir.string());
+    devcard::ServerOptions options;
+    options.data_dir = data_dir;
+    options.port = 18390;
+    std::unique_ptr<devcard::ServerHandle> server;
+    std::string error_code;
+    std::string error_text;
+    try {
+      server = devcard::start_server(options);
+    } catch (const devcard::AppError& error) {
+      error_code = error.code();
+      error_text = error.what();
+    } catch (const std::exception& error) {
+      error_text = error.what();
+    }
+    if (server) {
+      server.reset();
+      std::cerr << "[失败] " << label << "：坏字体目录竟然启动了服务，闸门未拦住"
+                << std::endl;
+      ++failures;
+      return;
+    }
+    if (error_code != want_code) {
+      std::cerr << "[失败] " << label << "：期望错误码 " << want_code << "，实得 "
+                << (error_code.empty() ? "（非 AppError）" : error_code) << "："
+                << error_text << std::endl;
+      ++failures;
+      return;
+    }
+    if (error_text.find(want_text) == std::string::npos) {
+      std::cerr << "[失败] " << label << "：错误信息缺少「" << want_text << "」："
+                << error_text << std::endl;
+      ++failures;
+    }
+  };
+
+  expect_gate(empty_dir, root / "data-missing", "font_missing", "缺少随包字体",
+              "缺字体");
+  expect_gate(corrupt_dir, root / "data-corrupt", "font_corrupt", "字体校验失败",
+              "字体被截断");
+
+  // 还原现场：后面的用例还要用正常字体目录起服务。
+  if (had_old) {
+    set_font_dir(old_font_dir);
+  } else {
+#ifdef _WIN32
+    _putenv_s("DEVCARD_FONT_DIR", "");
+#else
+    unsetenv("DEVCARD_FONT_DIR");
+#endif
+  }
+  fs::remove_all(root);
+  if (failures == 0) {
+    std::cout << "字体闸门负向自检通过：缺字体 → font_missing，截断 → font_corrupt，"
+                 "均中止启动"
+              << std::endl;
+  }
+  return failures;
 }
 
 // 起一次真实服务，取 `/` 的响应头，检查 CSP 里 connect-src 覆盖了 https: 与 http:。
@@ -751,6 +864,9 @@ int main() {
               << devcard::embedded_app_js_size() << " B）" << std::endl;
   }
   if (check_fonts() != 0) {
+    code = 1;
+  }
+  if (check_font_gate() != 0) {
     code = 1;
   }
   if (check_csp() != 0) {
