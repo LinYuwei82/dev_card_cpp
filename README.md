@@ -117,7 +117,7 @@ dev_card_cpp/
 
 以下均为**现状**，不是目标形态：
 
-- macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版未公证，首次打开需手动放行。
+- macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版自 2026-11-17 起用 Developer ID Application 签名并经 Apple 公证 + staple，首次打开无需手动放行；此前基于 ad-hoc 签名的旧包仍需右键「打开」放行。
 - macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico`（`shell/win/DevCard.ico`）与 web favicon（`web/favicon.ico`）也已接入，三者由 `tools/package/make_icons.sh` 从同一份母版生成。
 - Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/make_portable_win.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
