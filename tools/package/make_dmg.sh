@@ -107,13 +107,25 @@ DEP_TOTAL="$(wc -l < "$DEP_LIST" | tr -d '[:space:]')"
 [ "$DEP_TOTAL" -gt 0 ] || fail "otool 没有读到任何动态依赖：$BIN"
 
 SYSTEM_COUNT="$(grep -c -E '^(/usr/lib/|/System/Library/)' "$DEP_LIST" || true)"
-EXTERNAL_COUNT="$(grep -v -c -E '^(/usr/lib/|/System/Library/)' "$DEP_LIST" || true)"
+EXTERNAL_COUNT="$(grep -v -c -E '^(/usr/lib/|/System/Library/|@rpath/)' "$DEP_LIST" || true)"
 
 # 系统库只核对路径前缀：macOS 11 起 /usr/lib 下的库在 dyld 共享缓存里，
 # 磁盘上没有对应文件，用 -e 判断会误报。非系统依赖才检查存在性。
+# @rpath 依赖不是绝对路径，直接 [ -e ] 必然失败；本工程的框架统一嵌在
+# Contents/Frameworks（可执行文件的 LC_RPATH = @loader_path/../Frameworks），
+# 按这个位置核对，缺了才算缺失。
+BUNDLED_COUNT=0
 while IFS= read -r dep; do
   case "$dep" in
     /usr/lib/*|/System/Library/*) continue ;;
+    @rpath/*)
+      if [ -e "$APP/Contents/Frameworks/${dep#@rpath/}" ]; then
+        BUNDLED_COUNT=$((BUNDLED_COUNT + 1))
+      else
+        printf '%s\n' "$dep" >> "$MISSING_LIST"
+      fi
+      continue
+      ;;
   esac
   [ -e "$dep" ] || printf '%s\n' "$dep" >> "$MISSING_LIST"
 done < "$DEP_LIST"
@@ -126,11 +138,11 @@ fi
 
 if [ "$EXTERNAL_COUNT" -gt 0 ]; then
   echo "[失败] 以下依赖不在系统路径，换台机器会找不到（打包前应收进 .app）：" >&2
-  grep -v -E '^(/usr/lib/|/System/Library/)' "$DEP_LIST" | sed 's/^/  - /' >&2
+  grep -v -E '^(/usr/lib/|/System/Library/|@rpath/)' "$DEP_LIST" | sed 's/^/  - /' >&2
   fail "依赖自检未通过"
 fi
 
-echo "依赖自检：通过（otool 实测 $DEP_TOTAL 项，系统 $SYSTEM_COUNT 项，包外 $EXTERNAL_COUNT 项）"
+echo "依赖自检：通过（otool 实测 $DEP_TOTAL 项，系统 $SYSTEM_COUNT 项，包内 $BUNDLED_COUNT 项，包外 $EXTERNAL_COUNT 项）"
 
 PLIST_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)"
 PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || true)"
@@ -218,12 +230,19 @@ hdiutil create -quiet -volname "DevCard $VERSION" -srcfolder "$STAGE" \
   -ov -format UDZO "$DMG"
 hdiutil verify -quiet "$DMG"
 
+# DMG 容器本身也要签：Gatekeeper 对 .dmg 评估的是容器自己的签名，
+# 只签 App 会得到 source=no usable signature 而被拒。
+codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+codesign --verify --strict "$DMG"
+echo "DMG 签名：通过（codesign --verify --strict）"
+
 # ---------- 5. 公证 + staple ----------
 NOTARY_PROFILE="${DEVCARD_NOTARY_PROFILE:-devcard-notary}"
 NOTARY_WAIT_MIN="${DEVCARD_NOTARY_WAIT_MIN:-20}"
 
 echo "公证：提交到 Apple（keychain profile=${NOTARY_PROFILE}，最长等待 ${NOTARY_WAIT_MIN} 分钟）"
-NOTARY_LOG="$(mktemp "${TMPDIR:-/tmp}/devcard-notary.XXXXXX.log")"
+# BSD mktemp 只认模板末尾的 X，带后缀（devcard-notary.XXXXXX.log）会直接失败。
+NOTARY_LOG="$(mktemp "${TMPDIR:-/tmp}/devcard-notary.XXXXXX")"
 xcrun notarytool submit "$DMG" \
   --keychain-profile "$NOTARY_PROFILE" \
   --wait \
