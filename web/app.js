@@ -2498,6 +2498,11 @@
       });
     });
 
+  // ---------- 壳层入口 ----------
+  // Windows 壳菜单栏「帮助 → 检查更新」触发：ExecuteScript 调这个。
+  window.devcard = window.devcard || {};
+  window.devcard.checkUpdate = checkUpdate;
+
   // ---------- 启动 ----------
 
   api('GET', '/api/bootstrap')

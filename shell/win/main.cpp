@@ -38,6 +38,10 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
 constexpr wchar_t kWindowTitle[] = L"设备管理卡";
 
+// 菜单栏命令 ID（帮助菜单）
+constexpr int IDM_HELP_CHECKUPDATE = 1001;
+constexpr int IDM_HELP_ABOUT = 1002;
+
 struct ShellState {
   HWND hwnd = nullptr;
   bool devtools = false;
@@ -91,6 +95,16 @@ void Notify(const wchar_t* kind, const std::wstring& message) {
   auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
       [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
   g.webview->ExecuteScript(wide_js.c_str(), handler.Get());
+}
+
+// 从壳层菜单栏触发前端检查更新。前端必须已加载（window.devcard.checkUpdate）。
+void TriggerFrontendCheckUpdate() {
+  if (!g.webview) return;
+  const std::wstring js =
+      L"window.devcard && window.devcard.checkUpdate && window.devcard.checkUpdate();";
+  auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+      [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
+  g.webview->ExecuteScript(js.c_str(), handler.Get());
 }
 
 std::wstring HResultText(HRESULT hr) {
@@ -687,6 +701,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
     case WM_SIZE:
       ResizeWebView();
       return 0;
+    case WM_COMMAND: {
+      switch (LOWORD(wparam)) {
+        case IDM_HELP_CHECKUPDATE:
+          TriggerFrontendCheckUpdate();
+          break;
+        case IDM_HELP_ABOUT: {
+          const std::wstring about =
+              std::wstring(kWindowTitle) +
+              L"\n物业设备台账与设备管理卡打印工具\n\n"
+              L"菜单栏「帮助 → 检查更新」触发自动版本检测。";
+          MessageBoxW(hwnd, about.c_str(), L"关于 DevCard",
+                      MB_OK | MB_ICONINFORMATION);
+          break;
+        }
+      }
+      return 0;
+    }
     case WM_CLOSE:
       ConfirmExit();
       return 0;
@@ -812,6 +843,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     g_server.reset();
     CoUninitialize();
     return 1;
+  }
+
+  // 菜单栏：帮助 → 检查更新 / 关于。
+  // 菜单句柄归系统管理，窗口销毁时自动释放，无需手动 DestroyMenu。
+  {
+    HMENU hMenuBar = CreateMenu();
+    HMENU hHelpMenu = CreatePopupMenu();
+    AppendMenuW(hHelpMenu, MF_STRING, IDM_HELP_CHECKUPDATE, L"检查更新");
+    AppendMenuW(hHelpMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hHelpMenu, MF_STRING, IDM_HELP_ABOUT, L"关于 DevCard");
+    AppendMenuW(hMenuBar, MF_POPUP,
+                reinterpret_cast<UINT_PTR>(hHelpMenu), L"帮助");
+    SetMenu(g.hwnd, hMenuBar);
+    DrawMenuBar(g.hwnd);
   }
 
   if (!CreateWebView()) {
