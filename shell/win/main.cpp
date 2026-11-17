@@ -49,7 +49,8 @@ struct ShellState {
   HWND hwnd = nullptr;
   bool devtools = false;
   bool print_busy = false;
-  bool server_exit_requested = false;  // server handler (auto-update install) wants process to exit
+  // 由 server_exit_watcher 线程写入、UI 线程在 WM_CLOSE 读取，必须是原子量。
+  std::atomic<bool> server_exit_requested{false};
   // 退出流程的停机信号：server_exit_watcher 靠它跳出轮询，
   // 否则正常关窗时 join() 会永久阻塞（进程活着、18080 端口不释放）。
   std::atomic<bool> shutdown{false};

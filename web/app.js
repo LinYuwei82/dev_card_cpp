@@ -600,8 +600,11 @@
     var result = state.updateCheck || null;
     var release = result && result.release ? result.release : null;
     var latest = release ? release.version : (manifest.latest || '');
-    var url = (release && release.url) || manifest.download_url ||
-      manifest.download_page || '';
+    // 下载页优先用后端 download_page（运维给的是页面地址）；
+    // update.json 的 download_url 在自管清单里指向具体安装包文件，
+    // 只有当后端没给页面时才退回它，避免「打开下载页」直接下载一个 exe。
+    var url = (release && release.url) || manifest.download_page ||
+      manifest.download_url || '';
     state.updateUrl = /^https?:\/\//i.test(url) ? url : '';
     el.updateVersion.textContent = '当前版本 v' + (state.version || '?') +
       (latest ? '，最新版本 v' + latest : '');
@@ -651,6 +654,19 @@
     el.updateInstall.hidden = !(isAdmin && (isWindows || canSparkle));
     el.updateInstall.disabled = isWindows;
     state.updateInstalling = false;
+    // 服务端若已有「下载并校验完成」的包（同一次运行里关掉弹窗再打开），
+    // 直接放开「安装并重启」，不必重新下载一遍。
+    if (isWindows && isAdmin) {
+      api('GET', '/api/update/download').then(function (data) {
+        if (!data || data.state !== 'done') return;
+        el.updateInstall.disabled = false;
+        el.updateDownloadPackage.disabled = true;
+        setUpdateProgress('更新包已就绪（已通过 SHA256 + 字节数校验）：' +
+          (data.path || ''));
+      }).catch(function () {
+        // 读不到进度就当没下载过，按钮保持原状。
+      });
+    }
     loadInstallResult();
     el.updateModal.hidden = false;
   }

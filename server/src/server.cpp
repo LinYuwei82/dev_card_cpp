@@ -508,9 +508,21 @@ void persist_sessions(ServerState& state) {
   }
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) return;
-  out << doc.dump();
+  // 先写临时文件再替换：直接截断写，进程在写一半时被杀会留下半截 JSON，
+  // 下次启动 load_sessions 只能整体丢弃（等于所有人被登出）。
+  const auto temp = path;
+  const auto staging = path.parent_path() / (path.filename().wstring() + L".tmp");
+  {
+    std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << doc.dump();
+  }
+  std::filesystem::rename(staging, temp, ec);
+  if (ec) {
+    std::filesystem::remove(temp, ec);
+    std::filesystem::rename(staging, temp, ec);
+    if (ec) std::filesystem::remove(staging, ec);
+  }
 }
 
 void load_sessions(ServerState& state) {
@@ -1358,18 +1370,17 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                json{{"state", "installing"},
                                     {"setup", path_to_utf8(full)}},
                                202);
-                      // 202 写回浏览器后，触发两件事让本进程退出：
-                      //   1. stop_requested 标志（CLI server mode 的 main loop 检查它）
-                      //   2. server.stop()（shell 模式：httplib 监听线程会立刻退出，
-                      //      同时 shell 自己也在轮询 stop_requested → PostMessageW(WM_CLOSE)）
-                      // helper 的 WaitForSingleObject 等到本进程退出后才继续跑 Inno Setup。
+                      // 202 写回浏览器后，只置 stop_requested 让本进程退出：
+                      //   - CLI server mode：main.cpp 轮询该标志，退出后析构 ServerHandle 停掉监听
+                      //   - shell 模式：main.cpp 的 watcher 轮询该标志 → PostMessageW(WM_CLOSE)
+                      // 这里不要再碰 state.server（原实现延迟 300ms 调 server.stop()，
+                      // 而脱离线程捕获的是 state 引用：进程若先退出，就是对已销毁对象调成员函数）。
                       const std::shared_ptr<std::atomic<bool>> stop =
                           state.stop_requested;
-                      std::thread([&state, stop]() {
+                      std::thread([stop]() {
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(300));
                         stop->store(true);
-                        state.server.stop();
                       }).detach();
 #endif
                     });

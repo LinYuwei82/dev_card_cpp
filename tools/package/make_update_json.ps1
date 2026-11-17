@@ -15,6 +15,9 @@ param(
     [string]$SetupPath = "",
     [string[]]$ExtraAssets = @(),
     [string]$BaseUrl = "https://dl.xiaotu.online/devcard/",
+    # 下载页：三个产品共用同一个页面。清单里的 download_url 就是给人点的页面，
+    # 不是安装包直链——早先这里写成 $Base+安装包名，「打开下载页」会直接把 exe 下载下来。
+    [string]$DownloadPage = "https://dl.xiaotu.online/",
     [string]$Notes = "",
     [string]$OutFile = ""
 )
@@ -106,9 +109,21 @@ if ([string]::IsNullOrWhiteSpace($Notes)) {
     $Notes = "DevCard $Version 版本发布。"
 }
 
+if ([string]::IsNullOrWhiteSpace($DownloadPage)) {
+    Fail "-DownloadPage 不能为空"
+}
+$page = $DownloadPage.Trim()
+if ($page -notmatch '^https://') {
+    Fail "-DownloadPage 必须是 https://"
+}
+# 下载页必须指向目录/页面，而不是某个安装包文件；否则等于把「下载页」写成直链。
+if ($page -match '\.(exe|zip|dmg)$') {
+    Fail "-DownloadPage 不能指向具体文件：$page"
+}
+
 $manifest = [ordered]@{
     latest               = $Version
-    download_url         = $base + $setupName
+    download_url         = $page
     notes                = $Notes
     check_enabled        = $true
     check_endpoint       = $base + "update.json"
@@ -133,6 +148,19 @@ foreach ($asset in $check.assets) {
     if ($asset.digest -notmatch '^sha256:[0-9a-f]{64}$') {
         Fail "回读校验失败：$($asset.name) 的 digest 格式不对"
     }
+    # 客户端按「sha256 且 size>0」决定是否给出下载入口，size=0 的清单等于把按钮做灰。
+    if ([int64]$asset.size -le 0) {
+        Fail "回读校验失败：$($asset.name) 的 size 不是正数"
+    }
+    if ($asset.download_url -notmatch '^https://' -or $asset.download_url -match '/$') {
+        Fail "回读校验失败：$($asset.name) 的 download_url 没有指向具体文件"
+    }
+    if (-not $asset.download_url.EndsWith('/' + $asset.name)) {
+        Fail "回读校验失败：$($asset.name) 的 download_url 与文件名不一致"
+    }
+}
+if ($check.download_url -ne $page) {
+    Fail "回读校验失败：download_url 不是下载页（$page）"
 }
 
 Write-Host ""
