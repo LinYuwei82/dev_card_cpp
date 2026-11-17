@@ -24,6 +24,7 @@
 #include <iterator>#include <memory>
 #include <string.h>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -46,6 +47,7 @@ struct ShellState {
   HWND hwnd = nullptr;
   bool devtools = false;
   bool print_busy = false;
+  bool server_exit_requested = false;  // server handler (auto-update install) wants process to exit
   std::wstring origin;
   std::filesystem::path data_dir;
   ComPtr<ICoreWebView2Environment> env;
@@ -726,7 +728,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       return 0;
     }
     case WM_CLOSE:
-      ConfirmExit();
+      if (g.server_exit_requested) {
+        // server handler (auto-update install) requested exit — skip confirmation,
+        // the user already triggered the update flow.
+        DestroyWindow(g.hwnd);
+      } else {
+        ConfirmExit();
+      }
       return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
@@ -874,11 +882,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   ShowWindow(g.hwnd, SW_SHOW);
   UpdateWindow(g.hwnd);
 
+  // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
+  // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。
+  // 这里启动一个后台线程，每 200ms 检查一次：如果 server 想退出，就 PostMessageW(WM_CLOSE)
+  // 让主窗口走正常销毁流程，进程随之干净退出。
+  std::thread server_exit_watcher([&]() {
+    while (true) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      if (g_server && g_server->stop_requested()) {
+        g.server_exit_requested = true;
+        PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
+        break;
+      }
+    }
+  });
+
   MSG message = {};
   while (GetMessageW(&message, nullptr, 0, 0)) {
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
+  if (server_exit_watcher.joinable()) server_exit_watcher.join();
 
   if (g.controller) g.controller->Close();
   g.webview.Reset();

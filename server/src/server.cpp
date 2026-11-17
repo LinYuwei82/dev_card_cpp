@@ -1311,14 +1311,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                json{{"state", "installing"},
                                     {"setup", path_to_utf8(full)}},
                                202);
-                      // 先让 202 的响应写回浏览器，再让 main 退出；
-                      // 用 shared_ptr 捕获，避免 detached 线程碰到已析构的状态。
+                      // 202 写回浏览器后，触发两件事让本进程退出：
+                      //   1. stop_requested 标志（CLI server mode 的 main loop 检查它）
+                      //   2. server.stop()（shell 模式：httplib 监听线程会立刻退出，
+                      //      同时 shell 自己也在轮询 stop_requested → PostMessageW(WM_CLOSE)）
+                      // helper 的 WaitForSingleObject 等到本进程退出后才继续跑 Inno Setup。
                       const std::shared_ptr<std::atomic<bool>> stop =
                           state.stop_requested;
-                      std::thread([stop]() {
+                      std::thread([&state, stop]() {
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(300));
                         stop->store(true);
+                        state.server.stop();
                       }).detach();
 #endif
                     });
