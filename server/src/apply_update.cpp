@@ -103,7 +103,7 @@ RunResult run_and_wait(const std::filesystem::path& program,
   buffer.push_back(L'\0');
   const std::wstring cwd = working_dir.wstring();
   if (!CreateProcessW(program.c_str(), buffer.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, cwd.c_str(), &startup,
+                      0, nullptr, cwd.c_str(), &startup,
                       &process)) {
     result.error = "无法启动 " + path_to_utf8(program) + "：" + last_error_text();
     return result;
@@ -282,9 +282,13 @@ void spawn_apply_update(const std::filesystem::path& helper,
   std::vector<wchar_t> buffer(command.begin(), command.end());
   buffer.push_back(L'\0');
   const std::wstring cwd = helper.parent_path().wstring();
-  // DETACHED_PROCESS：不继承本进程的控制台，服务器退出后协助器继续跑。
+  // 不用 DETACHED_PROCESS 也不用 CREATE_NO_WINDOW：
+  // 实测这两个标志会导致协助器内部的 Windows API 异常
+  // （run_and_wait 里 Inno Setup 子进程会无限等待，
+  //  连 write_apply_state(Verifying) 都到不了）。
+  // 让 CreateProcessW 用默认标志，协助器正常继承/创建控制台。
   if (!CreateProcessW(helper.c_str(), buffer.data(), nullptr, nullptr, FALSE,
-                      DETACHED_PROCESS, nullptr, cwd.c_str(), &startup,
+                      0, nullptr, cwd.c_str(), &startup,
                       &process)) {
     throw AppError("install_failed",
                    "无法启动更新协助程序：" + std::string(last_error_text()));

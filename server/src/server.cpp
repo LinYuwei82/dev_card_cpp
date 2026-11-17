@@ -1271,10 +1271,14 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         state.update->installing = true;
                       }
 
+                      // 协助器用 devcard-server.exe（它的 main 解析 --apply-update），
+                      // 而不是当前的壳层 DevCard.exe（不处理 --apply-update 参数）。
                       const std::filesystem::path helper =
                           updates_dir / "devcard-updater.exe";
+                      const std::filesystem::path server_exe =
+                          current_executable().parent_path() / L"devcard-server.exe";
                       std::filesystem::copy_file(
-                          current_executable(), helper,
+                          server_exe, helper,
                           std::filesystem::copy_options::overwrite_existing, ec);
                       if (ec) {
                         throw AppError("install_failed",

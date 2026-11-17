@@ -80,8 +80,15 @@ std::string Narrow(const std::wstring& wide) {
 }
 
 void Fatal(const std::wstring& message) {
+  // MB_TOPMOST | MB_SETFOREGROUND 让 MessageBox 抢过所有窗口置顶，
+  // 避免被其他进程的窗口挡住导致用户看不到错误。
+  // MessageBox 返回后（用户点"确定"）立即 ExitProcess(1)，
+  // 不留一个进程存活但服务器/窗口都没起来的"僵尸"实例。
+  // ExitProcess 跳过 C++ 栈展开，但 Windows 会自动关闭所有句柄——
+  // InstanceGuard 的 LockFileEx、DB mutex、socket 都会被释放。
   MessageBoxW(nullptr, message.c_str(), L"DevCard 启动失败",
-              MB_OK | MB_ICONERROR);
+              MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+  ExitProcess(1);
 }
 
 void Notify(const wchar_t* kind, const std::wstring& message) {
