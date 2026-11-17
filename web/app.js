@@ -575,6 +575,14 @@
   // 手动更新的步骤要按平台写清楚：只说「有新版本」等于没说。
   function updateSteps() {
     var ua = navigator.userAgent || '';
+    // macOS 桌面壳走 Sparkle，不再让用户手动拖 DMG。
+    if (isMacShell()) {
+      return [
+        '点「用 Sparkle 安装并重启」，由 Sparkle 检查新版本并下载。',
+        '在 Sparkle 窗口里确认安装，App 会自动替换并重启。',
+        '台账数据在用户数据目录，升级不会动它；也可用菜单栏「DevCard → 检查更新…」。'
+      ];
+    }
     if (/Macintosh|Mac OS X/i.test(ua)) {
       return [
         '点「下载更新包」把 DMG 下载到数据目录并校验（只下载，不安装）；也可打开下载页手动下载。',
@@ -639,12 +647,14 @@
     var isWindows = /Windows/i.test(ua);
     // macOS 的替换与重启交给 Sparkle：只有桌面壳里有桥，浏览器里没有。
     var canSparkle = isMacShell();
-    el.updateDownloadPackage.disabled =
+    // macOS 桌面壳不需要前端下载安装包：Sparkle 自己下载并验签。
+    el.updateDownloadPackage.disabled = canSparkle ||
       !(asset && asset.sha256 && asset.size && isAdmin);
-    if (!asset) {
-      setUpdateProgress(canSparkle
-        ? '发布清单里没有可直接下载的安装包；点下面的按钮交给 Sparkle 检查并安装。'
-        : '发布清单里没有当前平台的安装包，请用下载页手动更新。');
+    if (canSparkle) {
+      setUpdateProgress('macOS 走 Sparkle 自动更新：点下方「用 Sparkle 安装并重启」，' +
+        '在系统弹出的窗口中完成下载、验签与安装。');
+    } else if (!asset) {
+      setUpdateProgress('发布清单里没有当前平台的安装包，请用下载页手动更新。');
     } else if (!asset.sha256 || !asset.size) {
       setUpdateProgress('发布清单缺少 SHA256 或字节数，无法校验，已退回只提示；请用下载页手动更新。');
     } else if (!isAdmin) {
@@ -712,15 +722,14 @@
     if (state.updateInstalling) return;
     // macOS：交给 Sparkle 完成检查、下载、安装与重启。
     // 服务端 /api/update/install 只在 Windows 实现，mac 不走这条路。
-    if (/Macintosh|Mac OS X/i.test(navigator.userAgent || '')) {
-      state.updateInstalling = true;
-      el.updateInstall.disabled = true;
-      if (!sendToShell('checkForUpdates', {})) {
-        state.updateInstalling = false;
-        el.updateInstall.disabled = false;
+    if (isMacShell()) {
+      // 只用 Sparkle：不锁按钮，Sparkle 窗口是异步的，锁了会让用户以为卡死。
+      if (!sendToShell('checkForUpdates')) {
         setUpdateProgress('当前不在桌面壳内，无法调用 Sparkle；请用下载页手动更新。', true);
         return;
       }
+      el.updateInstall.disabled = true;
+      setTimeout(function () { el.updateInstall.disabled = false; }, 3000);
       setUpdateProgress('已请求 Sparkle 检查更新：按它弹出的窗口完成下载与安装。若没有弹出窗口，说明当前版本未启用 Sparkle，请用下载页手动更新。');
       return;
     }
