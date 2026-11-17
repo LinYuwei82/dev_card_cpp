@@ -61,5 +61,5 @@ PY
 for file in "$WIN_ICO" "$WEB_ICO"; do
   bytes="$(wc -c < "$file" | tr -d '[:space:]')"
   [ "$bytes" -gt 0 ] || fail "生成的文件为空：$file"
-  echo "生成：$file（${bytes} bytes）"
+  echo "生成：${file}（${bytes} bytes）"
 done
