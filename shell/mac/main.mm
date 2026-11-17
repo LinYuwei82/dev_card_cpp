@@ -180,7 +180,7 @@ static NSString* DevCardConfirmActionTitle(NSString* message) {
 
 // 打印双通道：导出 PDF 与直接打印共用同一份打印 DOM，只改变输出目标。
 API_AVAILABLE(macos(11.0))
-@interface PrintBridge : NSObject <WKScriptMessageHandler, NSWindowDelegate>
+@interface PrintBridge : NSObject <WKScriptMessageHandler, NSWindowDelegate, NSApplicationDelegate>
 @property(nonatomic, assign) WKWebView* webView;
 @property(nonatomic, assign) NSWindow* window;
 // 自动化验证：设置后跳过保存面板，直接把 PDF 写到该路径。
@@ -233,6 +233,20 @@ API_AVAILABLE(macos(11.0))
 @end
 
 @implementation PrintBridge
+
+// 点窗口红叉（关闭按钮）时，关闭最后一个窗口 = 终止 App。
+// 没有这个方法时，红叉只关窗口但 NSApp 继续跑（留在 Dock 里），
+// 用户必须 Cmd+Q 或 Dock 右键才能真正退出——这是用户反馈的根因。
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
+  return YES;
+}
+
+// 关闭主窗口时也直接 terminate，不等 applicationShouldTerminateAfterLastWindowClosed:
+// 的下一轮事件循环——避免窗口已消失但 Dock 图标还闪一下。
+- (BOOL)windowShouldClose:(id)sender {
+  [NSApp terminate:nil];
+  return YES;
+}
 
 - (void)userContentController:(WKUserContentController*)controller
       didReceiveScriptMessage:(WKScriptMessage*)message {
@@ -1001,6 +1015,10 @@ int main(int argc, const char* argv[]) {
     window.contentView = web;
     bridge.webView = web;
     bridge.window = window;
+    // 关键：设 window.delegate，否则 PrintBridge 的 NSWindowDelegate 方法
+    // （比如 applicationShouldTerminateAfterLastWindowClosed）不会被调用。
+    window.delegate = bridge;
+    [NSApp setDelegate:bridge];
 
     // Sparkle 2 自更新：Info.plist 里必须有 SUFeedURL + SUPublicEDKey。
     // 开发期两键为空时跳过——updaterController 是 nil，前端调 checkForUpdates 会收到提示。
