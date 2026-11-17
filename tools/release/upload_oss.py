@@ -31,9 +31,9 @@ import urllib.request
 from email.utils import formatdate
 
 CONTENT_TYPES = {
-    ".dmg": ("application/octet-stream", "public, max-age=31536000"),
-    ".exe": ("application/octet-stream", "public, max-age=31536000"),
-    ".zip": ("application/octet-stream", "public, max-age=31536000"),
+    ".dmg": ("application/octet-stream", "public, max-age=31536000, immutable"),
+    ".exe": ("application/octet-stream", "public, max-age=31536000, immutable"),
+    ".zip": ("application/octet-stream", "public, max-age=31536000, immutable"),
     ".pdf": ("application/pdf", "public, max-age=86400"),
     ".xml": ("application/xml; charset=utf-8", "public, max-age=60"),
     ".json": ("application/json; charset=utf-8", "public, max-age=60"),
