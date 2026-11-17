@@ -11,7 +11,7 @@
 #   tools/package/make_dmg.sh --out dir      # 指定输出目录（默认 dist/）
 #   tools/package/make_dmg.sh --feed-url URL # 指定 Sparkle feed（默认线上 appcast）
 #
-# Sparkle feed 默认取 https://dl.xiaotu.online/devcard/appcast.xml，也可用
+# Sparkle feed 默认取 https://dl.xiaotu.online/devcard/updates/stable/appcast.xml，也可用
 # 环境变量 DEVCARD_SPARKLE_FEED_URL 覆盖；显式传空字符串表示不启用 Sparkle
 # （仅用于自测，正式包不要这么做：没有 SUFeedURL 的包永远不会自更新）。
 #
@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="${DEVCARD_BUILD_DIR:-$REPO_ROOT/build-new}"
 OUT_DIR="${DEVCARD_DIST_DIR:-$REPO_ROOT/dist}"
 SKIP_BUILD=0
-FEED_URL="${DEVCARD_SPARKLE_FEED_URL:-https://dl.xiaotu.online/devcard/appcast.xml}"
+FEED_URL="${DEVCARD_SPARKLE_FEED_URL:-https://dl.xiaotu.online/devcard/updates/stable/appcast.xml}"
 
 usage() {
   sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
