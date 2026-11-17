@@ -357,9 +357,23 @@
 
   // 发布元数据两条来源都认：GitHub/Gitee Release（tag_name/html_url/body）
   // 或自管清单（latest/download_url/notes）。版本号不合法就整条不认。
+  // 自管清单可给 latest_by_platform：两个平台发版节奏不同步时，
+  // 单字段 latest 会让某一端看到装不上/装回旧版的新版本号。
+  function platformLatest(doc) {
+    if (!doc || typeof doc !== 'object') return '';
+    var per = doc.latest_by_platform;
+    if (!per || typeof per !== 'object' || Array.isArray(per)) return '';
+    var ua = navigator.userAgent || '';
+    var key = /Windows/i.test(ua) ? 'windows'
+      : (/Macintosh|Mac OS X/i.test(ua) ? 'macos' : '');
+    if (!key) return '';
+    return normalizeVersion(per[key] || '');
+  }
+
   function parseRelease(doc) {
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
-    var version = normalizeVersion(doc.tag_name || doc.latest || doc.version || '');
+    var version = normalizeVersion(doc.tag_name || platformLatest(doc) ||
+      doc.latest || doc.version || '');
     if (!version) return null;
     // release.url 只从 html_url 取（GitHub Release 页面 URL），
     // 不认 download_url——那个字段在 OSS 目录清单里经常是指向某个资产文件的，
@@ -390,7 +404,8 @@
         name: String(item.name || ''),
         url: link,
         size: isFinite(size) && size > 0 ? size : 0,
-        sha256: match ? match[1].toLowerCase() : ''
+        sha256: match ? match[1].toLowerCase() : '',
+        version: normalizeVersion(item.version || '')
       });
     });
     return assets;
@@ -650,8 +665,9 @@
     // 清单「最新版本」与选中安装包的版本不一致时停用自动下载/安装：
     // 例如 latest=1.2.3 但只投了 1.2.2 的安装包，用户点了会装回 1.2.2，
     // 版本没变 → 下次打开仍提示「有新版本」，形成反复安装失败的循环。
-    var assetVersion = '';
-    if (asset && asset.name) {
+    // 资产版本优先取清单里的 version 字段，没有才从文件名解析。
+    var assetVersion = (asset && asset.version) || '';
+    if (!assetVersion && asset && asset.name) {
       var matched = /-(\d+\.\d+\.\d+)(?:[-.]|$)/.exec(asset.name);
       if (matched) assetVersion = matched[1];
     }

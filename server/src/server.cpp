@@ -300,6 +300,10 @@ int compare_version(const std::string& left, const std::string& right) {
 struct UpdateManifest {
   bool found = false;
   std::string latest;
+  // 分平台最新版本：两个平台的发布节奏不同步（例如 macOS 1.2.3 已发、
+  // Windows 只有 1.2.2 包），单个 latest 无法同时表达，缺省时退回 latest。
+  std::string latest_macos;
+  std::string latest_windows;
   std::string download_url;
   std::string notes;
   std::string error;
@@ -315,6 +319,17 @@ struct UpdateManifest {
 
 bool is_http_url(const std::string& value) {
   return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
+}
+
+// 本进程所在平台对应的最新版本：清单给了 latest_by_platform 就用它，
+// 否则退回全局 latest（旧清单没有分平台字段）。
+std::string effective_latest(const UpdateManifest& manifest) {
+#ifdef _WIN32
+  if (!manifest.latest_windows.empty()) return manifest.latest_windows;
+#else
+  if (!manifest.latest_macos.empty()) return manifest.latest_macos;
+#endif
+  return manifest.latest;
 }
 
 UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
@@ -345,9 +360,15 @@ UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
     result.check_interval_hours = std::max<long>(1, doc["check_interval_hours"].get<long>());
   }
   std::vector<long> parts;
-  if (result.latest.empty()) {
+  if (doc.contains("latest_by_platform") && doc["latest_by_platform"].is_object()) {
+    const json& per = doc["latest_by_platform"];
+    result.latest_macos = trim_copy(per.value("macos", std::string{}));
+    result.latest_windows = trim_copy(per.value("windows", std::string{}));
+  }
+  const std::string effective = effective_latest(result);
+  if (effective.empty()) {
     result.error = "更新清单缺少 latest";
-  } else if (!parse_version(result.latest, &parts)) {
+  } else if (!parse_version(effective, &parts)) {
     result.error = "更新清单中的 latest 不是合法版本号";
   }
   return result;
@@ -1018,13 +1039,13 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                        const httplib::Request&,
                                        httplib::Response& response) {
     const UpdateManifest manifest = read_update_manifest(state.data_dir);
-    const bool available = !manifest.latest.empty() &&
-                           compare_version(manifest.latest, version) > 0;
+    // 本平台的最新版本：manifest.latest 只是旧清单的兜底。
+    const std::string latest = effective_latest(manifest);
+    const bool available = !latest.empty() && compare_version(latest, version) > 0;
     set_json(response,
              json{{"version", version},
                   {"schema_version", schema},
-                  {"latest", manifest.latest.empty() ? json(nullptr)
-                                                     : json(manifest.latest)},
+                  {"latest", latest.empty() ? json(nullptr) : json(latest)},
                   {"update_available", available},
                   {"download_url", manifest.download_url},
                   {"download_page", download_page()},

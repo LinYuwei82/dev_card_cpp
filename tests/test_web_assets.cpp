@@ -362,6 +362,37 @@ int check_update_guards() {
           std::cerr << "[失败] 被拒绝的下载请求仍然创建了 updates 目录" << std::endl;
           failures = 1;
         }
+
+        // 分平台最新版本：macOS 与 Windows 发版节奏不同步时，
+        // 各自只应看到本平台的 latest，不能用全局 latest 冒充。
+        {
+          std::ofstream out(data_dir / "update.json", std::ios::binary);
+          out << R"({"latest":"1.2.2","latest_by_platform":)"
+                 R"({"macos":"9.9.9","windows":"1.2.2"},)"
+                 R"("check_enabled":false})";
+        }
+#ifdef _WIN32
+        const std::string expect_latest = "1.2.2";
+        const std::string expect_available = "false";
+#else
+        const std::string expect_latest = "9.9.9";
+        const std::string expect_available = "true";
+#endif
+        const auto version_info = client.Get("/api/version");
+        const std::string version_body =
+            version_info ? version_info->body : std::string{};
+        if (!version_info || version_info->status != 200 ||
+            version_body.find("\"latest\":\"" + expect_latest + "\"") ==
+                std::string::npos ||
+            version_body.find(std::string("\"update_available\":") +
+                              expect_available) == std::string::npos) {
+          std::cerr << "[失败] 分平台 latest 未生效（期望 "
+                    << expect_latest << " / update_available="
+                    << expect_available << "）："
+                    << (version_info ? version_info->status : -1) << " "
+                    << version_body << std::endl;
+          failures = 1;
+        }
       }
     }
   }
