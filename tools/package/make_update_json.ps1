@@ -1,17 +1,19 @@
-﻿# DevCard 更新清单生成：按线上 update.json 的格式输出，避免手写漏字段。
+﻿# DevCard 更新清单生成：按线上清单格式输出，避免手写漏字段。
 #
 # 用法（仓库根目录或任意目录均可）：
 #   powershell -ExecutionPolicy Bypass -File tools\package\make_update_json.ps1
-#   ... -SetupPath dist\DevCard-1.2.0-setup.exe -Notes "本次更新内容"
-#   ... -ExtraAssets dist\DevCard-1.2.0-macos-arm64.dmg
-#   ... -BaseUrl https://dl.xiaotu.online/devcard/
+#   ... -Platform windows -SetupPath dist\DevCard-1.2.2-setup.exe -Notes "本次更新内容"
+#   ... -Platform macos -ExtraAssets dist\DevCard-1.2.3-macos-arm64.dmg
+#   ... -BaseUrl https://dl.xiaotu.online/devcard/ -Channel stable
 #
-# 默认：版本取 VERSION.txt，安装包取 dist\DevCard-<版本>-setup.exe，
-# 输出 dist\update.json。清单只描述已经存在的文件：缺文件、空文件、
+# 清单统一放在 <product>/updates/<channel>/ 下：Windows 输出 windows.json，
+# macOS 输出 latest.json。清单只描述已经存在的文件：缺文件、空文件、
 # 文件名与版本对不上都直接失败，不产出一个指向不存在资源的清单。
 
 param(
     [string]$Version = "",
+    [ValidateSet("windows", "macos")][string]$Platform = "windows",
+    [string]$Channel = "stable",
     [string]$SetupPath = "",
     [string[]]$ExtraAssets = @(),
     [string]$BaseUrl = "https://dl.xiaotu.online/devcard/",
@@ -53,21 +55,28 @@ if ($base -notmatch '^https://') {
     Fail "-BaseUrl 必须是 https://（前端只接受 https 资源）"
 }
 
-if ([string]::IsNullOrWhiteSpace($SetupPath)) {
-    $SetupPath = Join-Path $repoRoot "dist\DevCard-$Version-setup.exe"
+$manifestName = if ($Platform -eq "macos") { "latest.json" } else { "windows.json" }
+
+if ($Platform -eq "macos" -and -not [string]::IsNullOrWhiteSpace($SetupPath)) {
+    Fail "-Platform macos 不接受 -SetupPath，请把 dmg 传给 -ExtraAssets"
 }
-if (-not (Test-Path -LiteralPath $SetupPath)) {
-    Fail "找不到安装包：$SetupPath（先跑 Inno Setup 编译）"
-}
-$SetupPath = (Resolve-Path -LiteralPath $SetupPath).Path
-$setupName = Split-Path -Leaf $SetupPath
-$expectedName = "DevCard-$Version-setup.exe"
-if ($setupName -ne $expectedName) {
-    Fail "安装包文件名是 $setupName，应为 $expectedName；文件名与版本不一致的包不能进清单"
+if ($Platform -eq "windows") {
+    if ([string]::IsNullOrWhiteSpace($SetupPath)) {
+        $SetupPath = Join-Path $repoRoot "dist\DevCard-$Version-setup.exe"
+    }
+    if (-not (Test-Path -LiteralPath $SetupPath)) {
+        Fail "找不到安装包：$SetupPath（先跑 Inno Setup 编译）"
+    }
+    $SetupPath = (Resolve-Path -LiteralPath $SetupPath).Path
+    $setupName = Split-Path -Leaf $SetupPath
+    $expectedName = "DevCard-$Version-setup.exe"
+    if ($setupName -ne $expectedName) {
+        Fail "安装包文件名是 $setupName，应为 $expectedName；文件名与版本不一致的包不能进清单"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($OutFile)) {
-    $OutFile = Join-Path $repoRoot "dist\update.json"
+    $OutFile = Join-Path $repoRoot "dist\$manifestName"
 }
 
 # 单个资源：名称、下载地址、sha256 摘要、字节数。
@@ -90,7 +99,9 @@ function New-Asset([string]$Path, [string]$Base) {
 }
 
 $assets = @()
-$assets += New-Asset $SetupPath $base
+if ($Platform -eq "windows") {
+    $assets += New-Asset $SetupPath $base
+}
 
 foreach ($extra in $ExtraAssets) {
     if ([string]::IsNullOrWhiteSpace($extra)) { continue }
@@ -98,11 +109,15 @@ foreach ($extra in $ExtraAssets) {
         Fail "找不到附加资源：$extra"
     }
     $full = (Resolve-Path -LiteralPath $extra).Path
-    if ($full -eq $SetupPath) { continue }
+    if ($SetupPath -and $full -eq $SetupPath) { continue }
     if ($assets | Where-Object { $_.name -eq (Split-Path -Leaf $full) }) {
         Fail "资源重名：$(Split-Path -Leaf $full)"
     }
     $assets += New-Asset $full $base
+}
+
+if ($assets.Count -eq 0) {
+    Fail "清单至少需要一个产物：Windows 用 -SetupPath，macOS 用 -ExtraAssets"
 }
 
 if ([string]::IsNullOrWhiteSpace($Notes)) {
@@ -126,7 +141,7 @@ $manifest = [ordered]@{
     download_url         = $page
     notes                = $Notes
     check_enabled        = $true
-    check_endpoint       = $base + "update.json"
+    check_endpoint       = $base + "updates/$Channel/$manifestName"
     check_interval_hours = 24
     assets               = $assets
 }
@@ -173,6 +188,6 @@ foreach ($asset in $assets) {
 }
 Write-Host "  检查地址：$($manifest.check_endpoint)"
 Write-Host ""
-Write-Host "提醒：上传安装包与 update.json 到 $base；"
+Write-Host "提醒：上传安装包与 $manifestName 到 $base；"
 Write-Host "      要让本机服务立即看到，还需把 update.json 复制到数据目录。"
 exit 0

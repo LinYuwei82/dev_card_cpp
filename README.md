@@ -61,11 +61,11 @@ ctest --test-dir build-new --output-on-failure
 ```bash
 tools/package/make_dmg.sh                # 构建 + 依赖自检 + Developer ID 签名 + 公证 + staple + DMG
 tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
-tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/appcast.xml
+tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/updates/stable/appcast.xml
 ```
 
 - 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
-- **Sparkle 自检**：feed 默认 `https://dl.xiaotu.online/devcard/appcast.xml`，可用 `--feed-url` 或环境变量 `DEVCARD_SPARKLE_FEED_URL` 覆盖；打包时核对 `Info.plist` 的 `SUFeedURL` 与 `SUPublicEDKey`，缺失或不一致直接失败，避免发出「永远检查不到更新」的包。
+- **Sparkle 自检**：feed 默认 `https://dl.xiaotu.online/devcard/updates/stable/appcast.xml`，可用 `--feed-url` 或环境变量 `DEVCARD_SPARKLE_FEED_URL` 覆盖；打包时核对 `Info.plist` 的 `SUFeedURL` 与 `SUPublicEDKey`，缺失或不一致直接失败，避免发出「永远检查不到更新」的包。
 - **依赖自检按 `otool -L` 实测清单**，不写死文件列表：系统库只核对 `/usr/lib/`、`/System/Library/` 前缀（共享缓存里的库磁盘上没有文件），包外依赖必须已存在且收进 `.app`，否则失败。
 - 签名按 D13（2026-11-17 变更）用 Developer ID Application，逐层签、禁用 `--deep`，`codesign --verify --deep --strict` 通过；DMG 经 `notarytool submit --wait` 公证 + `stapler staple`，`spctl --assess` 显示 `Notarized Developer ID`。公证凭证存 Keychain profile `devcard-notary`，不进脚本与仓库。
 - **字体随包自检**：`Contents/Resources/fonts/` 必须有两个子集 TTF，且与仓库 `web/fonts/` 逐字节一致（`cmp`），否则打包失败——缺字体就会回落到系统字体，两个平台印出的卡不一致。
@@ -88,8 +88,8 @@ powershell -ExecutionPolicy Bypass -File tools\package\make_update_json.ps1
 - 绿色版产物：`dist\DevCard-<版本>-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
 - 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
-- 安装版产物：`dist\DevCard-<版本>-setup.exe`；`make_update_json.ps1` 生成的 `dist\update.json` 里 `digest` 为 `sha256:<hex>`、`download_url` 指向 OSS。上传后需同步一份到数据目录，本机服务才会读到。
-- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `update.json`，并作为 artifact 上传。
+- 安装版产物：`dist\DevCard-<版本>-setup.exe`；`make_update_json.ps1` 生成的 `dist\windows.json`（macOS 用 `-Platform macos` 生成 `dist\latest.json`）里 `digest` 为 `sha256:<hex>`、`download_url` 指向 OSS。上传后需同步一份到数据目录，本机服务才会读到。
+- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `windows.json`，并作为 artifact 上传。
 
 ---
 

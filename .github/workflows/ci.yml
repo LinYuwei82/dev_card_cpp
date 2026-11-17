@@ -40,7 +40,7 @@ jobs:
         shell: pwsh
         run: ./tools/package/make_portable_win.ps1 -SkipBuild -BuildDir build-win -OutDir dist
 
-      # 安装包与更新清单也走脚本：避免手写 update.json 漏 digest/size。
+      # 安装包与更新清单也走脚本：避免手写 windows.json 漏 digest/size。
       # windows-latest 通常自带 Inno Setup 6，找不到时用 choco 补装。
       - name: 打安装包
         shell: pwsh
@@ -82,7 +82,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
-            dist/update.json
+            dist/windows.json
             build-win/server/Release/devcard-server.exe
             build-win/shell/win/Release/DevCard.exe
           if-no-files-found: error
