@@ -81,17 +81,20 @@ def build_appcast(args: argparse.Namespace) -> str:
 
     description = ""
     if args.release_notes_html:
-        description = args.release_notes_html
+        # Sparkle 要求 <description> 里的 HTML 必须放在 CDATA 里，
+        # 否则 HTML 标签会被当成 XML 元素——NSXMLParser 还能勉强解析，
+        # 但内嵌 HTML 的中文/特殊字符在部分 feed reader 里会被错解。
+        description = f"<![CDATA[{args.release_notes_html}]]>"
     elif args.release_notes:
         # release_notes 可以是 URL 或本地文件路径
         text = args.release_notes
         if os.path.isfile(args.release_notes):
-            with open(args.release_notes) as f:
+            with open(args.release_notes, encoding="utf-8") as f:
                 text = f.read()
         elif args.release_notes.startswith("http"):
             try:
                 with urllib.request.urlopen(args.release_notes, timeout=10) as r:
-                    text = r.read().decode()
+                    text = r.read().decode("utf-8")
             except Exception as e:
                 sys.stderr.write(f"WARN: 拉 release_notes 失败: {e}\n")
                 text = args.release_notes
