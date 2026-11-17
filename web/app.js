@@ -631,7 +631,7 @@
     var ua = navigator.userAgent || '';
     var isWindows = /Windows/i.test(ua);
     // macOS 的替换与重启交给 Sparkle：只有桌面壳里有桥，浏览器里没有。
-    var canSparkle = /Macintosh|Mac OS X/i.test(ua) && hasNativeBridge();
+    var canSparkle = isMacShell();
     el.updateDownloadPackage.disabled =
       !(asset && asset.sha256 && asset.size && isAdmin);
     if (!asset) {
@@ -731,9 +731,16 @@
   });
 
   // 顶栏「检查更新」按钮：主动触发检查（非静默模式）。
-  // macOS 壳层由 Sparkle 原生菜单接管，按钮在 enterApp 里被隐藏。
+  // macOS 壳层转交 Sparkle（原生弹窗承担下载 / 验签 / 替换 / 重启），
+  // Windows 壳层与浏览器走前端 update.json 清单通道。
   if (el.updateCheckBtn) {
     el.updateCheckBtn.addEventListener('click', function () {
+      if (isMacShell()) {
+        if (!sendToShell('checkForUpdates')) {
+          toast('当前环境不支持自动检查更新', 'error');
+        }
+        return;
+      }
       checkUpdate(false);
     });
   }
@@ -921,12 +928,8 @@
     load();
     // macOS 壳层由 Sparkle 自更新接管：前端不再 fetch update.json + 弹手动更新窗，
     // 避免两套更新通道并存造成用户困惑。Windows 壳层 / 浏览器网络版照常跑。
-    var ua = navigator.userAgent || '';
-    var isMacShell = /Macintosh|Mac OS X/i.test(ua) && hasNativeBridge();
-    if (!isMacShell) checkUpdate();
-    // 顶栏「检查更新」按钮：macOS 壳层隐藏（Sparkle 原生菜单已接管），
-    // Windows 壳层 / 浏览器网络版显示（这是它们唯一的主动检查入口）。
-    if (el.updateCheckBtn) el.updateCheckBtn.hidden = isMacShell;
+    // 顶栏「检查更新」按钮三端都显示：macOS 点击转交 Sparkle（见点击处理）。
+    if (!isMacShell()) checkUpdate();
     if (state.view === 'users') {
       loadUsers();
       loadBackups();
@@ -1972,6 +1975,11 @@
     }
     return !!(window.webkit && window.webkit.messageHandlers &&
       window.webkit.messageHandlers.devcard);
+  }
+
+  // macOS 桌面壳：自更新交给 Sparkle，前端只负责转发触发。
+  function isMacShell() {
+    return /Macintosh|Mac OS X/i.test(navigator.userAgent || '') && hasNativeBridge();
   }
 
   // 壳层的两条输出通道共用同一份打印 DOM，只改变输出目标。
