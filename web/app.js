@@ -647,10 +647,26 @@
     var isWindows = /Windows/i.test(ua);
     // macOS 的替换与重启交给 Sparkle：只有桌面壳里有桥，浏览器里没有。
     var canSparkle = isMacShell();
+    // 清单「最新版本」与选中安装包的版本不一致时停用自动下载/安装：
+    // 例如 latest=1.2.3 但只投了 1.2.2 的安装包，用户点了会装回 1.2.2，
+    // 版本没变 → 下次打开仍提示「有新版本」，形成反复安装失败的循环。
+    var assetVersion = '';
+    if (asset && asset.name) {
+      var matched = /-(\d+\.\d+\.\d+)(?:[-.]|$)/.exec(asset.name);
+      if (matched) assetVersion = matched[1];
+    }
+    var versionMismatch = !!(assetVersion && latest && assetVersion !== latest);
+    if (versionMismatch) {
+      asset = null;
+      state.updateAsset = null;
+    }
     // macOS 桌面壳不需要前端下载安装包：Sparkle 自己下载并验签。
-    el.updateDownloadPackage.disabled = canSparkle ||
+    el.updateDownloadPackage.disabled = canSparkle || versionMismatch ||
       !(asset && asset.sha256 && asset.size && isAdmin);
-    if (canSparkle) {
+    if (versionMismatch) {
+      setUpdateProgress('清单里的安装包是 v' + assetVersion + '，与最新版本 v' + latest +
+        ' 不一致，已停用自动安装（否则会装回旧版并反复提示更新）；请用下载页手动更新。', true);
+    } else if (canSparkle) {
       setUpdateProgress('macOS 走 Sparkle 自动更新：点下方「用 Sparkle 安装并重启」，' +
         '在系统弹出的窗口中完成下载、验签与安装。');
     } else if (!asset) {
@@ -666,11 +682,11 @@
     // Windows 按钮先禁用，下载并通过校验后才放开；Sparkle 自己下载，不需要先点「下载更新包」。
     el.updateInstall.textContent = canSparkle ? '用 Sparkle 安装并重启' : '安装并重启';
     el.updateInstall.hidden = !(isAdmin && (isWindows || canSparkle));
-    el.updateInstall.disabled = isWindows;
+    el.updateInstall.disabled = isWindows || versionMismatch;
     state.updateInstalling = false;
     // 服务端若已有「下载并校验完成」的包（同一次运行里关掉弹窗再打开），
     // 直接放开「安装并重启」，不必重新下载一遍。
-    if (isWindows && isAdmin) {
+    if (isWindows && isAdmin && !versionMismatch) {
       api('GET', '/api/update/download').then(function (data) {
         if (!data || data.state !== 'done') return;
         el.updateInstall.disabled = false;
