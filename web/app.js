@@ -45,6 +45,7 @@
     health: document.getElementById('health'),
     version: document.getElementById('version-pill'),
     updatePill: document.getElementById('update-pill'),
+    updateCheckBtn: document.getElementById('update-check-btn'),
     updateModal: document.getElementById('update-modal'),
     updateVersion: document.getElementById('update-version'),
     updateNotes: document.getElementById('update-notes'),
@@ -725,6 +726,14 @@
     openUpdateModal();
   });
 
+  // 顶栏「检查更新」按钮：主动触发检查（非静默模式）。
+  // macOS 壳层由 Sparkle 原生菜单接管，按钮在 enterApp 里被隐藏。
+  if (el.updateCheckBtn) {
+    el.updateCheckBtn.addEventListener('click', function () {
+      checkUpdate(false);
+    });
+  }
+
   el.updateLater.addEventListener('click', closeUpdateModal);
 
   el.updateDownload.addEventListener('click', function () {
@@ -911,6 +920,9 @@
     var ua = navigator.userAgent || '';
     var isMacShell = /Macintosh|Mac OS X/i.test(ua) && hasNativeBridge();
     if (!isMacShell) checkUpdate();
+    // 顶栏「检查更新」按钮：macOS 壳层隐藏（Sparkle 原生菜单已接管），
+    // Windows 壳层 / 浏览器网络版显示（这是它们唯一的主动检查入口）。
+    if (el.updateCheckBtn) el.updateCheckBtn.hidden = isMacShell;
     if (state.view === 'users') {
       loadUsers();
       loadBackups();
