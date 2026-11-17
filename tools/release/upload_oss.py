@@ -35,7 +35,12 @@ CONTENT_TYPES = {
     ".exe": ("application/octet-stream", "public, max-age=31536000"),
     ".zip": ("application/octet-stream", "public, max-age=31536000"),
     ".pdf": ("application/pdf", "public, max-age=86400"),
-    ".xml": ("application/xml", "public, max-age=300"),
+    ".xml": ("application/xml; charset=utf-8", "public, max-age=300"),
+    ".json": ("application/json; charset=utf-8", "public, max-age=300"),
+    ".html": ("text/html; charset=utf-8", "public, max-age=3600"),
+    ".htm": ("text/html; charset=utf-8", "public, max-age=3600"),
+    ".css": ("text/css; charset=utf-8", "public, max-age=86400"),
+    ".js": ("application/javascript; charset=utf-8", "public, max-age=86400"),
     ".edsignature": ("text/plain; charset=utf-8", "public, max-age=300"),
 }
 
