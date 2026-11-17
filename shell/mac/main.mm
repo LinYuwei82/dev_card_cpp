@@ -192,6 +192,8 @@ API_AVAILABLE(macos(11.0))
 @property(nonatomic, strong) SPUStandardUpdaterController* updaterController;
 // Sparkle 代理：把 feed 拉取/版本比较/安装结果写到 NSLog，便于端到端实测取证。
 @property(nonatomic, strong) id<SPUUpdaterDelegate> updaterDelegate;
+// App 菜单里的「检查更新…」项，Sparkle 启用后把 target 绑定到 updaterController。
+@property(nonatomic, assign) NSMenuItem* checkUpdateMenuItem;
 @end
 
 // Sparkle 更新事件日志代理。只做观测，不改变 Sparkle 的默认行为。
@@ -931,11 +933,23 @@ int main(int argc, const char* argv[]) {
     NSMenuItem* app_item = [[NSMenuItem alloc] init];
     [menu addItem:app_item];
     NSMenu* app_menu = [[NSMenu alloc] init];
+
+    // Sparkle 自动更新菜单项：target 先占位，updaterController 初始化后再绑定。
+    // updaterController 为 nil 时（开发期无 SUFeedURL / SUPublicEDKey）把它隐藏。
+    NSMenuItem* check_update_item =
+        [app_menu addItemWithTitle:@"检查更新…"
+                             action:@selector(checkForUpdates:)
+                      keyEquivalent:@""];
+    check_update_item.target = nil;  // 稍后由 updaterController 接管
+
+    [app_menu addItem:[NSMenuItem separatorItem]];
     [app_menu addItemWithTitle:@"退出 DevCard"
                         action:@selector(terminate:)
                  keyEquivalent:@"q"];
     app_item.submenu = app_menu;
     NSApp.mainMenu = menu;
+    // 菜单「检查更新…」的占位，稍后 bridge 创建好后存入 bridge.checkUpdateMenuItem。
+    NSMenuItem* check_update_item_placeholder = check_update_item;
 
     NSRect frame = NSMakeRect(0, 0, 1280, 840);
     NSWindow* window =
@@ -960,6 +974,7 @@ int main(int argc, const char* argv[]) {
     WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
     WKUserContentController* controller = [[WKUserContentController alloc] init];
     PrintBridge* bridge = [[PrintBridge alloc] init];
+    bridge.checkUpdateMenuItem = check_update_item_placeholder;
     [controller addScriptMessageHandler:bridge name:@"devcard"];
     // 页面据此判断是壳内还是普通浏览器，决定「导出 PDF」按钮的行为。
     [controller
@@ -1005,6 +1020,18 @@ int main(int argc, const char* argv[]) {
         NSLog(@"[sparkle] 跳过初始化：SUFeedURL=%@ SUPublicEDKey=%@",
               feed_url.length > 0 ? feed_url : @"(空)",
               pub_key.length > 0 ? @"(已填)" : @"(空)");
+      }
+
+      // 绑定 App 菜单「检查更新…」的 target。
+      // Sparkle 启用时 target 设为 updaterController（它自己实现 checkForUpdates: + validateMenuItem:）；
+      // 未启用时把菜单项隐藏，避免用户点了报错。
+      if (bridge.checkUpdateMenuItem) {
+        if (bridge.updaterController) {
+          bridge.checkUpdateMenuItem.target = bridge.updaterController;
+          bridge.checkUpdateMenuItem.hidden = NO;
+        } else {
+          bridge.checkUpdateMenuItem.hidden = YES;
+        }
       }
 
       // 自动化验证：DEVCARD_SPARKLE_SELFTEST=1 时启动后自动发起一次更新检查，

@@ -880,7 +880,11 @@
     loadOptions();
     loadFontCoverage();
     load();
-    checkUpdate();
+    // macOS 壳层由 Sparkle 自更新接管：前端不再 fetch update.json + 弹手动更新窗，
+    // 避免两套更新通道并存造成用户困惑。Windows 壳层 / 浏览器网络版照常跑。
+    var ua = navigator.userAgent || '';
+    var isMacShell = /Macintosh|Mac OS X/i.test(ua) && hasNativeBridge();
+    if (!isMacShell) checkUpdate();
     if (state.view === 'users') {
       loadUsers();
       loadBackups();
