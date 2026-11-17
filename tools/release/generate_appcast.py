@@ -97,7 +97,9 @@ def build_appcast(args: argparse.Namespace) -> str:
                 text = args.release_notes
         description = f"<![CDATA[<p>{text.replace(chr(10), '<br/>')}</p>]]>"
 
-    channel = f'<channel>\n    <title>DevCard Updates</title>\n    <link>https://devcard.anye.com/</link>\n    <description>DevCard macOS 发布更新</description>\n    <language>en-us</language>\n    <lastBuildDate>{now}</lastBuildDate>\n\n    <item>\n        <title>{escape_attr(title)}</title>\n        <pubDate>{now}</pubDate>\n        <guid isPermaLink="false">{args.build or args.version}</guid>\n        <description>{description}</description>\n\n        <enclosure url="{escape_attr(args.dmg_url)}"\n                   sparkle:version="{escape_attr(args.version)}"\n                   sparkle:shortVersionString="{escape_attr(args.version)}"\n                   type="application/octet-stream"\n                   length="{dmg_size}"\n                   sparkle:edSignature="{escape_attr(sig or "")}"\n                   sparkle:sha256="{dmg_sha256}"/>\n\n    </item>\n</channel>'
+    language = args.language or "zh-cn"
+
+    channel = f'<channel>\n    <title>DevCard Updates</title>\n    <link>https://devcard.anye.com/</link>\n    <description>DevCard macOS 发布更新</description>\n    <language>{escape_attr(language)}</language>\n    <lastBuildDate>{now}</lastBuildDate>\n\n    <item>\n        <title>{escape_attr(title)}</title>\n        <pubDate>{now}</pubDate>\n        <guid isPermaLink="false">{args.build or args.version}</guid>\n        <description>{description}</description>\n\n        <enclosure url="{escape_attr(args.dmg_url)}"\n                   sparkle:version="{escape_attr(args.version)}"\n                   sparkle:shortVersionString="{escape_attr(args.version)}"\n                   type="application/octet-stream"\n                   length="{dmg_size}"\n                   sparkle:edSignature="{escape_attr(sig or "")}"\n                   sparkle:sha256="{dmg_sha256}"/>\n\n    </item>\n</channel>'
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -121,6 +123,8 @@ def main():
                    help="Release notes：纯文本/URL/本地文件（自动转 HTML）")
     p.add_argument("--release-notes-html", default="",
                    help="Release notes：原始 HTML（优先级高于 --release-notes）")
+    p.add_argument("--language", default="zh-cn",
+                   help="RSS channel 的 language 元素（默认 zh-cn）")
     p.add_argument("--output", default="appcast.xml", help="输出文件（默认 appcast.xml）")
     args = p.parse_args()
 
