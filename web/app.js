@@ -507,20 +507,45 @@
     el.updatePill.hidden = false;
   }
 
-  function checkUpdate() {
+  // checkUpdate(silent): silent=true（默认）只设顶栏 pill，不弹窗；
+  // silent=false 表示用户主动触发（壳层菜单），有更新直接弹 modal，无更新弹 toast。
+  function checkUpdate(silent) {
+    if (silent === undefined) silent = true;
     return api('GET', '/api/version')
       .then(function (data) {
         state.update = data || null;
         // 本地清单（M5 路径）仍然优先：运维可以直接投放 update.json 指定版本。
         if (data && data.update_available && data.latest) {
           setUpdatePill(data.latest, data.notes || '');
+          if (!silent) openUpdateModal();
+          return;
         }
         var check = (data && data.check) || {};
-        if (!check.enabled) return;
+        if (!check.enabled) {
+          if (!silent) toast('已是最新版 v' + (state.version || '?'));
+          return;
+        }
         var hours = Number(check.interval_hours) > 0 ? Number(check.interval_hours) : 24;
+        if (!silent) {
+          // 用户主动触发时跳过硬编码节流（但仍尊重 update.json 的 enabled）
+          // 直接发起远端检查
+          return remoteCheck(check).then(function (result) {
+            state.updateCheck = result;
+            if (result.status !== 'parsed' || !result.release) {
+              toast('检查更新失败：返回数据格式不合法');
+              return;
+            }
+            var current = state.version || (data && data.version) || '';
+            if (compareVersion(result.release.version, current) <= 0) {
+              toast('已是最新版 v' + current);
+              return;
+            }
+            setUpdatePill(result.release.version, result.release.notes || '');
+            openUpdateModal();
+          });
+        }
+        // 静默路径：启动时自动检查，节流 + 延迟首屏之后才发请求
         if (!updateThrottleAllows(hours)) return;
-        // 延迟到首屏之后；查不到更新、超时、DNS 失败、返回不是 JSON、
-        // 版本号不合法，一律什么都不做——不弹窗、不改任何业务功能。
         return new Promise(function (resolve) {
           setTimeout(resolve, UPDATE_DELAY_MS);
         }).then(function () {
@@ -538,6 +563,7 @@
         // 检查失败不打扰台账操作，也不保留上一次的提示。
         state.update = null;
         if (!state.updateCheck) el.updatePill.hidden = true;
+        if (!silent) toast('检查更新失败：无法连接服务器');
       });
   }
 
@@ -2499,9 +2525,11 @@
     });
 
   // ---------- 壳层入口 ----------
-  // Windows 壳菜单栏「帮助 → 检查更新」触发：ExecuteScript 调这个。
+  // Windows 壳菜单栏「帮助 → 检查更新」触发：
+  // ExecuteScript 调 window.devcard.checkUpdate()，默认走非静默模式——
+  // 有更新直接弹 modal，无更新弹 toast「已是最新版」。
   window.devcard = window.devcard || {};
-  window.devcard.checkUpdate = checkUpdate;
+  window.devcard.checkUpdate = function () { checkUpdate(false); };
 
   // ---------- 启动 ----------
 
