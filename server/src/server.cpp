@@ -254,8 +254,13 @@ std::size_t utf8_length(const std::string& value) {
 constexpr std::string_view kUpdateManifestName = "update.json";
 constexpr std::string_view kDefaultDownloadPage =
     "https://dl.xiaotu.online/";
+#if defined(_WIN32)
 constexpr std::string_view kDefaultUpdateEndpoint =
-    "https://dl.xiaotu.online/devcard/update.json";
+    "https://dl.xiaotu.online/devcard/updates/stable/windows.json";
+#else
+constexpr std::string_view kDefaultUpdateEndpoint =
+    "https://dl.xiaotu.online/devcard/updates/stable/latest.json";
+#endif
 constexpr long kDefaultUpdateIntervalHours = 24;
 
 bool parse_version(const std::string& text, std::vector<long>* parts) {
