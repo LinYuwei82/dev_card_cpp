@@ -171,6 +171,8 @@
 
   .tile svg { width: 23px; height: 23px; }
 
+  .tile img { width: 46px; height: 46px; object-fit: cover; border-radius: 14px; }
+
   .titles { min-width: 0; }
 
   .titles h2 {
@@ -678,11 +680,7 @@
     <article class="card accent-indigo" id="product-devcard">
       <div class="card-top">
         <span class="tile" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2.5" y="5" width="19" height="14" rx="2.5"/>
-            <path d="M2.5 10h19"/>
-            <path d="M6.5 14.5h3"/>
-          </svg>
+          <img src="/devcard/icon-thumb-64.png" alt="DevCard DC 字标应用图标（深青圆角底 + 米白 DC）">
         </span>
         <div class="titles">
           <h2>DevCard</h2>
@@ -700,15 +698,15 @@
           </div>
           <p class="dl-sub">Apple Silicon · .dmg</p>
           <div class="facts">
-            <span class="mono">v1.2.1</span>
-            <span><span class="mono">5,924,494</span> 字节（约 5.6 MB）</span>
+            <span class="mono">v1.2.2</span>
+            <span><span class="mono">5,965,788</span> 字节（约 5.7 MB）</span>
           </div>
           <div class="sha">
             <span class="sha-label">SHA256</span>
-            <code class="sha-value" id="sha-devcard-mac" title="0be2a2e86bd429eaf1f8f65c4967be663fc84dfe42f55beaea71af8a7db189b2">0be2a2e86bd429eaf1f8f65c4967be663fc84dfe42f55beaea71af8a7db189b2</code>
+            <code class="sha-value" id="sha-devcard-mac" title="e85699e4942473dde958a94a71048d856bffa543fdd373cbeae27753fa748b72">e85699e4942473dde958a94a71048d856bffa543fdd373cbeae27753fa748b72</code>
             <button class="copy" type="button" data-copy="sha-devcard-mac">复制</button>
           </div>
-          <a class="btn btn-primary row-btn" href="https://dl.xiaotu.online/devcard/DevCard-1.2.1-macos-arm64.dmg" target="_blank" rel="noopener">
+          <a class="btn btn-primary row-btn" href="https://dl.xiaotu.online/devcard/DevCard-1.2.2-macos-arm64.dmg" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
             下载 DMG
           </a>
@@ -762,12 +760,11 @@
 
       </div>
 
-      <section class="releasenote" aria-label="1.2.1 更新说明">
-        <h3>1.2.1 更新说明</h3>
+      <section class="releasenote" aria-label="1.2.2 更新说明">
+        <h3>1.2.2 更新说明（macOS）</h3>
         <ul>
-          <li><b>macOS 首次通过 Apple 公证</b>，内置 Sparkle 自动更新（EdDSA 签名校验，更新窗口为中文）。</li>
-          <li>网页图标、PWA manifest 与 Apple Touch 图标随程序内嵌，单文件运行、离线打开也能正常显示 favicon 与「添加到主屏幕」。</li>
-          <li>Windows 安装包与绿色包改用 DC 字标应用图标（与 macOS、网页同一套母版）。</li>
+          <li><b>三端图标统一从 SF Pro Black 母版重生</b>：macOS .icns / Windows .ico / 浏览器 shortcut icon / Apple Touch / PWA 常规 & maskable / 分享预览 og-image 全部同一母版同源生成；Web 下载页的 DevCard 产品卡图标也换成真实应用图标。</li>
+          <li>此前 1.2.1 的 macOS icns 与 web PNG 仍来自旧母版几何，1.2.2 起 <code>tools/package/make_icons.sh</code> 一套生成全部图标，不重画、不改色。</li>
         </ul>
         <h3>修复</h3>
         <ul>
