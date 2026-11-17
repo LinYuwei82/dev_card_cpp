@@ -5,7 +5,7 @@
 > **当前状态（重要）**
 > 仓库只保留新架构线（C++20 + SQLite + 系统 WebView）：**M0–M4.2 完成**（M4 的 G2 实物叠图与打印面板仍待验），**M5 第一段已落地**（版本检查接口与「有新版本」提示、macOS 一条命令出 DMG 并实测）；**M5 第二段：Windows 壳已编译，`/VERYSILENT` 安装 + 卸载实测通过**（向导页、实物打印、SmartScreen 等仍待补）。**M6 的「检查 + 告知」已交付**（含 CSP `connect-src` 根因修复与断言）；自更新已拍板「下载 + 校验 + 替换 + 重启」：**阶段一（下载 + SHA256/字节数校验）已完成（`61fa9e2` + `f706b76`）；阶段二（Windows 替换与重启）已端到端实测通过（1.2.0 → 1.2.1）；macOS 改用 Sparkle 2.10.1，检查 → 下载 → EdDSA 验签 → 替换 → 重启全链路已端到端实测通过（1.2.0 → 1.2.1）**，见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
 >
-> 开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.0**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
+> 开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.1**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 >
 > 改造前的旧 Qt 线已从**仓库历史**删除（不是仅工作区删除）：历史已重写，旧 commit hash 一律不可引用，`v1.1.3` tag（本地与两个远端）已删，`backup-m7-*` 分支已删；`src/`、`resources/`、`dev_card.pro`、`build.bat`、`DevCard_resource.rc`、`packaging/mac/*`、`make_portable_win.ps1` 与 6 份旧线文档在仓库与历史里都取不到。旧版数据不再支持导入，迁移路径已整体删除（详见 [改造技术方案 §0.1](docs/改造技术方案.md)）。
 
@@ -41,9 +41,9 @@ ctest --test-dir build-new --output-on-failure
 - **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
 - **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。目前只有本地监听与浏览器访问，`--server` 独立的局域网服务模式属 M7，尚未实现。
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`（代码实值，见 `server/src/platform_paths.cpp`）；Windows 安装版 `%LOCALAPPDATA%\DevCard\data`、便携版 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。**旧版数据不再支持导入**：数据目录里若是旧版库（只有 `tb_device`/`tb_user`、无 `schema_migration`），启动直接报 `legacy_db` 并拒绝在原库上建表；导入器与 `--import-legacy` 已删除。
-- **版本**：只改根目录 `VERSION.txt`（当前 `1.2.0`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
+- **版本**：只改根目录 `VERSION.txt`（当前 `1.2.1`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
-- **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.0","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
+- **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.1","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
 - **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**阶段二（Windows 替换与重启）已端到端实测通过，macOS 改由 Sparkle 承担替换与重启**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一只用假 curl + 本地清单验过，真实下载仅验到「真实进程按这条链去拉」，没有完整下完并校验；**换下载器必须重验白名单与代理口径**。
 - **macOS 自更新（Sparkle 2.10.1，已端到端实测）**：`3rdparty/sparkle/` 内嵌 framework，CMake POST_BUILD 用 `ditto` 嵌入（保留 symlink），并按官方要求删除 `XPCServices`（DevCard 不开 App Sandbox，保留会让 Sparkle 探测 `<bundle-id>-spks` 失败）。构建时 `-DDEVCARD_SPARKLE_FEED_URL=<appcast>` 同时注入 `SUFeedURL` 与 `SUPublicEDKey`，两者缺一则整段不写——普通开发构建不启用更新。前端「安装并重启」经壳层 `SPUStandardUpdaterController` 触发；appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。签名按官方要求从内到外逐层执行并禁用 `--deep`，XPC 组件加 `--preserve-metadata=entitlements`。**实测闭环（1.2.0 → 1.2.1）**：`didFindValidUpdate` → `didDownloadUpdate` → `willInstallUpdate`，重启后 `CFBundleShortVersionString=1.2.1`、`codesign --verify --deep --strict` 通过。界面已中文化（`CFBundleLocalizations=[zh_CN,en]`）。**注意**：本机系统代理对 OSS（香港）大文件限速明显，实测用本地 HTTP 源替代以排除网络因素；下载慢属基础设施问题，与集成无关。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（服务端按 `must_change_password` 判定），自助改密仍验旧密码；密码框支持明文/掩码切换。
