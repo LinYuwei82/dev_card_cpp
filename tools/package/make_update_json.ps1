@@ -101,6 +101,11 @@ function New-Asset([string]$Path, [string]$Base) {
 $assets = @()
 if ($Platform -eq "windows") {
     $assets += New-Asset $SetupPath $base
+    # 绿色包与安装包同版本发布；下载页把它单列一行，清单里少了它页面只能回落到静态值。
+    $portableZip = Join-Path $repoRoot "dist\DevCard-$Version-win64-portable.zip"
+    if (Test-Path -LiteralPath $portableZip) {
+        $assets += New-Asset (Resolve-Path -LiteralPath $portableZip).Path $base
+    }
 }
 
 foreach ($extra in $ExtraAssets) {
