@@ -760,11 +760,12 @@
 
       </div>
 
-      <section class="releasenote" aria-label="1.2.2 更新说明">
-        <h3>1.2.2 更新说明（macOS）</h3>
+      <section class="releasenote" aria-label="1.2.1 更新说明">
+        <h3>1.2.1 更新说明</h3>
         <ul>
-          <li><b>三端图标统一从 SF Pro Black 母版重生</b>：macOS .icns / Windows .ico / 浏览器 shortcut icon / Apple Touch / PWA 常规 & maskable / 分享预览 og-image 全部同一母版同源生成；Web 下载页的 DevCard 产品卡图标也换成真实应用图标。</li>
-          <li>此前 1.2.1 的 macOS icns 与 web PNG 仍来自旧母版几何，1.2.2 起 <code>tools/package/make_icons.sh</code> 一套生成全部图标，不重画、不改色。</li>
+          <li><b>macOS 首次通过 Apple 公证</b>，内置 Sparkle 自动更新（EdDSA 签名校验，更新窗口为中文）。</li>
+          <li>网页图标、PWA manifest 与 Apple Touch 图标随程序内嵌，单文件运行、离线打开也能正常显示 favicon 与「添加到主屏幕」。</li>
+          <li>Windows 安装包与绿色包改用 DC 字标应用图标（与 macOS、网页同一套母版）。</li>
         </ul>
         <h3>修复</h3>
         <ul>
