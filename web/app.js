@@ -598,7 +598,10 @@
   function openUpdateModal() {
     var manifest = state.update || {};
     var result = state.updateCheck || null;
-    var release = result && result.release ? result.release : null;
+    // 本地清单命中时以本地为准（与 checkUpdate 的「本地优先」一致）：
+    // 此时不会拉远端，资产只能来自 /api/version 透传的 manifest.assets。
+    var localWins = !!(manifest.update_available && manifest.latest);
+    var release = (!localWins && result && result.release) ? result.release : null;
     var latest = release ? release.version : (manifest.latest || '');
     // 下载页优先用后端 download_page（运维给的是页面地址）；
     // update.json 的 download_url 在自管清单里指向具体安装包文件，
@@ -621,9 +624,10 @@
 
     // 阶段一：只下载 + 校验。按钮是否可用取决于清单里有没有「带 SHA256 与
     // 字节数」的当前平台资产；缺任一条件就退回只提示，不给下载入口。
-    var assets = (release && release.assets) || [];
+    // 资产两个来源：远端检查结果，或本地清单直接写的 assets（服务端原样透传）。
+    var assets = (release && release.assets) || parseAssets(manifest.assets || []);
     state.updateAsset = pickUpdateAsset(assets);
-    state.updateAssetVersion = release ? release.version : '';
+    state.updateAssetVersion = release ? release.version : (manifest.latest || '');
     state.updateDownloading = false;
     if (state.updateTimer) {
       clearTimeout(state.updateTimer);

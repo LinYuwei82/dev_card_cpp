@@ -303,6 +303,9 @@ struct UpdateManifest {
   std::string download_url;
   std::string notes;
   std::string error;
+  // 本地清单里的资产表原样透给前端：命中本地清单时前端不会再拉远端，
+  // 没有这份 assets 就无法判断「能不能下载 / 能不能安装」，按钮只能全灰。
+  json assets = json::array();
   // M6：远端检查的开关、地址与频率。清单不写就取默认值；
   // 地址不是 http/https 时直接关掉检查，宁可查不了也不发一个奇怪的请求。
   bool check_enabled = true;
@@ -329,6 +332,9 @@ UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
   result.latest = trim_copy(doc.value("latest", std::string{}));
   result.download_url = trim_copy(doc.value("download_url", std::string{}));
   result.notes = trim_copy(doc.value("notes", std::string{}));
+  if (doc.contains("assets") && doc["assets"].is_array()) {
+    result.assets = doc["assets"];
+  }
   if (doc.contains("check_enabled") && doc["check_enabled"].is_boolean()) {
     result.check_enabled = doc["check_enabled"].get<bool>();
   }
@@ -1023,6 +1029,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                   {"download_url", manifest.download_url},
                   {"download_page", download_page()},
                   {"notes", manifest.notes},
+                  {"assets", manifest.assets},
                   // M6：远端检查的三个开关都来自同一份 update.json，前端不再写死地址。
                   {"check", json{{"enabled", manifest.check_enabled},
                                  {"endpoint", manifest.check_endpoint},
