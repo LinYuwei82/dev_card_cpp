@@ -57,7 +57,7 @@ namespace {
 
 using nlohmann::json;
 
-constexpr auto kSessionTtl = std::chrono::hours(12);
+constexpr auto kSessionTtlSeconds = 12 * 3600;  // 12 小时，持久化用秒数方便序列化
 
 // 登录/改密失败计数的单个键（来源 IP 或用户名）。字段用 atomic，
 // 计数与判定另由 ServerState::rate_limit_mutex 串成一次操作。
@@ -75,7 +75,7 @@ long long steady_seconds() {
 
 struct Session {
   std::string user;
-  std::chrono::steady_clock::time_point last_seen;
+  std::int64_t last_seen_epoch;  // Unix epoch 秒，方便 JSON 持久化
 };
 
 struct ServerState {
@@ -253,7 +253,7 @@ std::size_t utf8_length(const std::string& value) {
 // M6 起清单还承载「远端检查」的三个开关：是否联网查、查哪个地址、最快多久查一次。
 constexpr std::string_view kUpdateManifestName = "update.json";
 constexpr std::string_view kDefaultDownloadPage =
-    "https://github.com/LinYuwei82/dev_card_cpp/releases";
+    "https://dl.xiaotu.online/";
 constexpr std::string_view kDefaultUpdateEndpoint =
     "https://dl.xiaotu.online/devcard/update.json";
 constexpr long kDefaultUpdateIntervalHours = 24;
@@ -493,25 +493,68 @@ std::string cookie_value(const httplib::Request& request, const char* name) {
   return {};
 }
 
+constexpr const char* kSessionsFileName = "sessions.json";
+
+void persist_sessions(ServerState& state) {
+  // 调用者必须已持 sessions_mutex。
+  const auto path = state.data_dir / kSessionsFileName;
+  json doc = json::array();
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  for (const auto& [token, sess] : state.sessions) {
+    if (now - sess.last_seen_epoch > kSessionTtlSeconds) continue;  // 过期不落
+    doc.push_back({{"token", token},
+                   {"user", sess.user},
+                   {"last_seen", sess.last_seen_epoch}});
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return;
+  out << doc.dump();
+}
+
+void load_sessions(ServerState& state) {
+  const auto path = state.data_dir / kSessionsFileName;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return;  // 首次启动：没有文件，空 session map
+  const std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  const json doc = json::parse(text, nullptr, false);
+  if (!doc.is_array()) return;
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  std::lock_guard<std::mutex> lock(state.sessions_mutex);
+  for (const auto& entry : doc) {
+    if (!entry.is_object()) continue;
+    const std::string token = entry.value("token", std::string{});
+    const std::string user = entry.value("user", std::string{});
+    const auto last_seen = entry.value("last_seen", static_cast<std::int64_t>(0));
+    if (token.empty() || user.empty() || last_seen <= 0) continue;
+    if (now - last_seen > kSessionTtlSeconds) continue;
+    state.sessions[token] = Session{user, last_seen};
+  }
+}
+
 std::string session_user(ServerState& state, const httplib::Request& request) {
   const std::string token = cookie_value(request, "sid");
   if (token.empty()) return {};
   std::lock_guard<std::mutex> lock(state.sessions_mutex);
   auto it = state.sessions.find(token);
   if (it == state.sessions.end()) return {};
-  const auto now = std::chrono::steady_clock::now();
-  if (now - it->second.last_seen > kSessionTtl) {
+  const auto now_epoch = static_cast<std::int64_t>(std::time(nullptr));
+  if (now_epoch - it->second.last_seen_epoch > kSessionTtlSeconds) {
     state.sessions.erase(it);
     return {};
   }
-  it->second.last_seen = now;
+  it->second.last_seen_epoch = now_epoch;
   return it->second.user;
 }
 
 std::string create_session(ServerState& state, const std::string& user) {
   const std::string token = random_token();
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
   std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  state.sessions[token] = Session{user, std::chrono::steady_clock::now()};
+  state.sessions[token] = Session{user, now};
+  persist_sessions(state);
   return token;
 }
 
@@ -520,21 +563,22 @@ void destroy_session(ServerState& state, const httplib::Request& request) {
   if (token.empty()) return;
   std::lock_guard<std::mutex> lock(state.sessions_mutex);
   state.sessions.erase(token);
+  persist_sessions(state);
 }
 
-// 账号被删除或密码被重置后，该账号的所有旧会话必须立刻失效；
-// 否则 12 小时滑动 TTL 内拿着旧 cookie 还能继续操作，等于改密 / 删号没生效。
-// keep_token 用于「自己改自己的密码」：当前这台设备保持登录，其余会话全部作废。
 void drop_sessions_for(ServerState& state, const std::string& user,
                        const std::string& keep_token = {}) {
+  bool changed = false;
   std::lock_guard<std::mutex> lock(state.sessions_mutex);
   for (auto it = state.sessions.begin(); it != state.sessions.end();) {
     if (it->second.user == user && it->first != keep_token) {
       it = state.sessions.erase(it);
+      changed = true;
     } else {
       ++it;
     }
   }
+  if (changed) persist_sessions(state);
 }
 
 void set_session_cookie(httplib::Response& response, const std::string& token) {
@@ -848,6 +892,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
+
+  // 恢复上次持久化的会话：进程重启后 WebView2 cookie 还在，server 进程内存空了。
+  load_sessions(state);
 
   // 多实例防护：同一数据目录（规范化后）只能有一个 server 持有写权。
   // 必须在打开数据库之前拿到锁，否则两个进程会先各自打开库再互相覆盖。
@@ -1926,6 +1973,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       {
                         std::lock_guard<std::mutex> lock(state.sessions_mutex);
                         state.sessions.clear();
+                        persist_sessions(state);
                       }
                       AuditEntry entry;
                       entry.actor = actor.user_name;

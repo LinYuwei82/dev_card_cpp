@@ -361,7 +361,11 @@
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
     var version = normalizeVersion(doc.tag_name || doc.latest || doc.version || '');
     if (!version) return null;
-    var url = doc.html_url || doc.download_url || '';
+    // release.url 只从 html_url 取（GitHub Release 页面 URL），
+    // 不认 download_url——那个字段在 OSS 目录清单里经常是指向某个资产文件的，
+    // 把它当作下载页面会出现 "打开下载页" 跳到 404 目录。
+    // 没有 html_url 时前端会 fallback 到 manifest.download_page（后端的 kDefaultDownloadPage）。
+    var url = doc.html_url || '';
     var notes = doc.body || doc.notes || '';
     return {
       version: version,
