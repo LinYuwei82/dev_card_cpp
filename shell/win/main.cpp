@@ -16,12 +16,14 @@
 
 #include <WebView2.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
 #include <exception>
 #include <filesystem>
-#include <iterator>#include <memory>
+#include <iterator>
+#include <memory>
 #include <string.h>
 #include <string>
 #include <thread>
@@ -48,6 +50,9 @@ struct ShellState {
   bool devtools = false;
   bool print_busy = false;
   bool server_exit_requested = false;  // server handler (auto-update install) wants process to exit
+  // 退出流程的停机信号：server_exit_watcher 靠它跳出轮询，
+  // 否则正常关窗时 join() 会永久阻塞（进程活着、18080 端口不释放）。
+  std::atomic<bool> shutdown{false};
   std::wstring origin;
   std::filesystem::path data_dir;
   ComPtr<ICoreWebView2Environment> env;
@@ -887,8 +892,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   // 这里启动一个后台线程，每 200ms 检查一次：如果 server 想退出，就 PostMessageW(WM_CLOSE)
   // 让主窗口走正常销毁流程，进程随之干净退出。
   std::thread server_exit_watcher([&]() {
-    while (true) {
+    while (!g.shutdown.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      // 正常关窗时 g.hwnd 已销毁，这里不再 PostMessage；循环靠 g.shutdown 退出。
       if (g_server && g_server->stop_requested()) {
         g.server_exit_requested = true;
         PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
@@ -902,6 +908,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
+  // 先让 watcher 退出轮询，再 join；顺序反了就是之前那个「关窗后进程不退」的死锁。
+  g.shutdown.store(true);
   if (server_exit_watcher.joinable()) server_exit_watcher.join();
 
   if (g.controller) g.controller->Close();
