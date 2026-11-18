@@ -77,6 +77,19 @@ try {
     if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
 
+    Write-Host "===== 3.5/5 发布门禁（guard）"
+    $python = $null
+    foreach ($candidate in @("python3", "python")) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) { $python = $cmd.Source; break }
+    }
+    if (-not $python) { Fail "找不到 python3 / python（guard 需要）" }
+    $guardArgs = @("preflight", "--product", "devcard", "--kind", "win",
+                   "--file", $setup, "--zip", $zip)
+    if ($DryRun) { $guardArgs += "--offline" }
+    & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
+    if ($LASTEXITCODE -ne 0) { Fail "guard preflight 未通过（命名/版本/覆盖/内嵌地址）" }
+
     Write-Host "===== 4/5 上传 OSS"
     if ($DryRun) {
         Write-Host "  (dry-run：跳过上传)"
@@ -128,6 +141,11 @@ try {
             Fail "$url 校验失败：$($_.Exception.Message)"
         }
     }
+
+    Write-Host "===== 5.5/5 线上门禁（guard）"
+    & $python (Join-Path $repoRoot "tools\release\guard.py") verify-live `
+        --product devcard --kind win --file $setup --zip $zip
+    if ($LASTEXITCODE -ne 0) { Fail "guard verify-live 未通过（清单/大小/SHA/Content-Type）" }
 
     Write-Host ""
     Write-Host "发布完成：DevCard $version（Windows x64）"

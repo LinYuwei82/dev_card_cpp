@@ -1,0 +1,75 @@
+name: Windows 发布
+
+# 手动触发的 Windows 发布流水线：构建 → guard 门禁 → 上传 OSS → 线上校验。
+# Windows 机器不再需要 OSS 凭据与发布环境，任何能打开 GitHub 的电脑都能发版。
+# 前置 secrets：OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（仅授予 PutObject）。
+#
+# 注意：发布前先确认 VERSION.txt 是要比线上更新的版本；guard 会拒绝版本回退，
+# 且安装包是 immutable 长缓存，同名覆盖不会生效。
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 更新说明（写进 windows.json，可留空）
+        required: false
+        default: ""
+      dry_run:
+        description: 只出包与清单，不上传 OSS
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: 构建 → 门禁 → 上传
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # guard 是三仓库共用的单一规则源（见 mote/docs/OSS-发布布局.md）
+      - name: 校验 guard 未被单独改动
+        run: sha256sum -c tools/release/guard.sha256
+      - name: guard selftest
+        shell: pwsh
+        run: python tools/release/guard.py selftest
+
+      # 桌面壳依赖 WebView2 SDK（不入库）：固定版本 + 幂等下载，失败即失败
+      - name: 取 WebView2 SDK
+        shell: pwsh
+        run: ./shell/win/fetch-webview2.ps1
+
+      - name: 配置
+        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: 构建
+        run: cmake --build build-win --config Release --parallel
+
+      - name: 发布（打绿色包/安装包 → 清单 → guard → 上传）
+        shell: pwsh
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_ENDPOINT: https://oss-cn-hongkong.aliyuncs.com
+          OSS_BUCKET: xiaotu-update
+          DEVCARD_NOTES: ${{ inputs.notes }}
+        run: |
+          $args = @('-SkipBuild')
+          if ($env:DEVCARD_NOTES) { $args += @('-Notes', $env:DEVCARD_NOTES) }
+          if ('${{ inputs.dry_run }}' -eq 'true') { $args += '-DryRun' }
+          ./tools/release/publish_windows.ps1 @args
+
+      - name: 上传构建产物（留档）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevCard-windows-release
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+            dist/windows.json
+          if-no-files-found: warn
+          retention-days: 14
