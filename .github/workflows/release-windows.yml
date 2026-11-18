@@ -59,11 +59,9 @@ jobs:
           OSS_BUCKET: xiaotu-update
           DEVCARD_NOTES: ${{ inputs.notes }}
         run: |
-          # 注意：$args 是 PowerShell 自动变量，不能复用，必须另起变量名
-          $publishArgs = @('-SkipBuild')
-          if ($env:DEVCARD_NOTES) { $publishArgs += @('-Notes', $env:DEVCARD_NOTES) }
-          if ('${{ inputs.dry_run }}' -eq 'true') { $publishArgs += '-DryRun' }
-          ./tools/release/publish_windows.ps1 @publishArgs
+          # 显式命名参数：数组 splat 传 -Switch 不可靠，容易静默丢失（dry-run 变成真发布）
+          $dry = '${{ inputs.dry_run }}' -eq 'true'
+          ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry
 
       - name: 上传构建产物（留档）
         if: always()
