@@ -25,6 +25,10 @@
 #include <thread>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
+
 #include "devcard/backup.h"
 #include "devcard/audit.h"
 #include "devcard/db.h"
@@ -535,6 +539,10 @@ void persist_sessions(ServerState& state) {
     if (!out) return;
     out << doc.dump();
   }
+#ifndef _WIN32
+  // 会话令牌可直接复用：文件收紧到仅本人可读写，别按 umask 落成 0644。
+  ::chmod(staging.c_str(), 0600);
+#endif
   std::filesystem::rename(staging, temp, ec);
   if (ec) {
     std::filesystem::remove(temp, ec);
