@@ -32,6 +32,14 @@ import urllib.parse
 import urllib.request
 from email.utils import formatdate
 
+# Windows 控制台默认 cp1252/GBK，输出 ✓ / → 会抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 CONTENT_TYPES = {
     ".dmg": ("application/octet-stream", "public, max-age=31536000, immutable"),
     ".exe": ("application/octet-stream", "public, max-age=31536000, immutable"),
