@@ -1,8 +1,8 @@
-; DevCard Windows 安装脚本（Inno Setup 6.x）
+﻿; DevCard Windows 安装脚本（Inno Setup 6.x）
 ;
 ; 编译（Windows，需先构建好两个 exe 与字体）：
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" ^
-;     /DSourceRoot=..\..\dist\Mote-Windows ^
+;     /DSourceRoot=..\..\dist\DevCard-<版本>-win64-portable ^
 ;     packaging\windows\DevCard.iss
 ;
 ; 版本号只有一个真值：仓库根目录 VERSION.txt。这里不再写第二处字面量，
@@ -23,7 +23,9 @@
   #error VERSION.txt 为空
 #endif
 #ifndef SourceRoot
-  #define SourceRoot "..\..\dist\Mote-Windows"
+  ; 默认取 make_portable_win.ps1 的打包目录命名；官方发布路径由
+  ; publish_windows.ps1 显式传 -DSourceRoot，这里只服务于手工编译。
+  #define SourceRoot "..\..\dist\DevCard-" + AppVersion + "-win64-portable"
 #endif
 
 [Setup]
@@ -49,6 +51,11 @@ SetupIconFile=..\..\shell\win\DevCard.ico
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
+[Tasks]
+; 与 Mote / 小兔库存的安装器保持一致：桌面快捷方式默认勾选，
+; checkedonce 让升级安装沿用用户上次的选择，不反复把勾去掉/加上。
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: checkedonce
+
 [Files]
 Source: "{#SourceRoot}\DevCard.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\devcard-server.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -61,6 +68,7 @@ Source: "{#SourceRoot}\fonts\NotoSansSC-*.subset.ttf"; DestDir: "{app}\fonts"; F
 Name: "{group}\DevCard"; Filename: "{app}\DevCard.exe"
 Name: "{group}\DevCard 服务端"; Filename: "{app}\devcard-server.exe"; Parameters: "--server"
 Name: "{group}\卸载 DevCard"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\DevCard"; Filename: "{app}\DevCard.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\DevCard.exe"; Description: "启动 DevCard"; Flags: nowait postinstall skipifsilent
