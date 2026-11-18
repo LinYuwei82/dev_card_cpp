@@ -98,7 +98,7 @@ ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
 - 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
 - 安装版产物：`dist\DevCard-<版本>-setup.exe`；发布脚本用 `manifest_v2.py` 生成并签名 `dist\manifest.json`（Windows 段 `artifacts.setup` / `artifacts.portable` 记录 OSS 地址、大小与 SHA256）。上传后需同步一份到数据目录，本机服务才会读到。
-- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `manifest.json`，并作为 artifact 上传。
+- CI 的 Windows job 只构建、测试并产出绿色包与安装包；`manifest.json` 由 `release-windows` 工作流生成并上传。
 
 ---
 
