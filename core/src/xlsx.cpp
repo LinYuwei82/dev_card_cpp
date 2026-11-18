@@ -94,11 +94,18 @@ std::string column_name(int index) {
   return out;
 }
 
+// 单个部件解压上限：正常的工作表 XML 远小于此，超过即按压缩炸弹拒绝。
+// 请求体本身只有 8MB，不加限制时一个 zip 头就能声明数 GB 解压尺寸。
+constexpr std::size_t kMaxEntryBytes = 64U << 20U;
+
 std::string entry_text(mz_zip_archive& zip, const std::string& name) {
   mz_uint32 index = 0;
   if (!mz_zip_reader_locate_file_v2(&zip, name.c_str(), nullptr, 0, &index)) return {};
   mz_zip_archive_file_stat stat;
   if (!mz_zip_reader_file_stat(&zip, index, &stat)) return {};
+  if (stat.m_uncomp_size > kMaxEntryBytes) {
+    throw AppError("bad_xlsx", "xlsx 内容过大，请拆分后再导入");
+  }
   std::string out(stat.m_uncomp_size, '\0');
   if (!out.empty() &&
       !mz_zip_reader_extract_to_mem(&zip, index, out.data(), out.size(), 0)) {
