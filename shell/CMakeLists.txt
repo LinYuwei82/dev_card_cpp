@@ -57,6 +57,8 @@ endif()
 # Info.plist 用 Python 生成（tools/release/gen_info_plist.py，零依赖）。
 # configure 阶段先生成一份（CMAKE 要求 MACOSX_BUNDLE_INFO_PLIST 文件必须已存在），
 # 同时在 POST_BUILD 里保留（每次 cmake build 都会重新生成，确保 Sparkle 键更新）。
+# 脚本内容不变时跳过写盘：否则该文件 mtime 会越过本次 configure 生成的
+# build.ninja，ninja 反复判定需要重新 configure 并以 still dirty 失败。
 set(DEVCARD_INFO_PLIST_PATH
     "${CMAKE_CURRENT_BINARY_DIR}/DevCard.app/Contents/Info.plist")
 

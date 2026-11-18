@@ -89,12 +89,28 @@ def main():
         b'<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" '
         b'"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
     )
-    with open(args.output, "wb") as f:
-        f.write(xml_bytes.split(b"\n", 1)[0] + b"\n")  # XML 头
-        f.write(doctype)
-        f.write(xml_bytes.split(b"\n", 1)[1])  # 根元素起
+    xml_head, xml_body = xml_bytes.split(b"\n", 1)
+    # 结尾补换行：CMake 自己把 MACOSX_BUNDLE_INFO_PLIST 写成 bundle 内的 plist 时
+    # 会在末尾加一个 \n。两边字节必须完全一致，否则每次 configure 都会互相覆盖、
+    # mtime 反复越过 build.ninja，ninja 以 still dirty 失败。
+    data = xml_head + b"\n" + doctype + xml_body + b"\n"
 
-    sys.stderr.write(f"wrote {args.output}\n")
+    # 内容没变就不落盘。本脚本在 configure 阶段被调用，无条件重写会让
+    # Info.plist 的 mtime 越过同一次 configure 生成的 build.ninja /
+    # cmake_install.cmake，ninja 据此反复判定「需要重新 configure」，
+    # 直到 100 次后以 still dirty 失败（CMake 4.4.2 + Ninja 实测）。
+    unchanged = False
+    try:
+        with open(args.output, "rb") as f:
+            unchanged = f.read() == data
+    except OSError:
+        pass
+    if unchanged:
+        sys.stderr.write(f"unchanged {args.output}\n")
+    else:
+        with open(args.output, "wb") as f:
+            f.write(data)
+        sys.stderr.write(f"wrote {args.output}\n")
     if not (args.feed_url and args.pubkey):
         sys.stderr.write("  (Sparkle 未启用：缺少 SUFeedURL 或 SUPublicEDKey)\n")
     else:
