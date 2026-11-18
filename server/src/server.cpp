@@ -1533,6 +1533,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                           rows, audit_context(state, request));
                       set_json(response, json{{"imported", report.imported},
                                               {"skipped_empty", report.skipped_empty},
+                                              {"skipped_invalid", report.skipped_invalid},
+                                              {"invalid_rows", report.invalid_rows},
                                               {"duplicates", report.duplicates},
                                               {"truncated", report.truncated}});
                     });

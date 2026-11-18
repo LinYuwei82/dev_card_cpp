@@ -28,8 +28,10 @@ struct DeviceOptions {
 struct ImportReport {
   int imported = 0;       // 实际写入行数
   int skipped_empty = 0;  // 四字段全空、被跳过的行
+  int skipped_invalid = 0;  // 必填字段缺失、被跳过的行
   int duplicates = 0;     // 与现有记录三字段相同的行（仅提示，不阻断）
   int truncated = 0;      // 有字段被截断的行
+  std::vector<int> invalid_rows;  // 被跳过的 Excel 行号（最多保留前 20 个）
 };
 
 // 合并重复的结果：删除的行数与合并后剩余总数。

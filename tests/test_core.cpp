@@ -1097,6 +1097,34 @@ void run_xlsx_reimport_case(const std::filesystem::path& dir) {
   CHECK(found_pump);
 }
 
+// 必填项缺失只跳过该行，不整批回滚，并带回行号。
+void run_xlsx_invalid_row_case(const std::filesystem::path& dir) {
+  const std::filesystem::path file = dir / "devicedb.db";
+  devcard::Db db(file);
+  devcard::migrate(db);
+  devcard::DeviceService service(db);
+
+  devcard::xlsx::Sheet data;
+  data.name = "设备台账";
+  data.rows.push_back(devcard::DeviceService::expected_header());
+  data.rows.push_back({"1号水泵", "B1栋", "1-3层", "13800000001"});
+  data.rows.push_back({"只填了电话", "", "", "13800000002"});  // 第 3 行缺必填
+  data.rows.push_back({"排风机", "B1栋", "屋顶", "13800000003"});
+  const std::string bytes = devcard::xlsx::write_workbook({data});
+  CHECK(!bytes.empty());
+
+  const devcard::ImportReport report =
+      service.import_rows(devcard::xlsx::read(bytes));
+  CHECK(report.imported == 2);
+  CHECK(report.skipped_invalid == 1);
+  CHECK(report.invalid_rows.size() == 1);
+  if (!report.invalid_rows.empty()) {
+    CHECK(report.invalid_rows[0] == 3);
+  }
+  devcard::DeviceDao dao;
+  CHECK(dao.count(db, devcard::DeviceQuery{}) == 2);
+}
+
 // 合并重复：三字段完全相同的记录每组只留最早一条；保留行电话为空时从重复行补齐，
 // 已有电话不覆盖；电话没变的行版本号不动，旧页面仍能正常编辑。
 void run_dedupe_case(const std::filesystem::path& dir) {
@@ -1518,6 +1546,15 @@ int run_all_tests() {
     // M2 硬验收②：同一文件连续导入两次，不覆盖、不合并、不跳过。
     const std::filesystem::path dir = temp_db().parent_path();
     run_xlsx_reimport_case(dir);
+    check_db_closed(dir);
+    std::filesystem::remove_all(dir);
+    CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 必填项缺失：只跳过该行并报行号，其余行照常入库。
+    const std::filesystem::path dir = temp_db().parent_path();
+    run_xlsx_invalid_row_case(dir);
     check_db_closed(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));

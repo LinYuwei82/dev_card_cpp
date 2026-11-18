@@ -1361,6 +1361,11 @@
       .then(function (report) {
         var parts = ['导入成功 ' + report.imported + ' 条'];
         if (report.skipped_empty) parts.push('跳过空行 ' + report.skipped_empty);
+        if (report.skipped_invalid) {
+          var badRows = (report.invalid_rows || []).join('、');
+          parts.push('跳过必填项缺失 ' + report.skipped_invalid + ' 行' +
+                     (badRows ? '（第 ' + badRows + ' 行）' : ''));
+        }
         if (report.duplicates) parts.push('与现有记录重复 ' + report.duplicates + ' 条（已保留）');
         if (report.truncated) parts.push('有 ' + report.truncated + ' 行字段被截断');
         toast(parts.join('，'));

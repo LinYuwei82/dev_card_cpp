@@ -333,6 +333,15 @@ ImportReport DeviceService::import_rows(
       device.location = cells[1];
       device.control_range = cells[2];
       device.phone = cells[3];
+      // 必填字段缺失时只跳过这一行：整批回滚会让用户不知道是哪一行出错。
+      if (device.dev_name.empty() || device.location.empty() ||
+          device.control_range.empty()) {
+        ++report.skipped_invalid;
+        if (report.invalid_rows.size() < 20) {
+          report.invalid_rows.push_back(static_cast<int>(r + 1));
+        }
+        continue;
+      }
       if (dao_.exists_triplet(conn, device.dev_name, device.location,
                               device.control_range)) {
         ++report.duplicates;
