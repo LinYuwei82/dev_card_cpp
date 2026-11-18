@@ -45,8 +45,10 @@ CONTENT_TYPES = {
     ".exe": ("application/octet-stream", "public, max-age=31536000, immutable"),
     ".zip": ("application/zip", "public, max-age=31536000, immutable"),
     ".pdf": ("application/pdf", "public, max-age=86400"),
-    ".xml": ("application/xml; charset=utf-8", "public, max-age=60"),
-    ".json": ("application/json; charset=utf-8", "public, max-age=60"),
+    # 清单与 appcast 必须不可缓存（最多 60s），与小兔/Mote 及 docs/OSS-发布布局.md 一致；
+    # 此前误用 public，客户端可能命中旧清单。
+    ".xml": ("application/xml; charset=utf-8", "no-cache, max-age=60"),
+    ".json": ("application/json; charset=utf-8", "no-cache, max-age=60"),
     ".html": ("text/html; charset=utf-8", "public, max-age=3600"),
     ".htm": ("text/html; charset=utf-8", "public, max-age=3600"),
     ".css": ("text/css; charset=utf-8", "public, max-age=86400"),
