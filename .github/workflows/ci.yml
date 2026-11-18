@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  release-guard:
+    name: 发布门禁自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 三仓库共用同一份 guard.py（见 mote/docs/OSS-发布布局.md），
+      # 改坏规则时在 PR 阶段就失败，而不是等发布。
+      - name: 校验 guard 未被单独改动
+        run: sha256sum -c tools/release/guard.sha256
+      - name: guard selftest
+        run: python3 tools/release/guard.py selftest
+
   windows-build:
     name: Windows 构建
     runs-on: windows-latest

@@ -125,6 +125,12 @@ with open(out, "w", encoding="utf-8") as f:
 print(f"  {out}")
 PY
 
+echo "===== 4.5/5 发布门禁"
+GUARD_PY="$REPO_ROOT/tools/release/guard.py"
+GUARD_ARGS=(--product devcard --kind mac --channel "$CHANNEL" --file "$DMG")
+[ "$DRY_RUN" = "1" ] && GUARD_ARGS+=(--offline)
+python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
+
 echo "===== 5/5 上传 OSS"
 if [ "$DRY_RUN" = "1" ]; then
     echo "  (dry-run：跳过上传)"
@@ -163,6 +169,9 @@ for url in \
         fail "$url 返回 HTTP $code"
     fi
 done
+
+echo "===== 线上门禁"
+python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
 
 echo
 echo "发布完成：DevCard ${VERSION}（macOS ${ARCH}）"
