@@ -135,7 +135,7 @@ note "ninja：$(command -v ninja)"
 
 # 版本号唯一来源：仓库根 VERSION.txt。这里不出现任何版本字面量。
 VERSION_FILE="$REPO_ROOT/VERSION.txt"
-[ -f "$VERSION_FILE" ] || fail "找不到版本文件：$VERSION_FILE（仓库不完整？）"
+[ -f "$VERSION_FILE" ] || fail "找不到版本文件：${VERSION_FILE}（仓库不完整？）"
 VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
 [ -n "$VERSION" ] || fail "VERSION.txt 为空：$VERSION_FILE"
 note "版本：${VERSION}（来源 VERSION.txt）"

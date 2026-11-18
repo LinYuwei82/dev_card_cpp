@@ -165,4 +165,4 @@ for url in \
 done
 
 echo
-echo "发布完成：DevCard $VERSION（macOS $ARCH）"
+echo "发布完成：DevCard ${VERSION}（macOS ${ARCH}）"

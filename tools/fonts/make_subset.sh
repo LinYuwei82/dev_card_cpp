@@ -43,7 +43,7 @@ if [ "${1:-}" = "--verify" ]; then
     [ -f "$path" ] || fail "缺少子集文件：$path"
     got="$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path")"
     if [ "$got" != "$want" ]; then
-      fail "$file 体积 $got != $want（重新跑不带 --verify 的命令生成）"
+      fail "$file 体积 $got != ${want}（重新跑不带 --verify 的命令生成）"
     fi
     echo "  $file  $got bytes  $(shasum -a 256 "$path" | awk '{print $1}')"
     ok=$((ok + 1))

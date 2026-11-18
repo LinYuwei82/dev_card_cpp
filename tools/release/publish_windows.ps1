@@ -46,7 +46,7 @@ try {
     Write-Host "===== 1/5 打绿色包"
     & (Join-Path $repoRoot "tools\package\make_portable_win.ps1") `
         -SkipBuild:$SkipBuild -BuildDir build-win -OutDir dist
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $zip)) { Fail "没有找到产物：$zip" }
 
     Write-Host "===== 2/5 打安装包"
@@ -74,7 +74,7 @@ try {
     $manifestArgs = @{ Platform = "windows" }
     if (-not [string]::IsNullOrWhiteSpace($Notes)) { $manifestArgs.Notes = $Notes }
     & (Join-Path $repoRoot "tools\package\make_update_json.ps1") @manifestArgs
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
 
     Write-Host "===== 4/5 上传 OSS"
