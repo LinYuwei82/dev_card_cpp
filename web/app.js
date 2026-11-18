@@ -356,24 +356,39 @@
   }
 
   // 发布元数据两条来源都认：GitHub/Gitee Release（tag_name/html_url/body）
-  // 或自管清单（latest/download_url/notes）。版本号不合法就整条不认。
-  // 自管清单可给 latest_by_platform：两个平台发版节奏不同步时，
-  // 单字段 latest 会让某一端看到装不上/装回旧版的新版本号。
-  function platformLatest(doc) {
-    if (!doc || typeof doc !== 'object') return '';
-    var per = doc.latest_by_platform;
-    if (!per || typeof per !== 'object' || Array.isArray(per)) return '';
-    var ua = navigator.userAgent || '';
-    var key = /Windows/i.test(ua) ? 'windows'
-      : (/Macintosh|Mac OS X/i.test(ua) ? 'macos' : '');
-    if (!key) return '';
-    return normalizeVersion(per[key] || '');
-  }
-
+  // 或 v1 自管清单（latest/download_url/notes）。版本号不合法就整条不认。
+  // v1 清单的分平台字段已随清单 v2 退役：版本/构建号的分平台判定
+  // 收口到服务端（读验签过的 manifest.json）。
   function parseRelease(doc) {
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
-    var version = normalizeVersion(doc.tag_name || platformLatest(doc) ||
-      doc.latest || doc.version || '');
+    // 更新清单 v2（manifest.json）：两平台同一份，只看本平台的版本号。
+    // artifacts 不在前端消费——WebView 里没有 Ed25519，远端清单未经客户端
+    // 验签，不能作为下载资产来源；下载入口只信本地清单（服务端验签后透传
+    // 的 assets）。assets 给 null：openUpdateModal 会回退到本地透传资产，
+    // 本地也没有时就只提示版本、不给下载按钮。
+    if (doc.manifest_version === 2 && doc.platforms &&
+        typeof doc.platforms === 'object' && !Array.isArray(doc.platforms)) {
+      var ua = navigator.userAgent || '';
+      var v2key = /Windows/i.test(ua) ? 'windows'
+        : (/Macintosh|Mac OS X/i.test(ua) ? 'macos' : '');
+      var section = v2key ? doc.platforms[v2key] : null;
+      if (!section || typeof section !== 'object') {
+        // 清单只投了另一平台：视为「本平台无更新」，而不是格式错误。
+        return { version: '', url: '', notes: '', assets: null };
+      }
+      var v2version = normalizeVersion(section.version || '');
+      if (!v2version) return null;
+      return {
+        version: v2version,
+        // notes_url 是发布说明页，当「打开下载页」的跳转目标；不是 https 就不认。
+        url: /^https:\/\//i.test(String(section.notes_url || ''))
+          ? String(section.notes_url) : '',
+        notes: '',
+        assets: null
+      };
+    }
+    var version = normalizeVersion(doc.tag_name || doc.latest ||
+      doc.version || '');
     if (!version) return null;
     // release.url 只从 html_url 取（GitHub Release 页面 URL），
     // 不认 download_url——那个字段在 OSS 目录清单里经常是指向某个资产文件的，

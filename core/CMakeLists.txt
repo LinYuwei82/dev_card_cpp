@@ -12,9 +12,11 @@ add_library(devcard_core STATIC
     src/password.cpp
     src/settings.cpp
     src/sha256.cpp
+    src/update_manifest.cpp
     src/update_package.cpp
     src/xlsx.cpp
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/argon2.c"
+    "${CMAKE_SOURCE_DIR}/third_party/tweetnacl/tweetnacl.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/core.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/encoding.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/ref.c"
@@ -46,6 +48,7 @@ set_source_files_properties(
     "${DEVCARD_SQLITE_DIR}/sqlite3.c"
     "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/argon2.c"
+    "${CMAKE_SOURCE_DIR}/third_party/tweetnacl/tweetnacl.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/core.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/encoding.c"
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/ref.c"

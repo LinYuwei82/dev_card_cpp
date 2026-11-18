@@ -36,6 +36,7 @@
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
+#include "devcard/update_manifest.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
 #include "apply_update.h"
@@ -250,17 +251,17 @@ std::size_t utf8_length(const std::string& value) {
 
 // 版本检查（M5/M6）：只读取数据目录里的更新清单并比较版本，不下载、不替换。
 // 清单由发布方投放；缺失或非法时接口照常返回，只是不给「有新版本」。
-// M6 起清单还承载「远端检查」的三个开关：是否联网查、查哪个地址、最快多久查一次。
-constexpr std::string_view kUpdateManifestName = "update.json";
+// v2 起统一为带 Ed25519 签名的 manifest.json（两平台同一份，只取本平台段）；
+// 远端检查地址随之内嵌，间隔走默认配置——清单里不再有 check_* 字段。
+constexpr std::string_view kUpdateManifestName = "manifest.json";
 constexpr std::string_view kDefaultDownloadPage =
     "https://dl.xiaotu.online/";
-#if defined(_WIN32)
+// 清单 Ed25519 公钥（32 字节的 hex），与 key_id（2026-11）一起随客户端发布；
+// 轮换密钥 = 新 key_id + 新公钥随下一个客户端版本编译进来。
+constexpr std::string_view kUpdateSignPubkeyHex =
+    "3f4d9fabc122113e426b98a8f8b2312cb194e406f770de61285e41c607d22403";
 constexpr std::string_view kDefaultUpdateEndpoint =
-    "https://dl.xiaotu.online/devcard/updates/stable/windows.json";
-#else
-constexpr std::string_view kDefaultUpdateEndpoint =
-    "https://dl.xiaotu.online/devcard/updates/stable/latest.json";
-#endif
+    "https://dl.xiaotu.online/devcard/updates/stable/manifest.json";
 constexpr long kDefaultUpdateIntervalHours = 24;
 
 bool parse_version(const std::string& text, std::vector<long>* parts) {
@@ -304,38 +305,24 @@ int compare_version(const std::string& left, const std::string& right) {
 
 struct UpdateManifest {
   bool found = false;
+  // 验签通过后本平台（Windows / macOS）的版本与构建号；验签失败时保持为空。
   std::string latest;
-  // 分平台最新版本：两个平台的发布节奏不同步（例如 macOS 1.2.3 已发、
-  // Windows 只有 1.2.2 包），单个 latest 无法同时表达，缺省时退回 latest。
-  std::string latest_macos;
-  std::string latest_windows;
+  std::uint64_t latest_build = 0;  // Windows 构建号；macOS 恒 0
+  // v2 清单没有 download_url/notes 字段；保留输出结构，前端有 download_page 兜底。
   std::string download_url;
   std::string notes;
   std::string error;
-  // 本地清单里的资产表原样透给前端：命中本地清单时前端不会再拉远端，
-  // 没有这份 assets 就无法判断「能不能下载 / 能不能安装」，按钮只能全灰。
+  // v2 artifacts 转成 v1 资产表的形状（browser_download_url + digest
+  // "sha256:<hex>"）原样透传前端：前端的资产解析与按钮逻辑不用动。
+  // 命中本地清单时前端不会再拉远端，没有这份资产就无法判断
+  // 「能不能下载 / 能不能安装」，按钮只能全灰。
   json assets = json::array();
-  // M6：远端检查的开关、地址与频率。清单不写就取默认值；
-  // 地址不是 http/https 时直接关掉检查，宁可查不了也不发一个奇怪的请求。
+  // M6：远端检查的开关、地址与频率。地址内嵌、间隔用默认值；
+  // 清单验签失败时整体关闭检查——清单可能被篡改，宁可查不了也不冒进。
   bool check_enabled = true;
   std::string check_endpoint{std::string(kDefaultUpdateEndpoint)};
   long check_interval_hours = kDefaultUpdateIntervalHours;
 };
-
-bool is_http_url(const std::string& value) {
-  return value.rfind("http://", 0) == 0 || value.rfind("https://", 0) == 0;
-}
-
-// 本进程所在平台对应的最新版本：清单给了 latest_by_platform 就用它，
-// 否则退回全局 latest（旧清单没有分平台字段）。
-std::string effective_latest(const UpdateManifest& manifest) {
-#ifdef _WIN32
-  if (!manifest.latest_windows.empty()) return manifest.latest_windows;
-#else
-  if (!manifest.latest_macos.empty()) return manifest.latest_macos;
-#endif
-  return manifest.latest;
-}
 
 UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
   UpdateManifest result;
@@ -344,37 +331,33 @@ UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
   result.found = true;
   const std::string text((std::istreambuf_iterator<char>(in)),
                          std::istreambuf_iterator<char>());
-  const json doc = json::parse(text, nullptr, false);
-  if (doc.is_discarded() || !doc.is_object()) {
-    result.error = "更新清单不是合法的 JSON 对象";
+  // v2：先验 Ed25519 签名，再解析。签名不过就放弃更新（不提示版本、
+  // 不透传资产、关闭远端检查）——这是「先验清单签名（失败放弃更新），
+  // 再校验产物 SHA256」链路的第一道闸。
+  const SignedManifest parsed = parse_signed_manifest(text, kUpdateSignPubkeyHex);
+  if (!parsed.ok) {
+    result.error = parsed.error;
+    result.check_enabled = false;
     return result;
   }
-  result.latest = trim_copy(doc.value("latest", std::string{}));
-  result.download_url = trim_copy(doc.value("download_url", std::string{}));
-  result.notes = trim_copy(doc.value("notes", std::string{}));
-  if (doc.contains("assets") && doc["assets"].is_array()) {
-    result.assets = doc["assets"];
-  }
-  if (doc.contains("check_enabled") && doc["check_enabled"].is_boolean()) {
-    result.check_enabled = doc["check_enabled"].get<bool>();
-  }
-  const std::string endpoint = trim_copy(doc.value("check_endpoint", std::string{}));
-  if (!endpoint.empty()) result.check_endpoint = endpoint;
-  if (!is_http_url(result.check_endpoint)) result.check_enabled = false;
-  if (doc.contains("check_interval_hours") && doc["check_interval_hours"].is_number_integer()) {
-    result.check_interval_hours = std::max<long>(1, doc["check_interval_hours"].get<long>());
+  result.latest = parsed.platform.version;
+  result.latest_build = parsed.platform.build;
+  for (const ManifestArtifact& artifact : parsed.platform.artifacts) {
+    result.assets.push_back(json{
+        {"name", artifact.name},
+        {"browser_download_url", artifact.url},
+        {"digest", "sha256:" + artifact.sha256},
+        {"size", artifact.size},
+        {"version", result.latest},
+    });
   }
   std::vector<long> parts;
-  if (doc.contains("latest_by_platform") && doc["latest_by_platform"].is_object()) {
-    const json& per = doc["latest_by_platform"];
-    result.latest_macos = trim_copy(per.value("macos", std::string{}));
-    result.latest_windows = trim_copy(per.value("windows", std::string{}));
-  }
-  const std::string effective = effective_latest(result);
-  if (effective.empty()) {
-    result.error = "更新清单缺少 latest";
-  } else if (!parse_version(effective, &parts)) {
-    result.error = "更新清单中的 latest 不是合法版本号";
+  if (result.latest.empty()) {
+    result.error = "更新清单缺少本平台条目";
+  } else if (!parse_version(result.latest, &parts)) {
+    result.error = "更新清单中的版本号不合法";
+    result.latest.clear();
+    result.assets = json::array();
   }
   return result;
 }
@@ -474,6 +457,9 @@ const StatusTable& error_status_table() {
       {"no_update", 400},
       {"update_disabled", 403},
       {"update_busy", 409},
+      // 下载 spec 与验签清单对不上：不是客户端的锅也不是远端的锅，
+      // 400 让前端把「重新检查更新」的提示亮出来。
+      {"not_in_manifest", 400},
       {"manifest_invalid", 502},
       {"download_failed", 502},
       {"checksum_mismatch", 502},
@@ -855,6 +841,7 @@ const std::vector<std::string>& route_error_codes() {
       "bad_logo",         "logo_too_large",   "bad_company_name",
       "logo_write",       "endpoint_not_allowed",
       "no_update",        "update_disabled",  "update_busy",
+      "not_in_manifest",
       "manifest_invalid", "download_failed",  "checksum_mismatch",
       "update_package_missing", "install_package_invalid",
       "install_busy",     "install_failed",   "install_unsupported",
@@ -1044,8 +1031,16 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                        const httplib::Request&,
                                        httplib::Response& response) {
     const UpdateManifest manifest = read_update_manifest(state.data_dir);
-    // 本平台的最新版本：manifest.latest 只是旧清单的兜底。
-    const std::string latest = effective_latest(manifest);
+    // 本平台的最新版本与构建号来自验签通过的清单；build 只在同版本时参与
+    // 判定（见下方 available）。
+    const std::string latest = manifest.latest;
+    // macOS 只比版本号；Windows 同版本再看构建号（沿用小兔规则：远端 build
+    // 必须大于本机才有更新）。本机构建号当前没有可靠来源（VERSION.txt 只有
+    // x.y.z，版本资源第 4 段恒 0），按 0 处理——0 视为「缺失」，缺失即跳过
+    // build 比较：同版本号一律不再提示。否则同版本重发包会形成「装完还是
+    // 同一个版本号 → 再提示 → 再装」的死循环；等客户端有了构建号来源，
+    // 把 available 放开为 `cmp == 0 && local_build > 0 &&
+    // manifest.latest_build > local_build` 即可。
     const bool available = !latest.empty() && compare_version(latest, version) > 0;
     set_json(response,
              json{{"version", version},
@@ -1056,7 +1051,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                   {"download_page", download_page()},
                   {"notes", manifest.notes},
                   {"assets", manifest.assets},
-                  // M6：远端检查的三个开关都来自同一份 update.json，前端不再写死地址。
+                  // M6：远端检查的开关来自同一份 manifest.json（地址内嵌，
+                  // 间隔用默认配置），前端不写死地址。
                   {"check", json{{"enabled", manifest.check_enabled},
                                  {"endpoint", manifest.check_endpoint},
                                  {"interval_hours", manifest.check_interval_hours}}},
@@ -1171,7 +1167,28 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       if (!invalid.empty()) {
                         throw AppError(validate_update_spec_code(spec), invalid);
                       }
+                      // v2：下载用的 url/sha256/size 必须与验签通过的清单一致。
+                      // 否则验签只拦得住「本地提示」，拦不住拿着来路不明的
+                      // spec 直接 POST。清单验签失败时 check_enabled 已为
+                      // false（上面就拒绝了）；数据目录没有清单文件时保持
+                      // 旧行为，由白名单与版本检查兜底。
+                      if (manifest.found) {
+                        bool matched = false;
+                        for (const json& item : manifest.assets) {
+                          matched =
+                              item.value("browser_download_url", "") == spec.url &&
+                              item.value("digest", "") == "sha256:" + spec.sha256 &&
+                              item.value("size", std::uint64_t{0}) == spec.size;
+                          if (matched) break;
+                        }
+                        if (!matched) {
+                          throw AppError("not_in_manifest",
+                                         "下载信息与更新清单不一致（清单可能已更新，请重新检查更新）");
+                        }
+                      }
                       // 没有比当前版本更新的版本时，不允许借下载接口落盘。
+                      // （Windows 同版本的新构建号要等客户端有了本机构建号
+                      // 来源才会放行——见 /api/version 里 build 比较的说明。）
                       if (compare_version(spec.version, version) <= 0) {
                         throw AppError("no_update", "没有可用的新版本");
                       }

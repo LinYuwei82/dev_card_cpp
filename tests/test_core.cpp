@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -10,6 +11,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -28,8 +31,13 @@
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
 #include "devcard/sha256.h"
+#include "devcard/update_manifest.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
+
+extern "C" {
+#include <tweetnacl/tweetnacl.h>
+}
 
 namespace {
 
@@ -438,6 +446,201 @@ void run_update_package_case(const std::filesystem::path& dir) {
     ::unsetenv("DEVCARD_FAKE_ARGV_LOG");
   }
 #endif
+}
+
+// —— 更新清单 v2：验签与解析 ——
+// 固定向量由 mote 仓库 tools/release/manifest_v2.py generate 生成并签名
+// （测试专用随机密钥，与线上私钥无关）。C++ 侧能验过这份签名，等价于
+// canonical 序列化（键排序/紧凑/UTF-8/整数与转义规则）与发布端逐字节一致。
+constexpr const char* kV2ManifestVector = R"json({
+  "channel": "stable",
+  "key_id": "2026-11",
+  "manifest_version": 2,
+  "platforms": {
+    "macos": {
+      "artifacts": {
+        "dmg": {
+          "sha256": "56281bd59a882147b162cbf5678d6af5ea582eb2075b2904d2735262f37d8a61",
+          "size": 16,
+          "url": "https://dl.xiaotu.online/devcard/devcard-9.9.9-macos-arm64.dmg"
+        }
+      },
+      "build": 0,
+      "min_os": "14.0",
+      "rollout_percent": 100,
+      "version": "9.9.9"
+    },
+    "windows": {
+      "artifacts": {
+        "portable": {
+          "sha256": "ee580ec177f0e10d241fa1e83953c3d6f12edde39f0bece030536d604dfc7ee9",
+          "size": 25,
+          "url": "https://dl.xiaotu.online/devcard/devcard-9.9.9-win64-portable.zip"
+        },
+        "setup": {
+          "sha256": "000829e58dcb369465e8c74da3487b96d7aa17f754c5411efe84f63c89060da9",
+          "size": 22,
+          "url": "https://dl.xiaotu.online/devcard/devcard-9.9.9-win64-setup.exe"
+        }
+      },
+      "build": 202611180930,
+      "min_os": "10.0",
+      "rollout_percent": 100,
+      "version": "9.9.9"
+    }
+  },
+  "product": "devcard",
+  "signature": "Xy3b0SSkirhPxi7/hw8vYLfKbgWU3Ra+N5rwjONg/XtCEnwIUrmQbFamU2/i1jislpWfOcjpc/kfTNgXLeycDA==",
+  "updated_at": "2026-11-18T07:09:20Z"
+})json";
+constexpr const char* kV2VectorPubkey =
+    "c877ab759c694dcb2da43b6053be35c9bf20cabc10ad97cb68357a3c1ea74cb5";
+
+void run_update_manifest_case() {
+  using namespace devcard;
+  using nlohmann::json;
+
+  // manifest_v2.py selftest 同源的 RFC 8032 向量密钥：seed 派生出 pk，
+  // 测试里用 sk = seed || pk 现场给改过的清单重签。
+  const unsigned char kVectorSeed[32] = {
+      0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a,
+      0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32,
+      0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60};
+  const unsigned char kVectorPub[32] = {
+      0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe,
+      0xd3, 0xc9, 0x64, 0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6,
+      0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
+  auto base64_of_64 = [](const unsigned char* raw) {
+    static const char* kTable =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(88);
+    for (std::size_t i = 0; i < 64; i += 3) {
+      const int b0 = raw[i], b1 = i + 1 < 64 ? raw[i + 1] : 0,
+                b2 = i + 2 < 64 ? raw[i + 2] : 0;
+      out.push_back(kTable[b0 >> 2]);
+      out.push_back(kTable[((b0 & 3) << 4) | (b1 >> 4)]);
+      out.push_back(i + 1 < 64 ? kTable[((b1 & 15) << 2) | (b2 >> 6)] : '=');
+      out.push_back(i + 2 < 64 ? kTable[b2 & 63] : '=');
+    }
+    return out;
+  };
+  // 用向量密钥对「去掉 signature 后的 canonical」签名，返回 base64 文本。
+  auto sign_with_vector_key = [&](const std::string& canonical) {
+    unsigned char sk[64];
+    std::memcpy(sk, kVectorSeed, 32);
+    std::memcpy(sk + 32, kVectorPub, 32);
+    std::vector<unsigned char> sm(64 + canonical.size());
+    unsigned long long smlen = 0;
+    crypto_sign(sm.data(), &smlen,
+                reinterpret_cast<const unsigned char*>(canonical.data()),
+                canonical.size(), sk);
+    return base64_of_64(sm.data());  // 签名就是 sm 的前 64 字节
+  };
+
+  // TweetNaCl 层先用 manifest_v2.py selftest 同源的 RFC 8032 固定向量：
+  // 两边（Python 与 C）必须对同一 (msg, sig, pk) 给出同一结论。
+  {
+    const unsigned char pk[32] = {
+        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe,
+        0xd3, 0xc9, 0x64, 0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6,
+        0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
+    const unsigned char sig[64] = {
+        0xe6, 0x42, 0x30, 0x9f, 0x0f, 0x79, 0x10, 0x45, 0xd3, 0xd8, 0xe1,
+        0x12, 0xe5, 0x07, 0xc3, 0x3f, 0x89, 0xb5, 0xd7, 0xb0, 0xcb, 0x79,
+        0xb4, 0xca, 0x58, 0x41, 0x2c, 0xc4, 0xf5, 0x8f, 0x2c, 0x76, 0x2e,
+        0x2f, 0x1c, 0xab, 0xf5, 0xa2, 0xfa, 0xc0, 0x5e, 0x63, 0x3b, 0x52,
+        0x03, 0x88, 0x0b, 0xa8, 0xa9, 0xde, 0x76, 0x01, 0x47, 0x47, 0x22,
+        0xd7, 0xe1, 0x5f, 0x31, 0x46, 0x36, 0x60, 0x86, 0x0d};
+    const char* msg = "manifest-v2-selftest";
+    unsigned char sm[64 + 20];
+    unsigned char m[64 + 20];
+    unsigned long long mlen = 0;
+    std::memcpy(sm, sig, 64);
+    std::memcpy(sm + 64, msg, 20);
+    CHECK(crypto_sign_open(m, &mlen, sm, 64 + 20, pk) == 0);
+    sm[70] ^= 1;  // 篡改消息
+    CHECK(crypto_sign_open(m, &mlen, sm, 64 + 20, pk) != 0);
+  }
+
+  std::string error;
+  CHECK(verify_manifest_signature(kV2ManifestVector, kV2VectorPubkey, &error));
+  CHECK(error.empty());
+
+  // 本平台解析：非 Windows 只认 dmg；Windows 认 setup/portable 并读出构建号。
+  const SignedManifest parsed = parse_signed_manifest(kV2ManifestVector, kV2VectorPubkey);
+  CHECK(parsed.ok);
+#ifdef _WIN32
+  CHECK(parsed.platform.version == "9.9.9");
+  CHECK(parsed.platform.build == 202611180930ULL);
+  CHECK(parsed.platform.artifacts.size() == 2);
+  bool seen_setup = false;
+  bool seen_portable = false;
+  for (const ManifestArtifact& artifact : parsed.platform.artifacts) {
+    if (artifact.role == "setup") {
+      seen_setup = true;
+      CHECK(artifact.name == "devcard-9.9.9-win64-setup.exe");
+      CHECK(artifact.size == 22);
+      CHECK(artifact.sha256 ==
+            "000829e58dcb369465e8c74da3487b96d7aa17f754c5411efe84f63c89060da9");
+    }
+    if (artifact.role == "portable") seen_portable = true;
+  }
+  CHECK(seen_setup);
+  CHECK(seen_portable);
+#else
+  CHECK(parsed.platform.version == "9.9.9");
+  CHECK(parsed.platform.build == 0);
+  CHECK(parsed.platform.artifacts.size() == 1);
+  if (parsed.platform.artifacts.size() == 1) {
+    CHECK(parsed.platform.artifacts[0].role == "dmg");
+    CHECK(parsed.platform.artifacts[0].name == "devcard-9.9.9-macos-arm64.dmg");
+    CHECK(parsed.platform.artifacts[0].size == 16);
+  }
+#endif
+
+  // 篡改任何字段（含 9 位构建号）都必须验签失败。
+  std::string tampered(kV2ManifestVector);
+  const std::size_t build_at = tampered.find("202611180930");
+  CHECK(build_at != std::string::npos);
+  tampered.replace(build_at, 10, "202611180001");
+  CHECK(!verify_manifest_signature(tampered, kV2VectorPubkey, &error));
+  CHECK(error.find("签名验证失败") != std::string::npos);
+
+  // 公钥不匹配也必须失败：换掉内置公钥的第一个字符。
+  std::string wrong_pubkey(kV2VectorPubkey);
+  wrong_pubkey[0] = wrong_pubkey[0] == 'c' ? 'd' : 'c';
+  CHECK(!verify_manifest_signature(kV2ManifestVector, wrong_pubkey, &error));
+
+  // signature 缺失 / 不是合法 base64，都要给出明确错误而不是崩。
+  json doc = json::parse(kV2ManifestVector);
+  doc.erase("signature");
+  const std::string no_signature = doc.dump();
+  CHECK(!verify_manifest_signature(no_signature, kV2VectorPubkey, &error));
+  CHECK(error.find("signature") != std::string::npos);
+  doc["signature"] = "!!!not-base64!!!";
+  CHECK(!verify_manifest_signature(doc.dump(), kV2VectorPubkey, &error));
+  CHECK(error.find("base64") != std::string::npos);
+
+  // 非 JSON / 非 v2 / 缺本平台：解析层直接拒绝。
+  CHECK(!parse_signed_manifest("not json at all", kV2VectorPubkey).ok);
+  const SignedManifest wrong_version =
+      parse_signed_manifest(R"({"manifest_version":1,"signature":"AAAA"})", kV2VectorPubkey);
+  CHECK(!wrong_version.ok);
+  // 缺本平台：把向量清单的 platforms 清空并用测试密钥重签（签名有效才
+  // 能走到解析层，否则错误会停在验签上）。验签也用同一把向量公钥。
+  json emptied = json::parse(kV2ManifestVector);
+  emptied["platforms"] = json::object();
+  emptied.erase("signature");
+  const std::string emptied_canonical = emptied.dump();
+  emptied["signature"] = sign_with_vector_key(emptied_canonical);
+  const SignedManifest no_platform = parse_signed_manifest(
+      emptied.dump(),
+      "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+  CHECK(!no_platform.ok);
+  CHECK(no_platform.error.find("本平台") != std::string::npos);
+
+  std::cout << "[update-manifest] signature + parse checks done\n";
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
@@ -1280,6 +1483,11 @@ int run_all_tests() {
     run_update_package_case(dir);
     std::filesystem::remove_all(dir);
     CHECK(!std::filesystem::exists(dir));
+  }
+
+  {
+    // 更新清单 v2：Ed25519 验签与本平台解析。
+    run_update_manifest_case();
   }
 
   {

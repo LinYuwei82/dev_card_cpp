@@ -269,7 +269,8 @@ std::string seed_password(const std::filesystem::path& data_dir,
   return {};
 }
 
-// 服务端闸门：检查关闭 → 403 update_disabled；请求的版本不比当前新 → 400 no_update。
+// 服务端闸门（v2）：清单签名无效 → 检查整体关闭，下载 403 update_disabled；
+// 请求的版本不比当前新 → 400 no_update。
 // 两条都在下载线程启动前返回，因此不需要 curl，也不会联网。
 int check_update_guards() {
   namespace fs = std::filesystem;
@@ -345,14 +346,23 @@ int check_update_guards() {
         }
 
         {
-          std::ofstream out(data_dir / "update.json", std::ios::binary);
-          out << R"({"latest":"9.9.9","check_enabled":false})";
+          // v2：清单必须通过 Ed25519 验签。坏签名时检查整体关闭——
+          // 下载闸门（403 update_disabled）必须在下载线程启动前挡住。
+          std::ofstream out(data_dir / "manifest.json", std::ios::binary);
+          out << R"({"manifest_version":2,"product":"devcard",)"
+                 R"("channel":"stable","key_id":"2026-11",)"
+                 R"("updated_at":"2026-11-18T00:00:00Z",)"
+                 R"("platforms":{"windows":{"version":"9.9.9","build":202611180930,)"
+                 R"("min_os":"10.0","artifacts":{"setup":{"url":)"
+                 R"("https://dl.xiaotu.online/devcard/devcard-9.9.9-win64-setup.exe",)"
+                 R"("size":1,"sha256":")" << std::string(64, 'a') << R"("}}}},)"
+                 R"("signature":"AAAA"})";
         }
         const auto disabled = client.Post("/api/update/download",
                                           payload("9.9.9"), "application/json");
         if (!disabled || disabled->status != 403 ||
             disabled->body.find("update_disabled") == std::string::npos) {
-          std::cerr << "[失败] 检查关闭时仍可下载（期望 403 update_disabled）："
+          std::cerr << "[失败] 验签失败的清单仍可下载（期望 403 update_disabled）："
                     << (disabled ? disabled->status : -1) << " "
                     << (disabled ? disabled->body : "") << std::endl;
           failures = 1;
@@ -363,34 +373,46 @@ int check_update_guards() {
           failures = 1;
         }
 
-        // 分平台最新版本：macOS 与 Windows 发版节奏不同步时，
-        // 各自只应看到本平台的 latest，不能用全局 latest 冒充。
+        // v2 清单解析走验签后的 platforms.<本平台>：签名无效时 latest 必须为
+        // null、update_available 必须为 false，错误信息要点名签名——
+        // 宁可没有更新提示，也不能把被篡改的清单当真。
         {
-          std::ofstream out(data_dir / "update.json", std::ios::binary);
-          out << R"({"latest":"1.2.2","latest_by_platform":)"
-                 R"({"macos":"9.9.9","windows":"1.2.2"},)"
-                 R"("check_enabled":false})";
+          std::ofstream out(data_dir / "manifest.json", std::ios::binary);
+          out << R"({"manifest_version":2,"product":"devcard",)"
+                 R"("channel":"stable","key_id":"2026-11",)"
+                 R"("updated_at":"2026-11-18T00:00:00Z",)"
+                 R"("platforms":{"macos":{"version":"9.9.9","build":0,)"
+                 R"("min_os":"14.0","artifacts":{"dmg":{"url":)"
+                 R"("https://dl.xiaotu.online/devcard/devcard-9.9.9-macos-arm64.dmg",)"
+                 R"("size":1,"sha256":")" << std::string(64, 'b') << R"("}}},)"
+                 R"("windows":{"version":"1.2.2","build":202611180930,)"
+                 R"("min_os":"10.0","artifacts":{"setup":{"url":)"
+                 R"("https://dl.xiaotu.online/devcard/devcard-1.2.2-win64-setup.exe",)"
+                 R"("size":1,"sha256":")" << std::string(64, 'c') << R"("}}}},)"
+                 R"("signature":"e30="})";
         }
-#ifdef _WIN32
-        const std::string expect_latest = "1.2.2";
-        const std::string expect_available = "false";
-#else
-        const std::string expect_latest = "9.9.9";
-        const std::string expect_available = "true";
-#endif
         const auto version_info = client.Get("/api/version");
         const std::string version_body =
             version_info ? version_info->body : std::string{};
         if (!version_info || version_info->status != 200 ||
-            version_body.find("\"latest\":\"" + expect_latest + "\"") ==
+            version_body.find("\"latest\":null") == std::string::npos ||
+            version_body.find("\"update_available\":false") ==
                 std::string::npos ||
-            version_body.find(std::string("\"update_available\":") +
-                              expect_available) == std::string::npos) {
-          std::cerr << "[失败] 分平台 latest 未生效（期望 "
-                    << expect_latest << " / update_available="
-                    << expect_available << "）："
+            version_body.find("签名") == std::string::npos) {
+          std::cerr << "[失败] 无效签名清单未被拒绝（期望 latest=null、"
+                       "update_available=false、error 提及签名）："
                     << (version_info ? version_info->status : -1) << " "
                     << version_body << std::endl;
+          failures = 1;
+        }
+        const auto disabled_after = client.Post("/api/update/download",
+                                                payload("9.9.9"),
+                                                "application/json");
+        if (!disabled_after || disabled_after->status != 403 ||
+            disabled_after->body.find("update_disabled") == std::string::npos) {
+          std::cerr << "[失败] 无效签名清单下仍可下载（期望 403 update_disabled）："
+                    << (disabled_after ? disabled_after->status : -1) << " "
+                    << (disabled_after ? disabled_after->body : "") << std::endl;
           failures = 1;
         }
       }
