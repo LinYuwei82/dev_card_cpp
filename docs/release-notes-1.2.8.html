@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevCard v1.2.8 · 发布说明</title>
+<style>
+  :root {
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro SC", "PingFang SC",
+            "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --bg: #f4f6f6;
+    --card: #ffffff;
+    --text: #14201f;
+    --muted: #5c6b69;
+    --accent: #0f6e6e;
+    --border: #e2e9e8;
+    --link: #0b6b6b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1211; --card: #121a19; --text: #e6eceb; --muted: #97a6a4;
+      --accent: #3fb8b8; --border: #22302e; --link: #5ccfcf;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--sans); background: var(--bg); color: var(--text);
+    line-height: 1.7; margin: 0; padding: 0;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 48px 28px 80px; }
+  header { padding-bottom: 28px; border-bottom: 1px solid var(--border); margin-bottom: 36px; }
+  .label {
+    display: inline-block; padding: 4px 12px; font-size: 12px; font-weight: 600;
+    color: var(--accent); background: rgba(15,110,110,.10); border-radius: 999px;
+    letter-spacing: .04em;
+  }
+  h1 { font-size: 32px; margin: 18px 0 8px; letter-spacing: -.01em; }
+  .tagline { color: var(--muted); font-size: 15px; }
+  h2 {
+    font-size: 19px; margin: 38px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 15px; margin: 22px 0 8px; }
+  p, li { font-size: 15px; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  code {
+    font-family: var(--mono); background: rgba(15,110,110,.09); padding: 2px 6px;
+    border-radius: 4px; font-size: 13px;
+  }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; letter-spacing: .04em; }
+  .note {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px; margin: 18px 0; font-size: 14px; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="label">稳定版 · 2026-11-19</span>
+    <h1>DevCard v1.2.8</h1>
+    <p class="tagline">桌面版「退出」真正退出应用；更新检查与清单链路的一轮修复。</p>
+  </header>
+
+  <h2>重点修复</h2>
+  <ul>
+    <li><strong>桌面版点「退出」不再停在登录页</strong>：macOS / Windows 客户端点顶栏「退出」直接关闭应用（Windows 会先弹确认框），不再退回登录界面。浏览器 / 网络版仍然是退出登录。</li>
+    <li><strong>检查更新首次点击不再误报</strong>：修复首次点击把网络冷启动误判为「返回数据格式不合法」的问题，第一次点就能拿到正确结果。</li>
+    <li><strong>远端清单先验签再给资产</strong>：WebView 内无法做 Ed25519 验签，改由本地服务端 <code>POST /api/version/verify</code> 验签通过后才下发下载地址，避免验签缺失导致「下载 / 安装」按钮长期置灰。</li>
+  </ul>
+
+  <h2>其他改进</h2>
+  <ul>
+    <li>更新清单与 appcast 上传改为 <code>no-cache</code>，发版后客户端不再命中旧清单。</li>
+    <li>Windows 安装包新增桌面快捷方式，开始菜单项保持不变。</li>
+    <li>Windows 导出 / 打印前先过字体闸门，缺字时直接提示，不再输出缺字 PDF。</li>
+    <li>会话文件落盘后收紧为 <code>0600</code>。</li>
+    <li>设备分页偏移改用 64 位计算，极端页码不再溢出回绕。</li>
+    <li>设备路径 id 解析失败返回 404，不再 500 透出内部异常。</li>
+    <li>导入时必填项缺失只跳过该行，不再整批回滚；xlsx 解压加上尺寸上限。</li>
+  </ul>
+
+  <h2>升级方式</h2>
+  <table>
+    <tr><th>平台</th><th>方式</th></tr>
+    <tr><td>macOS</td><td>应用内「检查更新」，或从下载页重新安装（覆盖安装保留数据）</td></tr>
+    <tr><td>Windows</td><td>应用内「检查更新」，或运行新版安装包覆盖安装</td></tr>
+  </table>
+
+  <div class="note">
+    台账数据保存在用户数据目录，覆盖安装不会删除；卸载默认保留数据，除非勾选同时清理。
+  </div>
+</div>
+</body>
+</html>

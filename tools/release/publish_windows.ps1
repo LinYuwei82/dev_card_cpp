@@ -114,6 +114,17 @@ try {
     }
     Copy-Item -LiteralPath $setup -Destination $v2Setup -Force
 
+    # 发布说明：仓库存在 docs\release-notes-<版本>.html 时随发布上传，并写进清单
+    # platforms.windows.notes_url（与 mote / 小兔一致）；缺页不写字段，避免客户端死链。
+    $notesPage = Join-Path $repoRoot "docs\release-notes-$version.html"
+    $notesKey = "release-notes-$version.html"
+    $notesUrl = $env:DEVCARD_NOTES_URL
+    $uploadNotes = $false
+    if (-not $notesUrl -and (Test-Path -LiteralPath $notesPage)) {
+        $notesUrl = "$baseUrl/$notesKey"
+        $uploadNotes = $true
+    }
+
     $manifestArgs = @(
         "generate", "--product", "devcard", "--channel", $channel,
         "--platform", "windows", "--version", $version, "--build", $Build,
@@ -122,6 +133,7 @@ try {
         "--key", $signKeyPath, "--out", $manifest
     )
     # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
+    if ($notesUrl) { $manifestArgs += @("--notes-url", $notesUrl) }
     if (-not (Test-Path -LiteralPath $manifest)) {
         try { Invoke-WebRequest -Uri "$baseUrl/updates/$channel/manifest.json" -OutFile $manifest -UseBasicParsing } catch {
             Remove-Item -LiteralPath $manifest -ErrorAction SilentlyContinue
@@ -155,6 +167,7 @@ try {
     if ($DryRun) {
         Write-Host "  (dry-run：跳过上传)"
         Write-Host "  $v2Setup`n  $v2Zip`n  $manifest"
+        if ($uploadNotes) { Write-Host "  $notesPage → devcard/$notesKey" }
         return
     }
 
@@ -183,17 +196,23 @@ try {
     }
 
     $uploader = Join-Path $repoRoot "tools\release\upload_oss.py"
+    if ($uploadNotes) {
+        & $python $uploader $notesPage --prefix "devcard/"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     & $python $uploader $v2Setup $v2Zip --prefix "devcard/"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $python $uploader $manifest --prefix "devcard/updates/$channel/"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "===== 5/5 线上校验"
-    foreach ($url in @(
+    $checkUrls = @(
         "$baseUrl/$v2SetupName",
         "$baseUrl/$v2ZipName",
         "$baseUrl/updates/$channel/manifest.json"
-    )) {
+    )
+    if ($notesUrl) { $checkUrls += $notesUrl }
+    foreach ($url in $checkUrls) {
         try {
             $resp = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 20
             if ($resp.StatusCode -ne 200) { Fail "$url 返回 HTTP $($resp.StatusCode)" }

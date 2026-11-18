@@ -101,6 +101,16 @@ python3 "$REPO_ROOT/tools/release/generate_appcast.py" "${APPCAST_ARGS[@]}"
 
 # notes_url 可选：发布说明文件需自行上传后才写，避免客户端死链
 NOTES_URL="${DEVCARD_NOTES_URL:-}"
+# 发布说明：仓库存在 docs/release-notes-<版本>.html 时随发布一并上传，
+# 并把 <product>/release-notes-<版本>.html 写进清单 notes_url（与 mote / 小兔一致）。
+# 缺页则不写该字段，客户端不显示「查看更新详情」。
+NOTES_PAGE="${DEVCARD_NOTES_FILE:-$REPO_ROOT/docs/release-notes-$VERSION.html}"
+NOTES_KEY="release-notes-$VERSION.html"
+UPLOAD_NOTES=0
+if [ -z "$NOTES_URL" ] && [ -f "$NOTES_PAGE" ]; then
+    NOTES_URL="$BASE_URL/$NOTES_KEY"
+    UPLOAD_NOTES=1
+fi
 
 echo "===== 4/5 生成 manifest.json（v2，Ed25519 签名）"
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
@@ -143,6 +153,9 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "    $DMG.edSignature → devcard/"
     echo "    $APPCAST → devcard/updates/$CHANNEL/"
     echo "    $MANIFEST → devcard/updates/$CHANNEL/"
+    if [ "$UPLOAD_NOTES" = "1" ]; then
+        echo "    $NOTES_PAGE → devcard/$NOTES_KEY"
+    fi
     exit 0
 fi
 
@@ -156,16 +169,24 @@ for v in OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET OSS_ENDPOINT OSS_BUCKET; do
     [ -n "${!v:-}" ] || fail "环境变量 $v 未设置（见 ~/.config/devcard/release.env）"
 done
 
+if [ "$UPLOAD_NOTES" = "1" ]; then
+    python3 "$REPO_ROOT/tools/release/upload_oss.py" "$NOTES_PAGE" --prefix devcard/
+fi
 python3 "$REPO_ROOT/tools/release/upload_oss.py" \
     "$DMG" "$DMG.edSignature" --prefix devcard/
 python3 "$REPO_ROOT/tools/release/upload_oss.py" \
     "$APPCAST" "$MANIFEST" --prefix "devcard/updates/$CHANNEL/"
 
 echo "===== 线上校验"
-for url in \
-    "$BASE_URL/$V2_DMG_NAME" \
-    "$BASE_URL/updates/$CHANNEL/appcast.xml" \
-    "$BASE_URL/updates/$CHANNEL/manifest.json"; do
+CHECK_URLS=(
+    "$BASE_URL/$V2_DMG_NAME"
+    "$BASE_URL/updates/$CHANNEL/appcast.xml"
+    "$BASE_URL/updates/$CHANNEL/manifest.json"
+)
+if [ -n "$NOTES_URL" ]; then
+    CHECK_URLS+=("$NOTES_URL")
+fi
+for url in "${CHECK_URLS[@]}"; do
     code="$(curl -s -o /dev/null -w '%{http_code}' -I --max-time 20 "$url")"
     if [ "$code" = "200" ]; then
         echo "  ✓ $url"
