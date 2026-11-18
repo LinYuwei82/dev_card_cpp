@@ -64,7 +64,7 @@ command -v python3 >/dev/null || fail "需要 python3"
 SIGN_KEY="${DEVCARD_SIGN_KEY:-$HOME/.config/devcard/manifest-keys/ed25519_seed.b64}"
 [ -f "$SIGN_KEY" ] || fail "v2 清单签名种子不存在：$SIGN_KEY"
 KEY_ID="${KEY_ID:-2026-11}"
-MIN_OS="${MIN_OS:-11.0}"
+MIN_OS="${MIN_OS:-15.0}"   # 与 bin/DevCard.app 的 LSMinimumSystemVersion 保持一致
 
 # v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>；dmg 固定 macos-arm64
 if [ "$ARCH" != "arm64" ]; then
