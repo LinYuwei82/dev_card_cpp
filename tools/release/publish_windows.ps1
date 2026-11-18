@@ -84,7 +84,7 @@ try {
         if ($cmd) { $python = $cmd.Source; break }
     }
     if (-not $python) { Fail "找不到 python3 / python（guard 需要）" }
-    $guardArgs = @("preflight", "--product", "devcard", "--kind", "win",
+    $guardArgs = @("--product", "devcard", "--kind", "win",
                    "--file", $setup, "--zip", $zip)
     if ($DryRun) { $guardArgs += "--offline" }
     & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
