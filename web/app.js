@@ -328,7 +328,10 @@
   // 自建清单要在反代上加 Access-Control-Allow-Origin）。
 
   var UPDATE_DELAY_MS = 4000;    // 启动后延迟，避开首屏
-  var UPDATE_TIMEOUT_MS = 3000;  // 内网客户连不上外网是常态：失败必须秒级返回
+  var UPDATE_TIMEOUT_MS = 3000;  // 后台静默检查：内网客户连不上外网是常态，失败要秒级返回
+  // 用户主动点「检查更新」时给足时间：安装后第一次访问是冷连接
+  // （DNS + TLS 握手 + 代理），3 秒常不够，第二次复用连接才通过。
+  var UPDATE_MANUAL_TIMEOUT_MS = 8000;
   var UPDATE_LAST_KEY = 'devcard.update.lastCheckAt';
   // 自检可替换传输层；正常运行时为 null，走真 fetch。
   var updateTransport = null;
@@ -447,7 +450,8 @@
   }
 
   // 一次远端检查。永远 resolve，不抛：失败路径要和「没有新版本」在界面上不可区分。
-  function remoteCheck(config) {
+  function remoteCheck(config, timeoutMs) {
+    var limit = Number(timeoutMs) > 0 ? Number(timeoutMs) : UPDATE_TIMEOUT_MS;
     var endpoint = String((config && config.endpoint) || '');
     if (!/^https?:\/\//i.test(endpoint)) {
       return Promise.resolve({ status: 'disabled', endpoint: endpoint, raw: '', release: null });
@@ -462,7 +466,7 @@
           try { controller.abort(); } catch (error) { /* 已经结束就无所谓 */ }
         }
         resolve({ timedOut: true });
-      }, UPDATE_TIMEOUT_MS);
+      }, limit);
     });
     var options = {
       method: 'GET',
@@ -527,7 +531,7 @@
           endpoint: endpoint,
           raw: '',
           release: null,
-          detail: '超过 ' + UPDATE_TIMEOUT_MS + ' ms 没有响应'
+          detail: '超过 ' + limit + ' ms 没有响应'
         };
       }
       return result;
@@ -581,10 +585,17 @@
         if (!silent) {
           // 用户主动触发时跳过硬编码节流（但仍尊重 update.json 的 enabled）
           // 直接发起远端检查
-          return remoteCheck(check).then(function (result) {
+          return remoteCheck(check, UPDATE_MANUAL_TIMEOUT_MS).then(function (result) {
             state.updateCheck = result;
             if (result.status !== 'parsed' || !result.release) {
-              toast('检查更新失败：返回数据格式不合法');
+              // 失败原因分开说：第一次冷连接超时最容易被误读成「数据格式不合法」。
+              if (result.status === 'timeout') {
+                toast('检查更新失败：连接更新服务器超时，请稍后重试');
+              } else if (result.status === 'unreachable') {
+                toast('检查更新失败：无法连接更新服务器');
+              } else {
+                toast('检查更新失败：返回数据格式不合法');
+              }
               return;
             }
             var current = state.version || (data && data.version) || '';
