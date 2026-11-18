@@ -1307,11 +1307,11 @@ int run_all_tests() {
       CHECK(page2.items.size() == 1);
       CHECK(page2.page == 2);
 
-      // 极端页码不能因 int 乘法溢出回绕成第一页。
-      devcard::DeviceQuery far;
-      far.page = 2147483647;
-      far.page_size = 1000;
-      CHECK(service.list(far).items.empty());
+      // 极端页码不能因 int 乘法溢出回绕成第一页。（不能叫 far：MSVC 里是关键字）
+      devcard::DeviceQuery last_page;
+      last_page.page = 2147483647;
+      last_page.page_size = 1000;
+      CHECK(service.list(last_page).items.empty());
 
       devcard::DeviceQuery by_location;
       by_location.location = "A2栋";
