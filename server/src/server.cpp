@@ -1089,6 +1089,44 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                                    : json(manifest.error)}});
   });
 
+  // 远端 v2 清单的验签：页面用系统 TLS 取到清单原文后交回这里，
+  // 服务端用编译期内嵌公钥验签，通过才把本平台 artifacts 作为下载资产下发。
+  // 不这么做就只能用数据目录里的本地清单——运维没投放时按钮永远是灰的；
+  // 而让页面直接信远端 artifacts 又等于绕过验签（WebView 里没有 Ed25519）。
+  state.server.Post("/api/version/verify",
+                    [](const httplib::Request& request,
+                       httplib::Response& response) {
+                      const json body = parse_body(request.body);
+                      const std::string raw = body.value("manifest", "");
+                      if (raw.empty()) {
+                        throw AppError("bad_json", "manifest 不能为空");
+                      }
+                      const SignedManifest parsed =
+                          parse_signed_manifest(raw, kUpdateSignPubkeyHex);
+                      if (!parsed.ok) {
+                        // 验签失败不算接口错误：前端要把它与「没有新版本」
+                        // 在界面上处理成同一种结果（只提示、不给下载）。
+                        set_json(response, json{{"ok", false},
+                                                {"error", parsed.error}});
+                        return;
+                      }
+                      json assets = json::array();
+                      for (const ManifestArtifact& artifact :
+                           parsed.platform.artifacts) {
+                        assets.push_back(json{
+                            {"name", artifact.name},
+                            {"browser_download_url", artifact.url},
+                            {"digest", "sha256:" + artifact.sha256},
+                            {"size", artifact.size},
+                            {"version", parsed.platform.version},
+                        });
+                      }
+                      set_json(response, json{{"ok", true},
+                                              {"version", parsed.platform.version},
+                                              {"build", parsed.platform.build},
+                                              {"assets", assets}});
+                    });
+
   state.server.Post("/api/session/local",
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {

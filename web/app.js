@@ -486,12 +486,29 @@
           doc = null;
         }
         var release = parseRelease(doc);
-        return {
+        var fallback = {
           status: release ? 'parsed' : (doc ? 'invalid-version' : 'invalid-json'),
           endpoint: endpoint,
           raw: String(text || ''),
           release: release
         };
+        // v2 远端清单的 artifacts 不能直接采信（WebView 里没有 Ed25519 验签能力）：
+        // 把清单原文交回服务端，用编译期内嵌公钥验签，通过的资产才挂到
+        // release.assets。没有这一步，运维没往数据目录投放本地清单时，
+        // 「下载更新包 / 安装并重启」会永远是灰的。
+        if (!release || !doc || doc.manifest_version !== 2) return fallback;
+        return api('POST', '/api/version/verify', { manifest: String(text || '') })
+          .then(function (verified) {
+            if (verified && verified.ok && Array.isArray(verified.assets) &&
+                verified.assets.length) {
+              release.assets = parseAssets(verified.assets);
+            }
+            return fallback;
+          })
+          .catch(function () {
+            // 验签接口不可用就退回「只提示版本」，不影响台账。
+            return fallback;
+          });
       })
       .catch(function (error) {
         return {
