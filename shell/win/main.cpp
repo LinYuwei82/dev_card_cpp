@@ -22,6 +22,7 @@
 #include <cwctype>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <string.h>
@@ -361,23 +362,58 @@ bool HasPrinter() {
 
 // ---------- 打印双通道 ----------
 
+// 导出/打印前向页面要布局：字体闸门与公司名溢出都在页面里判，
+// 返回 {error} 时必须中止——此时不能用系统字体顶替产出一份 PDF。
+void RequestExportLayout(std::function<void(int pages, const std::string& error)> next) {
+  auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+      [next](HRESULT, LPCWSTR result) -> HRESULT {
+        int pages = 0;
+        std::string error;
+        if (result) {
+          try {
+            const auto layout = nlohmann::json::parse(Narrow(result));
+            if (layout.is_object()) {
+              if (layout.contains("error") && layout["error"].is_string()) {
+                error = layout["error"].get<std::string>();
+              }
+              if (layout.contains("pages") && layout["pages"].is_number_integer()) {
+                pages = layout["pages"].get<int>();
+              }
+            }
+          } catch (...) {
+            error = "页面返回的导出布局无法解析";
+          }
+        }
+        next(pages, error);
+        return S_OK;
+      });
+  g.webview->ExecuteScript(
+      L"(window.__devcardExportLayout ? window.__devcardExportLayout() : null)",
+      handler.Get());
+}
+
+// 布局阶段会给 body 加 is-export，中止与完成都要摘掉。
+void ExitExportMode() {
+  if (g.webview) {
+    g.webview->ExecuteScript(
+        L"window.__devcardExportDone && window.__devcardExportDone()", nullptr);
+  }
+}
+
 void ExportPdf(const std::string& suggested_name) {
   if (!g.webview || g.print_busy) return;
   g.print_busy = true;
-  auto count_handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-      [suggested_name](HRESULT, LPCWSTR result) -> HRESULT {
-        int sheets = 0;
-        if (result) {
-          try {
-            sheets = std::stoi(Narrow(result));
-          } catch (...) {
-            sheets = 0;
-          }
-        }
-        if (sheets <= 0) {
+  RequestExportLayout([suggested_name](int pages, const std::string& layout_error) {
+        if (!layout_error.empty()) {
           g.print_busy = false;
+          Notify(L"error", Widen(layout_error));
+          return;
+        }
+        if (pages <= 0) {
+          g.print_busy = false;
+          ExitExportMode();
           Notify(L"error", L"没有可导出的卡片");
-          return S_OK;
+          return;
         }
 
         std::filesystem::path target;
@@ -395,20 +431,22 @@ void ExportPdf(const std::string& suggested_name) {
 #endif
         if (!picked && !PickSavePath(Widen(suggested_name), &target, &pick_error)) {
           g.print_busy = false;
+          ExitExportMode();
           if (pick_error.empty()) {
             Notify(nullptr, L"已取消导出");
           } else {
             // 真实原因必须照实报：以前这里也说「已取消」，用户只看到取消却不知道为什么没存下。
             Notify(L"error", pick_error);
           }
-          return S_OK;
+          return;
         }
 
         ComPtr<ICoreWebView2_7> webview7;
         if (FAILED(g.webview.As(&webview7)) || !webview7) {
           g.print_busy = false;
+          ExitExportMode();
           Notify(L"error", L"当前 WebView2 运行时不支持导出 PDF");
-          return S_OK;
+          return;
         }
 
         ComPtr<ICoreWebView2PrintSettings> settings;
@@ -416,6 +454,7 @@ void ExportPdf(const std::string& suggested_name) {
         auto done = Callback<ICoreWebView2PrintToPdfCompletedHandler>(
             [target](HRESULT hr, BOOL ok) -> HRESULT {
               g.print_busy = false;
+              ExitExportMode();
               if (SUCCEEDED(hr) && ok) {
                 Notify(nullptr, L"已导出 PDF：" + target.wstring());
               } else {
@@ -428,12 +467,10 @@ void ExportPdf(const std::string& suggested_name) {
             webview7->PrintToPdf(target.c_str(), settings.Get(), done.Get());
         if (FAILED(hr)) {
           g.print_busy = false;
+          ExitExportMode();
           Notify(L"error", L"导出 PDF 失败（" + HResultText(hr) + L"）");
         }
-        return S_OK;
       });
-  g.webview->ExecuteScript(L"document.querySelectorAll('#print-stage .sheet').length",
-                           count_handler.Get());
 }
 
 // 直接打印：走 WebView2 的系统打印对话框（Chromium 打印管线，@page 控制分页）。
@@ -452,29 +489,24 @@ void ShowPrintDialog() {
            L"Runtime，或改用「导出 PDF」");
     return;
   }
-  auto count_handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-      [webview16](HRESULT, LPCWSTR result) -> HRESULT {
-        int sheets = 0;
-        if (result) {
-          try {
-            sheets = std::stoi(Narrow(result));
-          } catch (...) {
-            sheets = 0;
-          }
+  RequestExportLayout([webview16](int pages, const std::string& layout_error) {
+        if (!layout_error.empty()) {
+          ExitExportMode();
+          Notify(L"error", Widen(layout_error));
+          return;
         }
-        if (sheets <= 0) {
+        if (pages <= 0) {
+          ExitExportMode();
           Notify(L"error", L"没有可打印的卡片");
-          return S_OK;
+          return;
         }
         const HRESULT hr =
             webview16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM);
         if (FAILED(hr)) {
+          ExitExportMode();
           Notify(L"error", L"无法打开打印对话框（" + HResultText(hr) + L"）");
         }
-        return S_OK;
       });
-  g.webview->ExecuteScript(L"document.querySelectorAll('#print-stage .sheet').length",
-                           count_handler.Get());
 }
 
 // ---------- 下载 ----------
