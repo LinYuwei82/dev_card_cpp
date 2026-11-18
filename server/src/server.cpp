@@ -812,6 +812,22 @@ User require_admin(ServerState& state, const httplib::Request& request) {
   return user;
 }
 
+// 路径里的 id 只由正则保证是数字，长度不受限：std::stoll 会抛 out_of_range，
+// 落到 std::exception 分支就成了 500，还会把 "stoll" 原样透给客户端。
+std::int64_t parse_path_id(const std::string& text) {
+  std::size_t consumed = 0;
+  std::int64_t value = 0;
+  try {
+    value = std::stoll(text, &consumed);
+  } catch (const std::exception&) {
+    throw AppError("not_found", "记录不存在");
+  }
+  if (consumed != text.size()) {
+    throw AppError("not_found", "记录不存在");
+  }
+  return value;
+}
+
 }  // namespace
 
 int http_status_for(std::string_view code) {
@@ -1685,7 +1701,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Get(R"(/api/devices/(\d+))",
                    [&state](const httplib::Request& request,
                             httplib::Response& response) {
-                     const auto id = std::stoll(request.matches[1].str());
+                     const auto id = parse_path_id(request.matches[1].str());
                      set_json(response, device_json(state.devices->get(id)));
                    });
 
@@ -1701,7 +1717,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Put(R"(/api/devices/(\d+))",
                    [&state](const httplib::Request& request,
                             httplib::Response& response) {
-                     const auto id = std::stoll(request.matches[1].str());
+                     const auto id = parse_path_id(request.matches[1].str());
                      Device device = device_from_json(parse_body(request.body));
                      try {
                        set_json(response,
@@ -1719,7 +1735,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
                       const User actor = require_admin(state, request);
-                      const auto id = std::stoll(request.matches[1].str());
+                      const auto id = parse_path_id(request.matches[1].str());
                       Device device = device_from_json(parse_body(request.body));
                       const AuditContext context{actor.user_name,
                                                  request.remote_addr};
@@ -1748,7 +1764,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         }
                         try {
                           state.devices->remove(
-                              std::stoll(request.matches[1].str()), version,
+                              parse_path_id(request.matches[1].str()), version,
                               audit_context(state, request));
                           set_json(response, json{{"ok", true}});
                         } catch (const ConflictError& error) {
