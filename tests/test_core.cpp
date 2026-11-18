@@ -1307,6 +1307,12 @@ int run_all_tests() {
       CHECK(page2.items.size() == 1);
       CHECK(page2.page == 2);
 
+      // 极端页码不能因 int 乘法溢出回绕成第一页。
+      devcard::DeviceQuery far;
+      far.page = 2147483647;
+      far.page_size = 1000;
+      CHECK(service.list(far).items.empty());
+
       devcard::DeviceQuery by_location;
       by_location.location = "A2栋";
       CHECK(service.list(by_location).total == 2);

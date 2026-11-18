@@ -103,7 +103,10 @@ std::vector<Device> DeviceDao::list(const Db& db, const DeviceQuery& query) cons
     if (!query.keyword.empty()) used += query.field.empty() ? 4 : 1;
     if (!query.name.empty()) ++used;
     if (!query.location.empty()) ++used;
-    stmt.bind(used + 1, page_size).bind(used + 2, page * page_size);
+    // 偏移用 64 位算：page 没有上限，page * page_size 在 int 上溢出会变成负数，
+    // SQLite 把负 OFFSET 当 0，于是返回第一页却把大页码回给前端。
+    const std::int64_t offset = static_cast<std::int64_t>(page) * page_size;
+    stmt.bind(used + 1, page_size).bind(used + 2, offset);
     while (stmt.step()) {
       Device device;
       read_row(stmt, device);
