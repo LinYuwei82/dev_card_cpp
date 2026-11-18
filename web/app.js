@@ -1059,7 +1059,14 @@
       });
   });
 
+  // 【回归 Bug 修复｜请勿改动】桌面壳里的「退出」必须真正退出应用，不能只是注销。
+  // 事故经过：这段逻辑一度被改成只 POST /api/session/logout + showLogin()，
+  // macOS / Windows 桌面版点「退出」后停在登录页（截图见 2026-11 的反馈），
+  // 用户看起来就是「点了退出没退出」，且已重复出现两次。
+  // 正确行为：壳层（WebView）下转交原生 quit（mac: NSApp terminate / win: WM_CLOSE），
+  // 只有浏览器 / 网络版才走注销回登录页。不要为了「统一逻辑」删掉下面的壳层分支。
   el.logout.addEventListener('click', function () {
+    if (hasNativeBridge() && sendToShell('quit', {})) return;
     api('POST', '/api/session/logout')
       .then(function () {
         state.user = null;

@@ -585,6 +585,11 @@ void HandleBridgeMessage(const std::wstring& json_text) {
       OpenDataDir(Widen(message.value("path", std::string())));
     } else if (action == "openExternal") {
       OpenExternal(Widen(message.value("url", std::string())));
+    } else if (action == "quit") {
+      // 【回归 Bug 修复｜请勿改动】页面顶栏「退出」在桌面版等于退出应用。
+      // 走 WM_CLOSE 复用菜单退出的确认框与停机流程；删掉这条分支，
+      // 前端就会落回注销分支停在登录页（历史反馈已出现两次）。
+      PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
     }
   } catch (const std::exception&) {
     // 页面只会发我们自己定义的 JSON；解析失败时忽略即可。

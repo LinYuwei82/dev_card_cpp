@@ -292,6 +292,11 @@ API_AVAILABLE(macos(11.0))
     } else {
       [self notify:@"Sparkle 未启用（缺少签名公钥或 feed URL）" kind:@"error"];
     }
+  } else if ([action isEqualToString:@"quit"]) {
+    // 【回归 Bug 修复｜请勿改动】页面顶栏「退出」在桌面版等于退出应用。
+    // 前端的 el.logout 会先尝试走这条桥；如果这里被删掉，点击「退出」会静默
+    // 落回前端的注销分支，停在登录页（历史上已经因此产生两次重复反馈）。
+    [NSApp terminate:nil];
   }
 }
 
