@@ -9,7 +9,7 @@
 >
 > **1.2.2（2026-11-17，tag `v1.2.2`）**：① 全套图标从 SF Pro Black 母版重生，macOS `.icns` **首次由 `tools/package/make_icons.sh` 生成**（此前是旧母版定稿）；② Sparkle 自更新补齐用户入口——macOS 菜单栏「DevCard → 检查更新…」+ 后台定时检查、Web 顶栏「检查更新」按钮（Windows 壳与浏览器可见，macOS 壳隐藏）、Windows 菜单栏「帮助 → 检查更新 / 关于 DevCard」；③ `checkUpdate(silent)` 区分启动静默检查与用户主动触发（主动触发：有更新直接弹窗、无更新 toast，且跳过节流）；④ 修 macOS 点窗口红叉退不出（`PrintBridge` 未挂 `window.delegate` / `NSApp.delegate`）；⑤ 修 Windows 启动失败时 MessageBox 阻塞留下僵尸进程、自更新协助器复制错 exe（应复制 `devcard-server.exe`）与 `DETACHED_PROCESS` 导致子进程卡死；⑥ 修「打开下载页」跳 GitHub Release 导致 404（默认下载页改 `https://dl.xiaotu.online/`）；⑦ 会话落盘 `sessions.json`，进程重启不再要求重新登录；⑧「发现新版本」弹窗紧凑化。详见 [改造技术方案 §10.4.2](docs/改造技术方案.md)。
 >
-> 开发期版本为 `0.x`（仅内部）；正式对外版本为 **1.2.2**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
+> 开发期版本为 `0.x`（仅内部）；当前版本为 **1.2.6**，唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 >
 > 改造前的旧 Qt 线已从**仓库历史**删除（不是仅工作区删除）：历史已重写，旧 commit hash 一律不可引用，`v1.1.3` tag（本地与两个远端）已删，`backup-m7-*` 分支已删；`src/`、`resources/`、`dev_card.pro`、`build.bat`、`DevCard_resource.rc`、`packaging/mac/*`、`make_portable_win.ps1` 与 6 份旧线文档在仓库与历史里都取不到。旧版数据不再支持导入，迁移路径已整体删除（详见 [改造技术方案 §0.1](docs/改造技术方案.md)）。
 
@@ -45,11 +45,11 @@ ctest --test-dir build-new --output-on-failure
 - **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
 - **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。目前只有本地监听与浏览器访问，`--server` 独立的局域网服务模式属 M7，尚未实现。
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`（代码实值，见 `server/src/platform_paths.cpp`）；Windows 安装版 `%LOCALAPPDATA%\DevCard\data`、便携版 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。**旧版数据不再支持导入**：数据目录里若是旧版库（只有 `tb_device`/`tb_user`、无 `schema_migration`），启动直接报 `legacy_db` 并拒绝在原库上建表；导入器与 `--import-legacy` 已删除。
-- **版本**：只改根目录 `VERSION.txt`（当前 `1.2.2`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。**1.2.2 已于 2026-11-17 发布并打 tag `v1.2.2`**（改版本后必须重新 `cmake -S … -B …` configure，PE 与 bundle 版本在 configure 阶段注入，增量 build 不更新）。
+- **版本**：只改根目录 `VERSION.txt`（当前 `1.2.6`；对外发布版本即以此为准），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。1.2.2 已于 2026-11-17 发布并打 tag `v1.2.2`（改版本后必须重新 `cmake -S … -B …` configure，PE 与 bundle 版本在 configure 阶段注入，增量 build 不更新）。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
-- **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `update.json`（`{"latest":"1.2.2","download_url":"…","notes":"…"}`，由发布方投放），顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失或非法时只不显示提示，不影响台账。**1.2.2 起**顶栏另有「检查更新」按钮作为主动入口（macOS 壳隐藏、Windows 壳与浏览器可见），主动触发时跳过节流、有更新直接弹窗、无更新 toast；「打开下载页」只认清单里的 `html_url`，没有则回落到后端 `download_page()`（默认已从 GitHub Release 改为 `https://dl.xiaotu.online/`，此前 OSS 清单的 `download_url` 指向目录会跳 404）。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
-- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（同来自 `update.json`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**阶段二（Windows 替换与重启）已端到端实测通过，macOS 改由 Sparkle 承担替换与重启**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一先用假 curl + 本地清单验过链路，2026-11-15 再用真实整包补齐（48,710,744 B 下完并做 SHA256/字节数双校验，45 个进度采样点）；**换下载器必须重验白名单与代理口径**。
-- **macOS 自更新（Sparkle 2.10.1，已端到端实测）**：`3rdparty/sparkle/` 内嵌 framework，CMake POST_BUILD 用 `ditto` 嵌入（保留 symlink），并按官方要求删除 `XPCServices`（DevCard 不开 App Sandbox，保留会让 Sparkle 探测 `<bundle-id>-spks` 失败）。构建时 `-DDEVCARD_SPARKLE_FEED_URL=<appcast>` 同时注入 `SUFeedURL` 与 `SUPublicEDKey`，两者缺一则整段不写——普通开发构建不启用更新（此时菜单项自动隐藏、`updaterController` 为 nil）。**1.2.2 补齐的三条用户入口**：① macOS 菜单栏「DevCard → 检查更新…」的 target 绑定 `SPUStandardUpdaterController`（它自带 `checkForUpdates:` 与 `validateMenuItem:`），另有 `initWithStartingUpdater:YES` 的后台定时检查；② Web 顶栏「检查更新」按钮——三端都显示；macOS 壳点击后经原生桥转交 Sparkle（`action=checkForUpdates`，由 Sparkle 原生窗口完成检查/下载/验签/替换），Windows 壳与浏览器点击走前端 `update.json` 通道；③ Windows 菜单栏「帮助 → 检查更新 / 关于 DevCard」，经 WebView2 `ExecuteScript` 调 `window.devcard.checkUpdate()`。前端 `checkUpdate(silent)` 区分两种模式：启动时 `silent=true` 只设顶栏 pill 且尊重 24h 节流；用户主动触发 `silent=false` 跳过节流，有更新直接弹窗、无更新弹 toast。**macOS 壳层不再跑 `update.json` 检查**（`isMacShell` 判定），Windows 与浏览器保持原通道。appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。签名按官方要求从内到外逐层执行并禁用 `--deep`，XPC 组件加 `--preserve-metadata=entitlements`。**实测闭环（1.2.0 → 1.2.1）**：`didFindValidUpdate` → `didDownloadUpdate` → `willInstallUpdate`，重启后 `CFBundleShortVersionString=1.2.1`、`codesign --verify --deep --strict` 通过。界面已中文化（`CFBundleLocalizations=[zh_CN,en]`）。**注意**：本机系统代理对 OSS（香港）大文件限速明显，实测用本地 HTTP 源替代以排除网络因素；下载慢属基础设施问题，与集成无关。
+- **版本检查（M5）**：`GET /api/version` 读取数据目录下的 `manifest.json`（Schema v2 统一清单，由发布方投放：两平台同一份、Ed25519 签名，服务端用编译期内嵌公钥验签后只取 `platforms.<本平台>`），返回本平台 `latest` 与产物资产；顶栏显示「有新版本 vX」，点击打开下载页；**不自动下载、不自动替换**。清单缺失、签名失败或非法时只不显示提示，不影响台账（签名失败还会关闭远端检查）。**1.2.2 起**顶栏另有「检查更新」按钮作为主动入口（macOS 壳隐藏、Windows 壳与浏览器可见），主动触发时跳过节流、有更新直接弹窗、无更新 toast；「打开下载页」优先用清单资产，没有则回落到后端 `download_page()`（默认 `https://dl.xiaotu.online/`）。详见 [改造技术方案 §10.4.1](docs/改造技术方案.md)。
+- **远端检查（M6，已交付）**：页面侧 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（清单里已无 `check_*` 字段：地址与间隔来自编译期默认值——`…/devcard/updates/stable/manifest.json` 与 24 小时；清单验签失败时 `enabled=false`），超时 / DNS 失败 / 非 JSON / 版本号非法四类失败与「没有新版本」界面不可区分。`/` 的 CSP 已显式放行 `connect-src 'self' https: http:`——缺它时 WebKit 只报 `TypeError: Load failed`，会被误判成网络故障。自更新阶段一已完成：更新弹窗里的「下载更新包」把包下载到数据目录 `updates/` 并校验 SHA256 + 字节数，**阶段二（Windows 替换与重启）已端到端实测通过，macOS 改由 Sparkle 承担替换与重启**。边界：下载器是系统 `curl.exe`（8.22.0 / Schannel），不是 WinHTTP/WinINet，只读 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`；实测链路 `github.com` →302→ `release-assets.githubusercontent.com`（第 2 跳换主机）。阶段一先用假 curl + 本地清单验过链路，2026-11-15 再用真实整包补齐（48,710,744 B 下完并做 SHA256/字节数双校验，45 个进度采样点）；**换下载器必须重验白名单与代理口径**。
+- **macOS 自更新（Sparkle 2.10.1，已端到端实测）**：`3rdparty/sparkle/` 内嵌 framework，CMake POST_BUILD 用 `ditto` 嵌入（保留 symlink），并按官方要求删除 `XPCServices`（DevCard 不开 App Sandbox，保留会让 Sparkle 探测 `<bundle-id>-spks` 失败）。构建时 `-DDEVCARD_SPARKLE_FEED_URL=<appcast>` 同时注入 `SUFeedURL` 与 `SUPublicEDKey`，两者缺一则整段不写——普通开发构建不启用更新（此时菜单项自动隐藏、`updaterController` 为 nil）。**1.2.2 补齐的三条用户入口**：① macOS 菜单栏「DevCard → 检查更新…」的 target 绑定 `SPUStandardUpdaterController`（它自带 `checkForUpdates:` 与 `validateMenuItem:`），另有 `initWithStartingUpdater:YES` 的后台定时检查；② Web 顶栏「检查更新」按钮——三端都显示；macOS 壳点击后经原生桥转交 Sparkle（`action=checkForUpdates`，由 Sparkle 原生窗口完成检查/下载/验签/替换），Windows 壳与浏览器点击走前端 `/api/version` 的 manifest 检查通道；③ Windows 菜单栏「帮助 → 检查更新 / 关于 DevCard」，经 WebView2 `ExecuteScript` 调 `window.devcard.checkUpdate()`。前端 `checkUpdate(silent)` 区分两种模式：启动时 `silent=true` 只设顶栏 pill 且尊重 24h 节流；用户主动触发 `silent=false` 跳过节流，有更新直接弹窗、无更新弹 toast。**macOS 壳层不再跑前端清单检查**（`isMacShell` 判定），Windows 与浏览器保持原通道。appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。签名按官方要求从内到外逐层执行并禁用 `--deep`，XPC 组件加 `--preserve-metadata=entitlements`。**实测闭环（1.2.0 → 1.2.1）**：`didFindValidUpdate` → `didDownloadUpdate` → `willInstallUpdate`，重启后 `CFBundleShortVersionString=1.2.1`、`codesign --verify --deep --strict` 通过。界面已中文化（`CFBundleLocalizations=[zh_CN,en]`）。**注意**：本机系统代理对 OSS（香港）大文件限速明显，实测用本地 HTTP 源替代以排除网络因素；下载慢属基础设施问题，与集成无关。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（服务端按 `must_change_password` 判定），自助改密仍验旧密码；密码框支持明文/掩码切换。
 - **会话持久化（1.2.2 起）**：登录会话落盘 `data_dir/sessions.json`（TTL 12 小时 = `kSessionTtlSeconds = 43200`），进程重启后旧 cookie 仍有效，不再每次重启都弹登录页；`last_seen` 由 `steady_clock` 改为 Unix epoch 秒（`steady_clock` 进程重启会重置且无法序列化）。创建 / 销毁 / 按用户失效会话与恢复备份后自动重写该文件；滑动 TTL 只改内存（性能考虑），所以 `last_seen` 落盘值有滞后。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」，超出时明确告知会截断。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0 / 公司名行 `x1-x0` = 44.35 mm，16 字那张截掉末尾「分公司」，整份文本层逐字相同。
@@ -59,7 +59,7 @@ ctest --test-dir build-new --output-on-failure
 ### 2.1 macOS 打包（一条命令）
 
 ```bash
-tools/release/publish_macos.sh           # 出包 → 签名 → appcast/latest.json → 上传 OSS
+tools/release/publish_macos.sh           # 出包 → 签名 → appcast/manifest.json → 上传 OSS
 tools/release/publish_macos.sh --notes "本次更新内容"
 tools/release/publish_macos.sh --dry-run # 只出包与清单，不上传
 
@@ -81,7 +81,7 @@ tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/updates/st
 ### 2.2 Windows 打包（绿色版 + 安装版）
 
 ```powershell
-# 一条命令发布：绿色包 → 安装包 → windows.json → 上传 OSS
+# 一条命令发布：绿色包 → 安装包 → manifest.json（platforms.windows）→ 上传 OSS
 powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
 powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Notes "本次更新内容" -DryRun
 
@@ -90,15 +90,15 @@ powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Note
 powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
 # 安装版（Inno Setup 6；SourceRoot 指向含两个 exe 与 fonts\ 的暂存目录）
 ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
-# 更新清单（默认读 dist\DevCard-<版本>-setup.exe，自动填 size 与 sha256）
-powershell -ExecutionPolicy Bypass -File tools\package\make_update_json.ps1
+# 更新清单：由 publish_windows.ps1 调 tools/release/manifest_v2.py 生成并签名
+# （dist\manifest.json；tools\package\make_update_json.ps1 是 v1 遗留脚本，发布流程不再使用）
 ```
 
 - 绿色版产物：`dist\DevCard-<版本>-win64-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
 - 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
-- 安装版产物：`dist\DevCard-<版本>-setup.exe`；`make_update_json.ps1` 生成的 `dist\windows.json`（macOS 用 `-Platform macos` 生成 `dist\latest.json`）里 `digest` 为 `sha256:<hex>`、`download_url` 指向 OSS。上传后需同步一份到数据目录，本机服务才会读到。
-- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `windows.json`，并作为 artifact 上传。
+- 安装版产物：`dist\DevCard-<版本>-setup.exe`；发布脚本用 `manifest_v2.py` 生成并签名 `dist\manifest.json`（Windows 段 `artifacts.setup` / `artifacts.portable` 记录 OSS 地址、大小与 SHA256）。上传后需同步一份到数据目录，本机服务才会读到。
+- CI 的 Windows job 按同一顺序产出绿色包、安装包与 `manifest.json`，并作为 artifact 上传。
 
 ---
 
@@ -149,8 +149,8 @@ dev_card_cpp/
 
 **当前已知边界（照实写）**：
 
-- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成、Windows 自更新阶段二与 macOS Sparkle 自更新均端到端实测通过**；**1.2.1 与 1.2.2 已于 2026-11-17 先后发布（tag `v1.2.1` / `v1.2.2`）**，macOS 公证包、Windows 安装包/绿色包与 appcast、`update.json` 均已上线。M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收（**libharu 已随旧线整体删除**，仓库里没有回退实现，G2 只剩验收意义）。旧 Qt 线已从仓库历史删除（历史已重写、`v1.1.3` tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
-- **更新能力**：`/api/version` 读本地 `update.json`；远端检查在页面侧 `fetch`（`check_*` 三项配置），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段：**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成，并用真实整包（48,710,744 B）跑通全链路**；**阶段二（Windows 协助器 + Inno Setup 静默升级）已在 Windows 端到端实测通过**（见 §5「已知限制」Windows 侧段落）；**macOS 原定的「本期不做自动替换」已被 Sparkle 2.10.1 方案取代，检查 → 下载 → EdDSA 验签 → 替换 → 重启已端到端实测通过**。信任锚：**Windows 暂不购买 Authenticode 代码签名证书**（2026-11-17 决定，发布页已加 SmartScreen 提示）；macOS 为 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。单纯依赖「固定 HTTPS 域名 + 清单版本与哈希」挡不住清单连同包一起被伪造，因此不写「安全校验通过」。
+- **M0–M4.2 完成、M5 第一段完成（macOS）、M5 第二段 Windows 壳已编译并静默安装、M6 检查 + 告知与自更新阶段一完成、Windows 自更新阶段二与 macOS Sparkle 自更新均端到端实测通过**；**1.2.1 与 1.2.2 已于 2026-11-17 先后发布（tag `v1.2.1` / `v1.2.2`）**，macOS 公证包、Windows 安装包/绿色包与 appcast、更新清单（1.2.1/1.2.2 为 `update.json`，现为 `manifest.json`）均已上线。M4 的 G2「两条通道实物叠图 ≤ 1 mm」尚未验收（**libharu 已随旧线整体删除**，仓库里没有回退实现，G2 只剩验收意义）。旧 Qt 线已从仓库历史删除（历史已重写、`v1.1.3` tag 与 `backup-m7-*` 分支已删），旧 commit hash 不可引用。
+- **更新能力**：`/api/version` 读数据目录 `manifest.json`（v2 统一清单，Ed25519 验签后取本平台段）；远端检查在页面侧 `fetch`（`check{enabled,endpoint,interval_hours}` 由服务端内嵌默认值下发，清单中已无 `check_*` 字段），失败静默。自更新已拍板为「下载 + 校验 + 替换 + 重启」三阶段：**阶段一（下载到数据目录 `updates/` + SHA256 与字节数双校验）已完成，并用真实整包（48,710,744 B）跑通全链路**；**阶段二（Windows 协助器 + Inno Setup 静默升级）已在 Windows 端到端实测通过**（见 §5「已知限制」Windows 侧段落）；**macOS 原定的「本期不做自动替换」已被 Sparkle 2.10.1 方案取代，检查 → 下载 → EdDSA 验签 → 替换 → 重启已端到端实测通过**。信任锚：清单统一走 Ed25519 验签（公钥随客户端编译）；**Windows 暂不购买 Authenticode 代码签名证书**（2026-11-17 决定，发布页已加 SmartScreen 提示）；macOS 另有 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
 - **Windows 侧自更新阶段二已端到端实测**：协助器（`devcard-server.exe --apply-update`）拉起后，服务器进程退出，Inno Setup 以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /LOG=` 静默替换，完成后读取 PE 版本写 `install-result.json`，最后拉起新版本。**1.2.0 → 1.2.1 实测闭环**：`install-result.json.exit_code=0`、`version_before=1.2.0`、`version_after=1.2.1`、磁盘 PE 号从 1.2.0 变成 1.2.1。**2026-11-17 连修的四处缺陷（均已实测修复）**：① 协助器内部两处 `write_apply_state` 传 `result.parent_path()`（即 `data_dir/updates/`），函数又自动拼 `data_dir/updates`，状态被写到 `updates/updates/`，重启后读不到 Done——改为从 result 反推 `data_dir = result.parent_path().parent_path()`；② 安装接口只设 `stop_requested=true` 但壳模式没人轮询该标志，协助器 `WaitForSingleObject` 永久卡在 `installing`——接口改为同时 `server.stop()`，壳层加 200 ms 轮询线程检测后 `PostMessageW(WM_CLOSE)`，`WM_CLOSE` 见 `server_exit_requested` 跳过确认框；③ 协助器复制的是壳层 `DevCard.exe`（它忽略 `--apply-update`，启动后变成普通服务器）——改为复制 `devcard-server.exe`；④ `CreateProcessW` 的 `DETACHED_PROCESS` / `CREATE_NO_WINDOW` 实测会让协助器内部子进程无限等待（连 `write_apply_state(Verifying)` 都到不了）——已去掉这两个标志。另修壳层启动失败（端口占用 / 实例冲突）时 `MessageBox` 阻塞造成的僵尸进程：`Fatal()` 在 MessageBox 返回后立即 `ExitProcess(1)`，并加 `MB_TOPMOST|MB_SETFOREGROUND`。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归、emoji 路径，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **旧版数据不再支持导入**：启动时若数据目录里是旧版 `devicedb.db`（只有 `tb_device`/`tb_user`、无 `schema_migration`），新版本会直接报 `legacy_db` 并拒绝在原库上建表；迁移路径、旧库导入器与 `--import-legacy` 已整体删除，不提供自动或手工迁移入口。
