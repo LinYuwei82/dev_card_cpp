@@ -59,7 +59,11 @@ ctest --test-dir build-new --output-on-failure
 ### 2.1 macOS 打包（一条命令）
 
 ```bash
-tools/package/make_dmg.sh                # 构建 + 依赖自检 + Developer ID 签名 + 公证 + staple + DMG
+tools/release/publish_macos.sh           # 出包 → 签名 → appcast/latest.json → 上传 OSS
+tools/release/publish_macos.sh --notes "本次更新内容"
+tools/release/publish_macos.sh --dry-run # 只出包与清单，不上传
+
+tools/package/make_dmg.sh                # 只出 DMG：构建 + 依赖自检 + Developer ID 签名 + 公证 + staple
 tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
 tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/updates/stable/appcast.xml
 ```
@@ -77,6 +81,11 @@ tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/updates/st
 ### 2.2 Windows 打包（绿色版 + 安装版）
 
 ```powershell
+# 一条命令发布：绿色包 → 安装包 → windows.json → 上传 OSS
+powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
+powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Notes "本次更新内容" -DryRun
+
+# 分步执行
 # 绿色版
 powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
 # 安装版（Inno Setup 6；SourceRoot 指向含两个 exe 与 fonts\ 的暂存目录）
@@ -85,7 +94,7 @@ ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
 powershell -ExecutionPolicy Bypass -File tools\package\make_update_json.ps1
 ```
 
-- 绿色版产物：`dist\DevCard-<版本>-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
+- 绿色版产物：`dist\DevCard-<版本>-win64-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`。
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`（改版本后未重新 configure 会在这里失败）、字体齐全且非空、包内不得出现 `*.db`。
 - 绿色版数据目录为 exe 旁 `data\`，首次启动创建；升级时手动替换程序目录并保留 `data\`。
 - 安装版产物：`dist\DevCard-<版本>-setup.exe`；`make_update_json.ps1` 生成的 `dist\windows.json`（macOS 用 `-Platform macos` 生成 `dist\latest.json`）里 `digest` 为 `sha256:<hex>`、`download_url` 指向 OSS。上传后需同步一份到数据目录，本机服务才会读到。

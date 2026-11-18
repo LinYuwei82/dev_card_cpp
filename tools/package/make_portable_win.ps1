@@ -5,8 +5,8 @@
 #   powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1 -SkipBuild
 #   ... -BuildDir D:\build\devcard -OutDir D:\dist
 #
-# 产物：<OutDir>\DevCard-<版本>-portable.zip（默认 dist\）
-# 包内结构：DevCard-<版本>-portable\{DevCard.exe, devcard-server.exe, fonts\, VERSION.txt}
+# 产物：<OutDir>\DevCard-<版本>-win64-portable.zip（默认 dist\）
+# 包内结构：DevCard-<版本>-win64-portable\{DevCard.exe, devcard-server.exe, fonts\, VERSION.txt}
 # 绿色版数据目录在 exe 旁 data\，由程序首次启动创建；打包时不含任何 data\ 或数据库文件。
 #
 # 版本真值只有仓库根目录 VERSION.txt：文件名、包内 VERSION.txt、两个 exe 的
@@ -91,7 +91,7 @@ Assert-ExeVersion $serverExe
 Write-Host "版本自检：两个 exe 的 ProductVersion 均为 $version"
 
 # ---------- 2. 暂存 ----------
-$stageName = "DevCard-$version-portable"
+$stageName = "DevCard-$version-win64-portable"
 $stage = Join-Path $OutDir $stageName
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 if (Test-Path -LiteralPath $stage) {

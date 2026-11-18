@@ -11,7 +11,9 @@
     python3 upload_oss.py <file> [<file>...] [--prefix devcard/] [--no-public]
 
 按扩展名自动设置 Content-Type 与 Cache-Control：
-    .dmg / .exe / .zip / .edSignature   octet-stream，长缓存
+    .dmg / .exe                         octet-stream，长缓存
+    .zip                                application/zip，长缓存
+    .edSignature                        text/plain，短缓存
     .xml                                application/xml，短缓存（appcast 需及时生效）
     .pdf                                application/pdf，长缓存
 
@@ -33,7 +35,7 @@ from email.utils import formatdate
 CONTENT_TYPES = {
     ".dmg": ("application/octet-stream", "public, max-age=31536000, immutable"),
     ".exe": ("application/octet-stream", "public, max-age=31536000, immutable"),
-    ".zip": ("application/octet-stream", "public, max-age=31536000, immutable"),
+    ".zip": ("application/zip", "public, max-age=31536000, immutable"),
     ".pdf": ("application/pdf", "public, max-age=86400"),
     ".xml": ("application/xml; charset=utf-8", "public, max-age=60"),
     ".json": ("application/json; charset=utf-8", "public, max-age=60"),
