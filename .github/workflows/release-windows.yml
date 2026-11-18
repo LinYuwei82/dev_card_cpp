@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       notes:
-        description: 更新说明（写进 windows.json，可留空）
+        description: 更新说明（写进 manifest.json，可留空）
         required: false
         default: ""
       dry_run:

@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: ./tools/package/make_portable_win.ps1 -SkipBuild -BuildDir build-win -OutDir dist
 
-      # 安装包与更新清单也走脚本：避免手写 windows.json 漏 digest/size。
+      # 安装包也走脚本：避免手写 digest/size。更新清单由 release-windows 工作流生成。
       # windows-latest 通常自带 Inno Setup 6，找不到时用 choco 补装。
       - name: 打安装包
         shell: pwsh
@@ -83,10 +83,6 @@ jobs:
           & $iscc "/DSourceRoot=$stage" "packaging/windows/DevCard.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: 生成更新清单
-        shell: pwsh
-        run: ./tools/package/make_update_json.ps1
-
       - name: 上传 Windows 产物
         uses: actions/upload-artifact@v4
         with:
@@ -94,7 +90,6 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
-            dist/windows.json
             build-win/server/Release/devcard-server.exe
             build-win/shell/win/Release/DevCard.exe
           if-no-files-found: error
