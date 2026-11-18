@@ -103,6 +103,10 @@ python3 "$REPO_ROOT/tools/release/generate_appcast.py" "${APPCAST_ARGS[@]}"
 NOTES_URL="${DEVCARD_NOTES_URL:-}"
 
 echo "===== 4/5 生成 manifest.json（v2，Ed25519 签名）"
+# 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
+if [ ! -s "$MANIFEST" ]; then
+  curl -fsSL "$BASE_URL/updates/$CHANNEL/manifest.json" -o "$MANIFEST" 2>/dev/null || rm -f "$MANIFEST"
+fi
 MANIFEST_ARGS=(
     generate
     --product devcard
@@ -116,6 +120,7 @@ MANIFEST_ARGS=(
     --out "$MANIFEST"
 )
 [ -n "$NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$NOTES_URL")
+[ -s "$MANIFEST" ] && MANIFEST_ARGS+=(--prev "$MANIFEST")
 python3 "$REPO_ROOT/tools/release/manifest_v2.py" "${MANIFEST_ARGS[@]}"
 
 PUB_HEX="$(python3 "$REPO_ROOT/tools/release/manifest_v2.py" pubkey --key "$SIGN_KEY" | sed 's/.*：//')"

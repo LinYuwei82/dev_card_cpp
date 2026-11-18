@@ -106,7 +106,12 @@ try {
     if (-not (Test-Path -LiteralPath $setup)) { Fail "没有找到安装包：$setup" }
 
     Write-Host "===== 3/5 按 v2 命名复制产物并生成 manifest.json"
-    Copy-Item -LiteralPath $zip -Destination $v2Zip -Force
+    # Windows 文件系统大小写不敏感：仅大小写差异时 Copy-Item 会报「覆盖自身」，改用改名
+    if ($zip -ieq $v2Zip) {
+        Rename-Item -LiteralPath $zip -NewName (Split-Path $v2Zip -Leaf)
+    } else {
+        Copy-Item -LiteralPath $zip -Destination $v2Zip -Force
+    }
     Copy-Item -LiteralPath $setup -Destination $v2Setup -Force
 
     $manifestArgs = @(
@@ -116,6 +121,13 @@ try {
         "--artifact", "setup=$v2Setup", "--artifact", "portable=$v2Zip",
         "--key", $signKeyPath, "--out", $manifest
     )
+    # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        try { Invoke-WebRequest -Uri "$baseUrl/updates/$channel/manifest.json" -OutFile $manifest -UseBasicParsing } catch {
+            Remove-Item -LiteralPath $manifest -ErrorAction SilentlyContinue
+        }
+    }
+    if (Test-Path -LiteralPath $manifest) { $manifestArgs += @("--prev", $manifest) }
     & python (Join-Path $repoRoot "tools\release\manifest_v2.py") @manifestArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
