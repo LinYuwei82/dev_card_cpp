@@ -926,15 +926,30 @@ void run_backup_case(const std::filesystem::path& dir) {
   devcard::DeviceDao devices;
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 1);
 
+  // 先改一次，让备份里的 version/updated_by 不是列默认值。
+  devcard::Device edited = created;
+  edited.phone = "13800000002";
+  db.write([&](sqlite3* conn) { CHECK(devices.update(conn, edited, "测试员")); });
+  devcard::Device snapshot;
+  CHECK(devices.find(db, created.id, snapshot));
+  CHECK(snapshot.version == created.version + 1);
+  CHECK(snapshot.updated_by == "测试员");
+
   // 备份与恢复：删除一条后可从备份恢复。
   const devcard::BackupEntry backup =
       devcard::create_backup(db, dir, "test");
   CHECK(std::filesystem::exists(devcard::path_from_utf8(backup.path)));
   CHECK(backup.bytes > 0);
-  service.remove(created.id, created.version);
+  service.remove(created.id, snapshot.version);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 0);
   devcard::restore_backup(db, dir, backup.name);
   CHECK(devices.count(db, devcard::DeviceQuery{}) == 1);
+
+  // 恢复必须带回 version/updated_by，否则乐观锁与「被谁修改」提示都会退化。
+  devcard::Device restored;
+  CHECK(devices.find(db, created.id, restored));
+  CHECK(restored.version == snapshot.version);
+  CHECK(restored.updated_by == "测试员");
 
   bool bad_name = false;
   try {
