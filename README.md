@@ -114,8 +114,10 @@ dev_card_cpp/
 ├── shell/                    # macOS 壳（WKWebView + 打印桥，已实测）/ Windows 壳（WebView2，已编译、静默安装实测）
 ├── web/                      # 原生 JS/CSS 前端（构建期内嵌进二进制）；web/fonts/ 放子集 TTF（随包进 Resources）
 ├── tools/fonts/              # 字体子集脚本（make_subset.sh：变量字体定字重 + pyftsubset，可 --verify）
+├── tools/mac/                # macOS 构建入口（build.sh：cmake configure + build；test.sh）
+├── tools/package/            # 打包工具：make_dmg.sh（macOS DMG：构建 + 签名 + 公证 + staple）、make_icons.sh（三端图标统一生成）、make_portable_win.ps1（Windows 绿色包）
+├── tools/release/            # 发布入口（publish_macos.sh / publish_windows.ps1）+ 共享清单生成 manifest_v2.py + 门禁 guard.py + appcast 生成 + selftest
 ├── tests/                    # ctest 5 条（core / web_assets / no_opposans / embed_web / api_contract）+ fixture
-├── tools/package/            # macOS DMG 脚本（make_dmg.sh）
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
 ├── docs/                     # 技术文档、样张
 ├── dist/                     # 本地打包产物（已 gitignore）
