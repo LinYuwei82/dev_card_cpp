@@ -774,6 +774,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             if c == 0 and args.kind == "win" and args.build is not None:
                 if args.build < current[1]:
                     die(f"构建号回退：本地 {args.build} < 线上 {current[1]}")
+                warn(f"Windows 构建号 {args.build}：必须等于 CMake 注入二进制的 DEVCARD_BUILD"
+                     "（发布脚本已自动处理；SkipBuild + -Build 时 CMake 会 re-configure + 增量 rebuild）")
             if c == 0:
                 warn(f"版本与线上相同（{version}），将按幂等重传校验")
     else:
