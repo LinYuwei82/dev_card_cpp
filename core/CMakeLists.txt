@@ -59,3 +59,6 @@ set_source_files_properties(
 
 find_package(Threads REQUIRED)
 target_link_libraries(devcard_core PUBLIC Threads::Threads)
+
+# 可选构建号注入（Windows UTC yyyyMMddHHmm）：客户端同版本重发时按 build 比较。
+devcard_add_build_stamp(devcard_core)

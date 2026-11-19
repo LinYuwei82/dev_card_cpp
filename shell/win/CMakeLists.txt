@@ -22,6 +22,7 @@ endif()
 
 add_executable(DevCard WIN32 main.cpp app.manifest app.rc)
 devcard_add_version_rc(DevCard)
+devcard_add_build_stamp(DevCard)
 
 # app.rc 里的 IDI_ICON1 引用同目录的 DevCard.ico；把当前目录加入资源编译
 # 搜索路径，避免从别的构建目录调用时找不到图标。

@@ -71,8 +71,12 @@ if(WIN32)
     target_link_libraries(devcard_server PUBLIC ws2_32 iphlpapi version shell32)
 endif()
 
+# 可选构建号注入（两个 target 都要打：devcard_server 是库、devcard-server 是可执行）。
+devcard_add_build_stamp(devcard_server)
+
 add_executable(devcard-server src/main.cpp)
 devcard_add_version_rc(devcard-server)
+devcard_add_build_stamp(devcard-server)
 target_compile_definitions(devcard-server PRIVATE
     DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
 )
