@@ -157,8 +157,9 @@ try {
     $guardArgs = @(
         "--product", "devcard", "--kind", "win", "--channel", $channel,
         "--file", $v2Setup, "--zip", $v2Zip,
-        "--schema", "v2", "--manifest", $manifest, "--pub-hex", $pubHex, "--build", $Build
+        "--manifest", $manifest, "--pub-hex", $pubHex, "--build", $Build
     )
+    # 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
     if ($DryRun) { $guardArgs += "--offline" }
     & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
     if ($LASTEXITCODE -ne 0) { Fail "guard preflight 未通过（v2 命名/版本/覆盖/内嵌地址/签名）" }

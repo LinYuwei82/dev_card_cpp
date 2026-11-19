@@ -140,7 +140,8 @@ GUARD_PY="$REPO_ROOT/tools/release/guard.py"
 GUARD_ARGS=(
     --product devcard --kind mac --channel "$CHANNEL"
     --file "$DMG" --name "$V2_DMG_NAME"
-    --schema v2 --manifest "$MANIFEST" --pub-hex "$PUB_HEX"
+    --manifest "$MANIFEST" --pub-hex "$PUB_HEX"
+# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
 )
 [ "$DRY_RUN" = "1" ] && GUARD_ARGS+=(--offline)
 python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
