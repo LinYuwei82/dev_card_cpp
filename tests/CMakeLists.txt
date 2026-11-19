@@ -1,11 +1,18 @@
+# DevCard 测试套件：独立 CMakeLists.txt，由根 CMakeLists.txt 最后 add_subdirectory 引入。
+# 三个测试 target 都 link devcard_core 或 devcard_server，所以需要和这些库共享
+# 同一个 DEVCARD_BUILD_STAMP 编译期宏；devcard_add_build_stamp() 已在根 CMakeLists.txt
+# include，这里直接调用即可（空值时自动 no-op）。
+
 add_executable(devcard_core_tests test_core.cpp)
 target_link_libraries(devcard_core_tests PRIVATE devcard_core)
+devcard_add_build_stamp(devcard_core_tests)
 add_test(NAME devcard_core_tests COMMAND devcard_core_tests)
 
 # 内嵌前端与 web/ 源文件的字节数/SHA256 一致性（抓 C2026 静默截断）；
 # 顺带复核字体清单里的字节数与 SHA256（构建期从 web/fonts/ 生成）。
 add_executable(devcard_web_assets_tests test_web_assets.cpp)
 target_link_libraries(devcard_web_assets_tests PRIVATE devcard_server)
+devcard_add_build_stamp(devcard_web_assets_tests)
 target_compile_definitions(devcard_web_assets_tests PRIVATE
     DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts"
     DEVCARD_SERVER_SOURCE_DIR="${CMAKE_SOURCE_DIR}/server/src"
@@ -23,6 +30,7 @@ add_test(NAME devcard_no_opposans_tests
 # 生成器本身的验收：跨字符切口、尺寸、换行保真、CR 政策、块数。
 add_executable(devcard_embed_web_tests test_embed_web.cpp)
 target_link_libraries(devcard_embed_web_tests PRIVATE devcard_core)
+devcard_add_build_stamp(devcard_embed_web_tests)
 target_compile_definitions(devcard_embed_web_tests PRIVATE
     DEVCARD_CMAKE_COMMAND="${CMAKE_COMMAND}"
     DEVCARD_EMBED_SCRIPT="${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake")
@@ -32,6 +40,7 @@ add_test(NAME devcard_embed_web_tests COMMAND devcard_embed_web_tests)
 # 前端 app.js 的 /api/ 字面量与路由契约表比对。跨层改动靠它拦截，见文件头说明。
 add_executable(devcard_api_contract_tests test_api_contract.cpp)
 target_link_libraries(devcard_api_contract_tests PRIVATE devcard_server)
+devcard_add_build_stamp(devcard_api_contract_tests)
 target_compile_definitions(devcard_api_contract_tests PRIVATE
     DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts"
     DEVCARD_WEB_SOURCE_DIR="${CMAKE_SOURCE_DIR}/web")

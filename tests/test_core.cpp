@@ -641,6 +641,15 @@ void run_update_manifest_case() {
   CHECK(no_platform.error.find("本平台") != std::string::npos);
 
   std::cout << "[update-manifest] signature + parse checks done\n";
+
+  // 构建号读取断言：如果编译期注入了 DEVCARD_BUILD_STAMP，必须等于该值；
+  // 未注入时必须返回 0（回退路径）。这一条保证两端都走得通。
+#if defined(DEVCARD_BUILD_STAMP)
+  CHECK(devcard::compiled_build_number() ==
+        static_cast<std::uint64_t>(DEVCARD_BUILD_STAMP));
+#else
+  CHECK(devcard::compiled_build_number() == 0);
+#endif
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
