@@ -9,15 +9,16 @@
 // ---------------------------------------------------------------- BUILD_STR
 // guard.py 从绿色包 / setup.exe 的 DevCard.exe 里搜这个静态字符串，
 // 与清单 build 比对，防止清单 build 大于编译值导致客户端反复提示同一版本。
-// CMake 侧 shell/win/CMakeLists.txt 调 devcard_add_build_stamp(DevCard)
-// 注入 -DDEVCARD_BUILD_STAMP=<UTC>；未注入时回退 "0"，guard.py 搜不到会 warn 跳过。
-#ifndef DEVCARD_BUILD_STAMP
+// CMake 侧 cmake/devcard_version.cmake 的 devcard_add_build_stamp() 注入两个宏：
+//   DEVCARD_BUILD_STAMP=<UTC>      — 整数（core 里 static_cast<uint64_t> 用）
+//   DEVCARD_BUILD_STAMP_STR="<UTC>" — 字符串（shell 里 kBuildStamp 拼接用，这里）
+#ifndef DEVCARD_BUILD_STAMP_STR
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
-#define DEVCARD_BUILD_STAMP STRINGIFY(DEVCARD_BUILD)
+#define DEVCARD_BUILD_STAMP_STR STRINGIFY(DEVCARD_BUILD_STAMP)
 #endif
 namespace {
-constexpr const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP;
+constexpr const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR;
 constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 }  // namespace
 

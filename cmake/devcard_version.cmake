@@ -19,8 +19,12 @@ endfunction()
 # 会把括号拆成多个 -D 项。类型转换在 C++ 侧用 static_cast<uint64_t> 完成。
 function(devcard_add_build_stamp target)
     if(DEFINED DEVCARD_BUILD AND NOT DEVCARD_BUILD STREQUAL "")
+        # 两个独立宏：
+        #   DEVCARD_BUILD_STAMP=<number>       — 整数，core 里 static_cast<uint64_t> 用
+        #   DEVCARD_BUILD_STAMP_STR="<number>" — 字符串，shell 里 "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR 拼接用
         target_compile_definitions(${target} PRIVATE
-            DEVCARD_BUILD_STAMP=${DEVCARD_BUILD})
+            DEVCARD_BUILD_STAMP=${DEVCARD_BUILD}
+            DEVCARD_BUILD_STAMP_STR="${DEVCARD_BUILD}")
         message(STATUS "DevCard 构建号注入（${target}）：DEVCARD_BUILD_STAMP=${DEVCARD_BUILD}")
     else()
         message(STATUS "DevCard 未注入构建号（${target}，DEVCARD_BUILD 为空），同版本不比 build")

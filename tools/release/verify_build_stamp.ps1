@@ -1,4 +1,4 @@
-# DevCard Windows 构建号注入验证脚本
+﻿# DevCard Windows 构建号注入验证脚本
 #
 # 目的：在 12600k Windows 机器上一次性验证 DevCard DEVCARD_BUILD
 #       编译期注入 + 运行时读取链路是否对齐。脚本零依赖（纯 PowerShell 内置）。
@@ -46,8 +46,7 @@ function Find-Root {
     if ($Hint -and (Test-Path $Hint)) { return (Resolve-Path $Hint).Path }
     $candidate = $PWD
     while ($candidate) {
-        if (Test-Path (Join-Path $candidate "CMakeLists.txt") -and
-            (Select-String -Path (Join-Path $candidate "CMakeLists.txt") -Pattern "DEVCARD_VERSION" -Quiet -ErrorAction SilentlyContinue)) {
+        if ((Test-Path (Join-Path $candidate "CMakeLists.txt")) -and (Select-String -Path (Join-Path $candidate "CMakeLists.txt") -Pattern "DEVCARD_VERSION" -Quiet -ErrorAction SilentlyContinue)) {
             return $candidate
         }
         $parent = Split-Path $candidate -Parent
@@ -88,12 +87,12 @@ $FB    = if ($FallbackDir) { $FallbackDir } else { Join-Path $ROOT "build-stamp-
 $GENERATOR = "Visual Studio 17 2022"
 $ARCH = "x64"
 $CACHE = Join-Path $BUILD "CMakeCache.txt"
-$TEST_EXE = Join-Path $BUILD "tests" "Release" "devcard_core_tests.exe"
-$TEST_EXE_ALT = Join-Path $BUILD "tests" "devcard_core_tests.exe"
-$SERVER_EXE = Join-Path $BUILD "server" "Release" "devcard-server.exe"
-$SERVER_EXE_ALT = Join-Path $BUILD "server" "devcard-server.exe"
-$DEV_EXE = Join-Path $BUILD "shell" "Release" "DevCard.exe"
-$DEV_EXE_ALT = Join-Path $BUILD "shell" "DevCard.exe"
+$TEST_EXE = Join-Path (Join-Path (Join-Path $BUILD "tests") "Release") "devcard_core_tests.exe"
+$TEST_EXE_ALT = Join-Path (Join-Path $BUILD "tests") "devcard_core_tests.exe"
+$SERVER_EXE = Join-Path (Join-Path (Join-Path $BUILD "server") "Release") "devcard-server.exe"
+$SERVER_EXE_ALT = Join-Path (Join-Path $BUILD "server") "devcard-server.exe"
+$DEV_EXE = Join-Path (Join-Path (Join-Path (Join-Path $BUILD "shell") "win") "Release") "DevCard.exe"
+$DEV_EXE_ALT = Join-Path (Join-Path (Join-Path $BUILD "shell") "win") "DevCard.exe"
 
 $needClean = @($BUILD, $FB)
 foreach ($d in $needClean) { if (Test-Path $d) { Remove-Item -Recurse -Force $d } }
@@ -104,7 +103,7 @@ if (-not $SkipBuild) {
     Write-Host "========== T1: cmake configure (带 DEVCARD_BUILD=$Stamp) =========="
     Push-Location $ROOT
     try {
-        $cfg = & cmake -S . -B $BUILD -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=$Stamp 2>&1
+        $cfg = & cmake -S . -B $BUILD -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD="$Stamp" -DDEVCARD_BUILD_SHELL=ON 2>&1
         $cfg | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
     } finally { Pop-Location }
 
@@ -150,20 +149,21 @@ if ($coreTest -and (Test-Path $coreTest)) {
     }
 } else { Fail "T3" "未找到 devcard_core_tests.exe" }
 
-# ---------- T4: devcard-server.exe 内可 grep 到 ----------
-$server = if (Test-Path $SERVER_EXE) { $SERVER_EXE } else { $SERVER_EXE_ALT }
-if ($server -and (Test-Path $server)) {
+# ---------- T4: DevCard.exe（shell）内可 grep 到 ----------
+# DevCard.exe 是自动更新壳，需要 BUILD 标记防清单事故。
+# devcard-server.exe 是纯 HTTP 服务端，不做自动更新，无需 BUILD 标记。
+$devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
+if ($devcard -and (Test-Path $devcard)) {
     Write-Host ""
-    Write-Host "========== T4: devcard-server.exe grep DEVCARD_BUILD_STAMP=$Stamp =========="
-    $found = Grep-Bytes $server "DEVCARD_BUILD_STAMP=$Stamp"
-    if ($found) { Pass "T4" "devcard-server.exe 内嵌 $found" }
+    Write-Host "========== T4: DevCard.exe（shell）grep DEVCARD_BUILD_STAMP=$Stamp =========="
+    $found = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP=$Stamp"
+    if ($found) { Pass "T4" "DevCard.exe 内嵌 $found" }
     else {
-        # 兜底：不管 stamp 值，至少能 grep 到 DEVCARD_BUILD_STAMP=
-        $any = Grep-Bytes $server "DEVCARD_BUILD_STAMP="
-        if ($any) { Pass "T4" "devcard-server.exe 内嵌 $any （Stamp 值与 $Stamp 不一致，可能是构建日志与二进制错位）" }
-        else { Fail "T4" "devcard-server.exe 内完全找不到 DEVCARD_BUILD_STAMP=" }
+        $any = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP="
+        if ($any) { Pass "T4" "DevCard.exe 内嵌 $any（Stamp 值与 $Stamp 不一致，可能是构建日志与二进制错位）" }
+        else { Fail "T4" "DevCard.exe 内完全找不到 DEVCARD_BUILD_STAMP=" }
     }
-} else { Fail "T4" "devcard-server.exe 不存在" }
+} else { Fail "T4" "DevCard.exe 不存在（shell win 没编？）" }
 
 # ---------- T5: DevCard.exe（shell win）----------
 $devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
@@ -185,7 +185,7 @@ if (-not $SkipBuild) {
     Write-Host "========== T6: 不带 DEVCARD_BUILD 回退构建 =========="
     Push-Location $ROOT
     try {
-        $cfg = & cmake -S . -B $FB -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release 2>&1
+        $cfg = & cmake -S . -B $FB -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD_SHELL=ON 2>&1
         $hits = @($cfg | Select-String -Pattern "DevCard 未注入构建号")
         if ($hits.Count -lt 4) { Fail "T6" "回退 configure 只输出 $($hits.Count) 行未注入日志，预期 ≥ 4" }
         else { Pass "T6" "回退 configure 输出 $($hits.Count) 行 DevCard 未注入构建号" }
