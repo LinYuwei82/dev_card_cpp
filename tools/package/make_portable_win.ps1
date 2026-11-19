@@ -15,7 +15,8 @@
 param(
     [switch]$SkipBuild,
     [string]$BuildDir = "",
-    [string]$OutDir = ""
+    [string]$OutDir = "",
+    [string]$Build = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,14 +50,30 @@ if ([string]::IsNullOrWhiteSpace($version)) {
 Write-Host "版本：$version（来源 VERSION.txt）"
 
 # ---------- 1. 构建 ----------
+# 构建号：传入 -Build 时 configure 里加 -DDEVCARD_BUILD，让编译期宏 DEVCARD_BUILD_STAMP
+# 打进二进制；客户端同版本重发时按 build 比较。缺省（空字符串）即不注入。
+$buildStampArg = @()
+if (-not [string]::IsNullOrWhiteSpace($Build)) { $buildStampArg = @("-DDEVCARD_BUILD=$Build") }
 if (-not $SkipBuild) {
     Write-Host "构建：$BuildDir（Release）"
-    & cmake -S $repoRoot -B $BuildDir
+    Write-Host "  cmake configure：$BuildDir -DDEVCARD_BUILD=$Build"
+    & cmake -S $repoRoot -B $BuildDir -DCMAKE_BUILD_TYPE=Release @buildStampArg
     if ($LASTEXITCODE -ne 0) { Fail "cmake configure 失败（退出码 $LASTEXITCODE）" }
     & cmake --build $BuildDir --config Release
     if ($LASTEXITCODE -ne 0) { Fail "cmake --build 失败（退出码 $LASTEXITCODE）" }
 } else {
     Write-Host "构建：跳过（-SkipBuild）"
+    # SkipBuild 但带 -Build：先 re-configure 把构建号写入 CMakeCache，
+    # 然后增量 rebuild——CMake 会检测到编译期宏 DEVCARD_BUILD_STAMP 变化，
+    # 重新编译 update_manifest.cpp（唯一引用点）；clean-first 代价太高，
+    # 增量足够且更快。
+    if (-not [string]::IsNullOrWhiteSpace($Build)) {
+        Write-Host " （带 -Build 但 SkipBuild，re-configure + 增量 rebuild）"
+        & cmake -S $repoRoot -B $BuildDir -DCMAKE_BUILD_TYPE=Release @buildStampArg
+        if ($LASTEXITCODE -ne 0) { Fail "cmake re-configure 失败（退出码 $LASTEXITCODE）" }
+        & cmake --build $BuildDir --config Release
+        if ($LASTEXITCODE -ne 0) { Fail "cmake --build（增量）失败（退出码 $LASTEXITCODE）" }
+    }
 }
 
 # 多配置生成器（VS）产物在 <target>\Release\ 下；单配置生成器（Ninja）直接在

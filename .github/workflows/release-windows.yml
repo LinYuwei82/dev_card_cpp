@@ -48,8 +48,14 @@ jobs:
         shell: pwsh
         run: ./shell/win/fetch-webview2.ps1
 
+      - name: 生成构建号（UTC yyyyMMddHHmm）
+        shell: pwsh
+        run: |
+          $BUILD = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmm")
+          echo "DEVCARD_BUILD_STAMP=$BUILD" | Out-File -Encoding utf8 $env:GITHUB_ENV
+          echo "构建号：$BUILD"
       - name: 配置
-        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=${{ env.DEVCARD_BUILD_STAMP }}
 
       - name: 构建
         run: cmake --build build-win --config Release --parallel
@@ -66,7 +72,7 @@ jobs:
         run: |
           # 显式命名参数：数组 splat 传 -Switch 不可靠，容易静默丢失（dry-run 变成真发布）
           $dry = '${{ inputs.dry_run }}' -eq 'true'
-          ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry
+          ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry -Build $env:DEVCARD_BUILD_STAMP
 
       - name: 上传构建产物（留档）
         if: always()

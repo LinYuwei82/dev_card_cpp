@@ -80,7 +80,7 @@ Push-Location $repoRoot
 try {
     Write-Host "===== 1/5 打绿色包"
     & (Join-Path $repoRoot "tools\package\make_portable_win.ps1") `
-        -SkipBuild:$SkipBuild -BuildDir build-win -OutDir dist
+        -SkipBuild:$SkipBuild -BuildDir build-win -OutDir dist -Build $Build
     if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $zip)) { Fail "没有找到产物：$zip" }
 
