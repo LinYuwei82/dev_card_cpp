@@ -6,6 +6,21 @@
 // 状态：代码已写，尚未在 Windows 上编译与实跑。验收清单见
 // docs/改造技术方案.md §10.9，不要在 Windows 实跑前宣称可用。
 
+// ---------------------------------------------------------------- BUILD_STR
+// guard.py 从绿色包 / setup.exe 的 DevCard.exe 里搜这个静态字符串，
+// 与清单 build 比对，防止清单 build 大于编译值导致客户端反复提示同一版本。
+// CMake 侧 shell/win/CMakeLists.txt 调 devcard_add_build_stamp(DevCard)
+// 注入 -DDEVCARD_BUILD_STAMP=<UTC>；未注入时回退 "0"，guard.py 搜不到会 warn 跳过。
+#ifndef DEVCARD_BUILD_STAMP
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
+#define DEVCARD_BUILD_STAMP STRINGIFY(DEVCARD_BUILD)
+#endif
+namespace {
+constexpr const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP;
+constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
+}  // namespace
+
 #include <windows.h>
 #include <knownfolders.h>
 #include <shlobj.h>
