@@ -296,12 +296,13 @@ int main() {
       CHECK(!body.is_discarded());
       // 字段集是前端与 shell 共同依赖的契约：多字段无害但说明清单结构变了，
       // 少字段直接破坏更新链路。增删字段必须显式改这里。
-      static const char* kKeys[] = {"version",       "schema_version",
-                                    "latest",        "update_available",
-                                    "download_url",  "download_page",
-                                    "notes",         "assets",
-                                    "check",         "manifest",
-                                    "checked_at",    "error"};
+      static const char* kKeys[] = {"version",       "local_build",
+                                    "schema_version", "latest",
+                                    "update_available", "download_url",
+                                    "download_page",  "notes",
+                                    "assets",         "check",
+                                    "manifest",       "checked_at",
+                                    "error"};
       CHECK(body.is_object());
       CHECK(body.size() == sizeof(kKeys) / sizeof(kKeys[0]));
       for (const char* key : kKeys) CHECK(body.contains(key));

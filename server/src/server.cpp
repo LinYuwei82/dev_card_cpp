@@ -1058,16 +1058,20 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     // 本平台的最新版本与构建号来自验签通过的清单；build 只在同版本时参与
     // 判定（见下方 available）。
     const std::string latest = manifest.latest;
-    // macOS 只比版本号；Windows 同版本再看构建号（沿用小兔规则：远端 build
-    // 必须大于本机才有更新）。本机构建号当前没有可靠来源（VERSION.txt 只有
-    // x.y.z，版本资源第 4 段恒 0），按 0 处理——0 视为「缺失」，缺失即跳过
-    // build 比较：同版本号一律不再提示。否则同版本重发包会形成「装完还是
-    // 同一个版本号 → 再提示 → 再装」的死循环；等客户端有了构建号来源，
-    // 把 available 放开为 `cmp == 0 && local_build > 0 &&
-    // manifest.latest_build > local_build` 即可。
-    const bool available = !latest.empty() && compare_version(latest, version) > 0;
+    // 本机构建号：CMake 注入 DEVCARD_BUILD_STAMP 时有值，未注入时返回 0。
+    // 同版本只有当远端 build 严格大于本地（且双方都 > 0）才提示更新；
+    // 任一为 0 时回退到只比 version——旧客户端未注入构建号时不被同版本重发包
+    // 反复打扰，旧清单 build 缺失时也不会突然多触发更新。
+    const std::uint64_t local_build = devcard::compiled_build_number();
+    const bool available = !latest.empty() && (
+        compare_version(latest, version) > 0 ||
+        (compare_version(latest, version) == 0 &&
+         manifest.latest_build > 0 &&
+         local_build > 0 &&
+         manifest.latest_build > local_build));
     set_json(response,
              json{{"version", version},
+                  {"local_build", local_build},
                   {"schema_version", schema},
                   {"latest", latest.empty() ? json(nullptr) : json(latest)},
                   {"update_available", available},
