@@ -42,7 +42,7 @@ jobs:
       - name: 构建
         run: cmake --build build-win --config Release --parallel
 
-      # 4 条：core / web_assets / no_opposans / embed_web。
+      # 5 条：core / web_assets / no_opposans / embed_web / api_contract。
       # -C Release 对 VS 多配置生成器必填。
       - name: 测试
         run: ctest --test-dir build-win -C Release --output-on-failure

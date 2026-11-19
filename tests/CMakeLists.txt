@@ -28,6 +28,15 @@ target_compile_definitions(devcard_embed_web_tests PRIVATE
     DEVCARD_EMBED_SCRIPT="${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake")
 add_test(NAME devcard_embed_web_tests COMMAND devcard_embed_web_tests)
 
+# 接口契约测试（最小版）：认证闸门顺序、乐观锁 409 形状、/api/version 字段集、
+# 前端 app.js 的 /api/ 字面量与路由契约表比对。跨层改动靠它拦截，见文件头说明。
+add_executable(devcard_api_contract_tests test_api_contract.cpp)
+target_link_libraries(devcard_api_contract_tests PRIVATE devcard_server)
+target_compile_definitions(devcard_api_contract_tests PRIVATE
+    DEVCARD_WEB_FONTS_DIR="${CMAKE_SOURCE_DIR}/web/fonts"
+    DEVCARD_WEB_SOURCE_DIR="${CMAKE_SOURCE_DIR}/web")
+add_test(NAME devcard_api_contract_tests COMMAND devcard_api_contract_tests)
+
 # §10.7 性能基准与 M7 并发压测：手动入口，不注册 ctest（耗时且数字随机器变）。
 # 退出码语义：0 达标 / 1 未达标 / 3 环境不具备。
 add_executable(devcard_bench_core ${CMAKE_SOURCE_DIR}/tools/perf/bench_core.cpp)
