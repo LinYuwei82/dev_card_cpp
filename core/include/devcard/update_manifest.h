@@ -48,4 +48,9 @@ struct SignedManifest {
 SignedManifest parse_signed_manifest(std::string_view raw_json,
                                      std::string_view pubkey_hex);
 
+// 返回编译期注入的 Windows 构建号（UTC yyyyMMddHHmm）。
+// CMake 通过 -DDEVCARD_BUILD_STAMP=<数值> 传入；未注入时返回 0。
+// 客户端同版本重发时只有清单 build 大于此值才提示更新。
+std::uint64_t compiled_build_number();
+
 }  // namespace devcard

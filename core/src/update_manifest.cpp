@@ -240,4 +240,12 @@ SignedManifest parse_signed_manifest(std::string_view raw_json,
   return result;
 }
 
+std::uint64_t compiled_build_number() {
+#if defined(DEVCARD_BUILD_STAMP)
+  return static_cast<std::uint64_t>(DEVCARD_BUILD_STAMP);
+#else
+  return 0;
+#endif
+}
+
 }  // namespace devcard
