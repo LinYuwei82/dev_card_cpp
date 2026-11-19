@@ -362,6 +362,15 @@ def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
         if not ed25519_verify(pub, v2_canonical_bytes(data), raw_sig):
             die("清单签名验证失败（公钥不匹配或清单被改动）")
         ok("清单签名验证通过")
+    # DevCard 当前阶段两平台同时发布 → v2 清单必须同时含 macos + windows
+    if product == "devcard":
+        platforms = data.get("platforms")
+        missing = [p for p in ("macos", "windows")
+                   if not (isinstance(platforms, dict) and p in platforms)]
+        if missing:
+            die(f"DevCard v2 清单 platforms 缺少：{missing}（两平台必须同时存在，"
+                f"发布脚本应从线上清单 --prev 合并后整体重签）")
+        ok("manifest.json 同时含 macos + windows 平台段（DevCard 要求）")
     platform = V2_PLATFORM[kind]
     platforms = data.get("platforms")
     if not isinstance(platforms, dict) or platform not in platforms:
