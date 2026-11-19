@@ -27,11 +27,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "httplib.h"  // 必须在 <windows.h> 之前：httplib.h 内部先 include winsock2.h + ws2tcpip.h
+                     // 新版 SDK (10.0.26100) 如果先 include <windows.h> 会间接引入 winsock.h，
+                     // 导致 ws2tcpip.h 的 SOCKADDR_IN6 multicast 成员被条件编译跳过。
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
-
-#include "httplib.h"
 
 #include "devcard/server.h"
 
