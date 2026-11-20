@@ -56,6 +56,8 @@
     updateInstall: document.getElementById('update-install'),
     updateInstallResult: document.getElementById('update-install-result'),
     updateLater: document.getElementById('update-later'),
+    updateTitle: document.getElementById('update-title'),
+    updateMandatory: document.getElementById('update-mandatory'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
     navUsers: document.getElementById('nav-users'),
@@ -387,7 +389,11 @@
         url: /^https:\/\//i.test(String(section.notes_url || ''))
           ? String(section.notes_url) : '',
         notes: '',
-        assets: null
+        assets: null,
+        // 强制更新：与 Mote / 小兔同一份语义，是否「已生效」由 mandatoryActive 判定
+        mandatory: !!section.mandatory,
+        mandatory_deadline: String(section.mandatory_deadline || ''),
+        mandatory_reason: String(section.mandatory_reason || '')
       };
     }
     var version = normalizeVersion(doc.tag_name || doc.latest ||
@@ -692,10 +698,27 @@
     ];
   }
 
+  // 强制升级原因文案：与 Mote / 小兔的 mandatoryReasonLabel 逐字一致。
+  var MANDATORY_REASON_LABELS = {
+    SECURITY: '安全漏洞修复',
+    PROTOCOL: '协议不兼容',
+    REGULATORY: '法规或税控要求',
+    MIN_SUPPORTED: '低于服务端最低支持版本'
+  };
+
+  // 强制是否已生效：未设期限 → 立即强制；设了期限 → 到期才强制（截止前可稍后）。
+  // 期限解析失败按「已到期」处理，避免格式问题成为绕过手段；三端同一口径。
+  function mandatoryActive(info) {
+    if (!info || !info.mandatory) return false;
+    var raw = info.deadline || '';
+    if (!raw) return true;
+    var at = Date.parse(raw);
+    return !isFinite(at) || Date.now() >= at;
+  }
+
   function openUpdateModal() {
     var manifest = state.update || {};
-    var result = state.updateCheck || null;
-    // 本地清单命中时以本地为准（与 checkUpdate 的「本地优先」一致）：
+    var result = state.updateCheck || null;    // 本地清单命中时以本地为准（与 checkUpdate 的「本地优先」一致）：
     // 此时不会拉远端，资产只能来自 /api/version 透传的 manifest.assets。
     var localWins = !!(manifest.update_available && manifest.latest);
     var release = (!localWins && result && result.release) ? result.release : null;
@@ -718,6 +741,33 @@
       el.updateSteps.appendChild(item);
     });
     el.updateDownload.disabled = !state.updateUrl;
+
+    // 强制更新：截止前仍可「稍后」，到期后弹窗不可关闭（与 Mote / 小兔同一口径）。
+    var mFlag = !!(manifest.mandatory || (release && release.mandatory));
+    var mDeadline = (release && release.mandatory_deadline) ||
+      manifest.mandatory_deadline || '';
+    var mReason = (release && release.mandatory_reason) ||
+      manifest.mandatory_reason || '';
+    // 没有下载入口时不阻塞：否则用户既升不了级又关不掉弹窗
+    state.updateForce = mandatoryActive({ mandatory: mFlag, deadline: mDeadline }) &&
+      !!state.updateUrl;
+    var force = state.updateForce;
+    el.updateTitle.textContent = force ? '必须更新' : '发现新版本';
+    el.updateLater.hidden = force;
+    if (mFlag) {
+      var label = MANDATORY_REASON_LABELS[mReason] || '';
+      el.updateMandatory.textContent = force
+        ? '此更新已到截止时间' + (mDeadline ? '（' + mDeadline + '）' : '') +
+          '，不能跳过。' + (label ? '原因：' + label + '。' : '')
+        : '该版本为强制更新' + (label ? '（' + label + '）' : '') +
+          (mDeadline ? '，请在 ' + mDeadline + ' 前完成升级，到期后将无法跳过。' : '。');
+      el.updateMandatory.hidden = false;
+      el.updateMandatory.classList.toggle('is-error', force);
+    } else {
+      el.updateMandatory.hidden = true;
+      el.updateMandatory.textContent = '';
+      el.updateMandatory.classList.remove('is-error');
+    }
 
     // 阶段一：只下载 + 校验。按钮是否可用取决于清单里有没有「带 SHA256 与
     // 字节数」的当前平台资产；缺任一条件就退回只提示，不给下载入口。
@@ -867,7 +917,10 @@
     });
   });
 
-  function closeUpdateModal() {
+  function closeUpdateModal(force) {
+    // 强制更新到期后不允许关闭；安装完成或升级后重新打开才解除
+    if (state.updateForce && !force) return;
+    state.updateForce = false;
     el.updateModal.hidden = true;
   }
 
@@ -896,7 +949,7 @@
     });
   }
 
-  el.updateLater.addEventListener('click', closeUpdateModal);
+  el.updateLater.addEventListener('click', function () { closeUpdateModal(); });
 
   el.updateDownload.addEventListener('click', function () {
     if (!state.updateUrl) {
@@ -2138,7 +2191,7 @@
     else if (el.drawer.classList.contains('is-open')) closeDrawer();
     else if (!el.userModal.hidden) el.userModal.hidden = true;
     else if (!el.resetModal.hidden) el.resetModal.hidden = true;
-    else if (!el.updateModal.hidden) el.updateModal.hidden = true;
+    else if (!el.updateModal.hidden) closeUpdateModal();
   });
 
   // ---------- 卡片打印 ----------
