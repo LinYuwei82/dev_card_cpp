@@ -69,7 +69,7 @@ MIN_OS="${MIN_OS:-15.0}"   # 与 bin/DevCard.app 的 LSMinimumSystemVersion 保�
 
 # v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>；dmg 固定 macos-arm64
 if [ "$ARCH" != "arm64" ]; then
-    fail "v2 命名固定 -macos-arm64，本机架构为 $ARCH；请在 Apple Silicon 上出包"
+    fail "v2 命名固定 -macos-arm64，本机架构为 ${ARCH}；请在 Apple Silicon 上出包"
 fi
 DMG="$DIST/DevCard-$VERSION-macos-$ARCH.dmg"
 V2_DMG_NAME="devcard-$VERSION-macos-arm64.dmg"
@@ -235,7 +235,7 @@ if [ -d "$DOCS_ROOT" ]; then
   DMG_SIZE=$(stat -f%z "$DMG" 2>/dev/null || stat -c%s "$DMG" 2>/dev/null || echo "?")
   DMG_MIB=$(python3 -c "print(f'{int($DMG_SIZE)/1024/1024:.2f}')" 2>/dev/null || echo "?")
   TODAY=$(date '+%Y-%m-%d')
-  echo "  📦 包体实测（版本 $VERSION / $TODAY）"
+  echo "  📦 包体实测（版本 $VERSION / ${TODAY}）"
   echo "     DMG: ${DMG_SIZE}B (${DMG_MIB} MiB)"
 
   WATCH_WORDS="未实现|待补|待处理|TODO|FIXME|缺口|缺失|尚未|计划实现"

@@ -158,7 +158,7 @@ cmd_send() {
 
   if [ "$DRY_RUN" -eq 1 ]; then
     rm -f "$tmp"
-    echo "（dry-run）将发送：$name（未写入）"
+    echo "（dry-run）将发送：${name}（未写入）"
     return 0
   fi
   if ! move_file "$tmp" "$INBOX/$name"; then
