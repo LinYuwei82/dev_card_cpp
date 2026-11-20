@@ -8,8 +8,8 @@
 #   ... -DryRun                     # 只出包与清单，不上传
 #
 # 清单为统一 Schema v2（见 mote/docs/更新清单Schema-v2.md）：manifest.json
-# （platforms.windows，Ed25519 签名）。本脚本不再生成 windows.json，
-# 旧内测客户端按切换方案重装升级。
+# （platforms.windows，Ed25519 签名）。v1 清单（latest.json / windows.json）已于
+# 2026-11-18 全量删除，本脚本只生成 manifest.json（v2）。
 #
 # 构建号：v2 清单 windows 平台必须带 build（客户端同版本比对构建号），缺省取
 # 触发时刻 UTC（分钟级）；与 GitHub Actions 的构建号约定一致。
@@ -159,7 +159,7 @@ try {
         "--file", $v2Setup, "--zip", $v2Zip,
         "--manifest", $manifest, "--pub-hex", $pubHex, "--build", $Build
     )
-    # 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
+    # guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
     if ($DryRun) { $guardArgs += "--offline" }
     & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
     if ($LASTEXITCODE -ne 0) { Fail "guard preflight 未通过（v2 命名/版本/覆盖/内嵌地址/签名）" }

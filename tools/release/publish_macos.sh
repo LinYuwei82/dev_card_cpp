@@ -3,7 +3,8 @@
 #
 # 清单为统一 Schema v2（见 mote/docs/更新清单Schema-v2.md）：manifest.json
 # （platforms.macos，Ed25519 签名）；appcast.xml 是 Sparkle 专用，不在 v2 范围。
-# 本脚本不再生成 latest.json，旧内测客户端按切换方案重装或经 Sparkle 升级。
+# v1 清单（latest.json / windows.json）已于 2026-11-18 全量删除；
+# 本脚本只生成 manifest.json（v2）+ appcast.xml。
 #
 # 用法：
 #   tools/release/publish_macos.sh                    # 构建并发布
@@ -141,7 +142,7 @@ GUARD_ARGS=(
     --product devcard --kind mac --channel "$CHANNEL"
     --file "$DMG" --name "$V2_DMG_NAME"
     --manifest "$MANIFEST" --pub-hex "$PUB_HEX"
-# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
+# 注：guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
 )
 [ "$DRY_RUN" = "1" ] && GUARD_ARGS+=(--offline)
 python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
