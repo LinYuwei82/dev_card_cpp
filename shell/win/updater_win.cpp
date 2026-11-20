@@ -8,6 +8,8 @@
 
 #include "updater_win.h"
 
+#include <nlohmann/json.hpp>
+
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <shellapi.h>
