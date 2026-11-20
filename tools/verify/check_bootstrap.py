@@ -6,7 +6,7 @@
                                             [--build-dir PATH]
 
 前置条件：
-    * 已构建 devcard-server（默认在 build-new/server/devcard-server，
+    * 已构建 devcard-server（默认在 build/release/server/devcard-server，
       也接受 --server 指定；Windows 上为 devcard-server.exe）。
     * 默认数据目录是临时目录下的中文路径（不带 emoji：Windows 的窄 argv 经 ACP，
       emoji 不在 ACP 内，等于给服务端喂乱码，测的就不是 bootstrap 了）。
@@ -57,8 +57,10 @@ def find_server(root: pathlib.Path, explicit: str) -> pathlib.Path | None:
         path = pathlib.Path(explicit)
         return path if path.exists() else None
     for candidate in [
-        root / "build-new" / "server" / "devcard-server",
-        root / "build-new" / "server" / "devcard-server.exe",
+        root / "build" / "release" / "server" / "devcard-server",
+        root / "build" / "release" / "server" / "devcard-server.exe",
+        root / "build" / "windows" / "server" / "devcard-server",
+        root / "build" / "windows" / "server" / "devcard-server.exe",
         root / "build" / "server" / "devcard-server",
         root / "build" / "server" / "devcard-server.exe",
     ]:
@@ -210,7 +212,7 @@ def main() -> int:
         if holder is not None:
             holder.cleanup()
 
-    build_dir = pathlib.Path(args.build_dir) if args.build_dir else root / "build-new"
+    build_dir = pathlib.Path(args.build_dir) if args.build_dir else root / "build" / "release"
     ctest_code = run_ctest(build_dir)
     if ctest_code == 1:
         print("[失败] ctest 未全绿")

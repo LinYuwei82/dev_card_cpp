@@ -13,8 +13,8 @@
 #
 # 与既有脚本的调用关系（不复制实现）：
 #   configure 走 CMakePresets.json 的 macos-release preset（Ninja +
-#   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build-new/，与 tools/package/package_macos.sh
-#   的默认 BUILD_DIR（<repo>/build-new）是同一目录。本脚本只负责「编出来」；DMG 打包
+#   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build/release/，与 tools/package/package_macos.sh
+#   的默认 BUILD_DIR（<repo>/build/release）是同一目录。本脚本只负责「编出来」；DMG 打包
 #   （依赖自检、ad-hoc 签名、hdiutil）仍由 package_macos.sh 负责，构建完直接复用产物：
 #       tools/package/package_macos.sh --skip-build
 #   本脚本不反过来调用 package_macos.sh：构建入口与发布入口分开，避免每次构建都触发打包。
@@ -28,8 +28,8 @@
 #
 # 【以下是「假设」，尚未在 macOS 上真实执行过】mac 上第一次运行请以实际输出为准修正，
 # 不要把这里当成已验结论：
-#   1. 假设产物布局是 build-new/shell/DevCard.app（目标名来自 shell/CMakeLists.txt 的
-#      add_executable(DevCard MACOSX_BUNDLE ...)）与 build-new/server/devcard-server
+#   1. 假设产物布局是 build/release/shell/DevCard.app（目标名来自 shell/CMakeLists.txt 的
+#      add_executable(DevCard MACOSX_BUNDLE ...)）与 build/release/server/devcard-server
 #      （目标由 server/CMakeLists.txt 定义）；脚本跑完会逐个校验存在性，不符就失败。
 #   2. 假设 preset 名 macos-release、generator Ninja 不再变化（来源：CMakePresets.json）。
 #   3. 假设本机已装 Ninja：preset 指定了它，但仓库不负责安装；没装按「环境不具备」退出。
@@ -46,9 +46,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
 PRESET="macos-release"
-# preset 的 binaryDir 是 ${sourceDir}/build-new；这里写常量是为了在产物路径缺失时
+# preset 的 binaryDir 是 ${sourceDir}/build/release；这里写常量是为了在产物路径缺失时
 # 能给出可读的报错。若将来改了 preset，这里要同步改（脚本会在缺失时报错，不会静默）。
-BUILD_DIR="$REPO_ROOT/build-new"
+BUILD_DIR="$REPO_ROOT/build/release"
 CMAKE_MIN_VERSION="3.21"
 
 say() { printf '%s\n' "$*"; }
@@ -156,7 +156,7 @@ say "前置检查：通过（Darwin / ${ARCH} / cmake ${CMAKE_VERSION} / ninja /
 # ---------- 2. configure ----------
 # preset 只带 Ninja 与 Release，不在命令行重复参数；版本由 VERSION.txt 读取。
 say ""
-say "configure：cmake --preset ${PRESET}（build-new，Release）"
+say "configure：cmake --preset ${PRESET}（build/release，Release）"
 if ! (cd "$REPO_ROOT" && cmake --preset "$PRESET"); then
   fail "configure 未通过（preset ${PRESET}）。看上面的 CMake 输出；常见是缺 Xcode CLT 或字体子集文件。"
 fi

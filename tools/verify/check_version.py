@@ -13,7 +13,7 @@
        必须用 ISPP 的 FileRead 从 VERSION.txt 取；出现字面量即失败。
     2. 给了 --setup 时：该 exe 的版本属性（FileVersion / ProductVersion）
        必须与 VERSION.txt 逐字符相等，任一不等即失败。
-    3. macOS 只看**真产物** build-new/shell/DevCard.app/Contents/Info.plist 的
+    3. macOS 只看**真产物** build/release/shell/DevCard.app/Contents/Info.plist 的
        CFBundleShortVersionString；不一致即失败。
        packaging/mac/Info.plist 是旧 Qt 线的冻结文件，package_macos.sh 不引用它，
        只作为一行信息列出，不参与判定。
@@ -37,7 +37,7 @@ import sys
 
 ISS = pathlib.Path("packaging/windows/DevCard.iss")
 # 判据只指向真产物：package_macos.sh:123-125 读的就是这份，不一致直接 fail。
-APP_PLIST = pathlib.Path("build-new/shell/DevCard.app/Contents/Info.plist")
+APP_PLIST = pathlib.Path("build/release/shell/DevCard.app/Contents/Info.plist")
 # 旧 Qt 线的冻结文件，package_macos.sh 里一次都没出现；只列出，不判。
 FROZEN_PLIST = pathlib.Path("packaging/mac/Info.plist")
 
@@ -171,7 +171,7 @@ def main() -> int:
     if missing_bundle:
         print()
         print("环境不具备：没有 macOS app bundle，无法核对产物 Info.plist（退出码 3）")
-        print("  这不是通过：macOS 上先构建出 build-new/shell/DevCard.app 再跑本脚本。")
+        print("  这不是通过：macOS 上先构建出 build/release/shell/DevCard.app 再跑本脚本。")
         return 3
     print()
     print("通过：安装包版本与 VERSION.txt 同源")

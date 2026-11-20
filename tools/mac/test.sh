@@ -9,7 +9,7 @@
 #   0 全部通过
 #   1 有失败（ctest 有失败用例，或某个 verify 入口返回 1 / 未知退出码）
 #   2 无失败，但有「已占位待确认」项（verify 入口返回 2）
-#   3 环境不具备（非 macOS、缺 cmake/ctest/python3、build-new 还没 configure）
+#   3 环境不具备（非 macOS、缺 cmake/ctest/python3、build/release 还没 configure）
 # 聚合优先级：1 > 3 > 2 > 0。3 是「这条没测成」，1 是「测成了而且坏了」；已知的坏不该被
 #   未知盖住，否则环境缺一半时真失败会被藏起来。环境真缺的检查各自返回 3，不会伪装成 1。
 #   环境不具备时绝不报 0——跑不动不等于通过。
@@ -22,14 +22,14 @@
 #   shellcheck 结论，不要当成已通过。mac 上首次运行前请自行执行：shellcheck tools/mac/test.sh
 #
 # 【以下是「假设」，尚未在 macOS 上真实执行过】mac 上第一次运行请以实际输出为准修正：
-#   1. 假设构建目录是 preset macos-release 产出的 build-new（与 tools/mac/build.sh、
+#   1. 假设构建目录是 preset macos-release 产出的 build/release（与 tools/mac/build.sh、
 #      tools/package/package_macos.sh 同一目录）；缺 CMakeCache.txt 时按「环境不具备」报 3，
 #      而不是当成 0 通过。
 #   2. 假设 tools/verify 下每个 .sh 都是 POSIX sh 入口（现有 check_bom / check_bootstrap /
 #      check_migrations / check_path_helpers / check_version 五个都是 #!/bin/sh 后转派
 #      python3），因此统一用 /bin/sh 执行——不依赖 git 里的可执行位，Windows 侧 checkout
 #      丢掉 +x 也不会假失败。若将来出现 bash 专用入口，需要改这里。
-#   3. 假设 check_bootstrap.sh 的默认构建目录仍是 build-new/server/devcard-server（见该
+#   3. 假设 check_bootstrap.sh 的默认构建目录仍是 build/release/server/devcard-server（见该
 #      脚本注释），所以这里不额外传 --build-dir；若用了其它构建目录，它会返回 3 而不是
 #      给出假通过。
 #   4. 假设目前只有 check_migrations.sh 返回 2（「出现 v4+ 待与 Windows 确认」），其它入口
@@ -44,7 +44,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
-BUILD_DIR="$REPO_ROOT/build-new"
+BUILD_DIR="$REPO_ROOT/build/release"
 VERIFY_DIR="$REPO_ROOT/tools/verify"
 
 say() { printf '%s\n' "$*"; }

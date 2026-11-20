@@ -37,13 +37,13 @@
 
 ```bash
 # 构建（macOS / Linux / Windows 的 CMake 工具链）
-cmake -S . -B build-new
-cmake --build build-new -j8
-ctest --test-dir build-new --output-on-failure
+cmake -S . -B build/release
+cmake --build build/release -j8
+ctest --test-dir build/release --output-on-failure
 ```
 
-- **单机版（桌面壳）**：macOS 构建后运行 `build-new/shell/DevCard.app`（或 `open build-new/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
-- **网络版（浏览器）**：运行 `build-new/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。`--server`（可配监听地址与来源 IP、HttpOnly 会话、多实例防护、登录限流、每用户数据目录）已实现，部署与防火墙设置见 [docs/部署文档.md](docs/部署文档.md)。
+- **单机版（桌面壳）**：macOS 构建后运行 `build/release/shell/DevCard.app`（或 `open build/release/shell/DevCard.app`）。壳内嵌启动本地 HTTP 服务并加载页面，界面表现为普通桌面窗口。
+- **网络版（浏览器）**：运行 `build/release/server/devcard-server --port 18081`，浏览器访问 `http://127.0.0.1:18081/`。`--server`（可配监听地址与来源 IP、HttpOnly 会话、多实例防护、登录限流、每用户数据目录）已实现，部署与防火墙设置见 [docs/部署文档.md](docs/部署文档.md)。
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`（代码实值，见 `server/src/platform_paths.cpp`）；Windows 安装版 `%LOCALAPPDATA%\DevCard\data`、便携版 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。**旧版数据不再支持导入**：数据目录里若是旧版库（只有 `tb_device`/`tb_user`、无 `schema_migration`），启动直接报 `legacy_db` 并拒绝在原库上建表；导入器与 `--import-legacy` 已删除。
 - **版本**：只改根目录 `VERSION.txt`（当前 `1.2.8`，已于 2026-11-19 上线：macOS DMG 与 Windows 安装包/绿色包，`manifest.json` 双平台均为 1.2.8），server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。1.2.2 已于 2026-11-17 发布并打 tag `v1.2.2`（改版本后必须重新 `cmake -S … -B …` configure，PE 与 bundle 版本在 configure 阶段注入，增量 build 不更新）。
 - **验证打印**：界面上「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
@@ -56,7 +56,7 @@ ctest --test-dir build-new --output-on-failure
 - **会话持久化（1.2.2 起）**：登录会话落盘 `data_dir/sessions.json`（TTL 12 小时 = `kSessionTtlSeconds = 43200`），进程重启后旧 cookie 仍有效，不再每次重启都弹登录页；`last_seen` 由 `steady_clock` 改为 Unix epoch 秒（`steady_clock` 进程重启会重置且无法序列化）。创建 / 销毁 / 按用户失效会话与恢复备份后自动重写该文件；滑动 TTL 只改内存（性能考虑），所以 `last_seen` 落盘值有滞后。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」，超出时明确告知会截断。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0 / 公司名行 `x1-x0` = 44.35 mm，16 字那张截掉末尾「分公司」，整份文本层逐字相同。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构壳**已编译，`/VERYSILENT` 安装与卸载实测通过**，交互与实物打印仍待补（§10.9）。
-- **Windows**：先跑 `powershell -ExecutionPolicy Bypass -File shell/win/fetch-webview2.ps1` 取 WebView2 SDK（固定版本 + SHA256，不入库），再 `cmake -S . -B build-win` + 构建；要求 VS2022 Build Tools 与 WebView2 Runtime。安装/卸载已按 `/VERYSILENT` 跑通；向导页、SmartScreen、WebView2 Runtime 缺失场景、导出桥与打印实物仍按 [§10.9](docs/改造技术方案.md) 逐条验证后再宣称可用。
+- **Windows**：先跑 `powershell -ExecutionPolicy Bypass -File shell/win/fetch-webview2.ps1` 取 WebView2 SDK（固定版本 + SHA256，不入库），再 `cmake -S . -B build/windows` + 构建；要求 VS2022 Build Tools 与 WebView2 Runtime。安装/卸载已按 `/VERYSILENT` 跑通；向导页、SmartScreen、WebView2 Runtime 缺失场景、导出桥与打印实物仍按 [§10.9](docs/改造技术方案.md) 逐条验证后再宣称可用。
 
 ### 2.1 macOS 打包（一条命令）
 
@@ -66,7 +66,7 @@ tools/release/publish_macos.sh --notes "本次更新内容"
 tools/release/publish_macos.sh --dry-run # 只出包与清单，不上传
 
 tools/package/package_macos.sh                # 只出 DMG：构建 + 依赖自检 + Developer ID 签名 + 公证 + staple
-tools/package/package_macos.sh --skip-build   # 用已有 build-new 产物重打包
+tools/package/package_macos.sh --skip-build   # 用已有 build/release 产物重打包
 tools/package/package_macos.sh --feed-url https://dl.xiaotu.online/devcard/updates/stable/appcast.xml
 ```
 
@@ -131,7 +131,7 @@ dev_card_cpp/
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
 ├── docs/                     # 技术文档、样张
 ├── dist/                     # 本地打包产物（已 gitignore）
-└── build-new/ build-win/     # 构建产物（已 gitignore）
+└── build/                    # 构建产物（已 gitignore，release/ 与 windows/）
 ```
 
 目标结构：`core`（纯 C++20 业务 / DAO / 迁移）+ `server`（HTTP 与入口）+ `shell`（macOS 壳已实测；Windows 壳已编译、静默安装实测）+ `web`（原生 JS 前端，构建期内嵌）+ `tests`，详见 [改造技术方案 §4.1](docs/改造技术方案.md)。

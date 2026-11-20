@@ -39,20 +39,20 @@ jobs:
 
       # 显式指定 x64：WebView2 SDK 的静态库只有 x64，不能让生成器自己挑。
       - name: 配置
-        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build/windows -A x64 -DCMAKE_BUILD_TYPE=Release
 
       - name: 构建
-        run: cmake --build build-win --config Release --parallel
+        run: cmake --build build/windows --config Release --parallel
 
       # 5 条：core / web_assets / no_opposans / embed_web / api_contract。
       # -C Release 对 VS 多配置生成器必填。
       - name: 测试
-        run: ctest --test-dir build-win -C Release --output-on-failure
+        run: ctest --test-dir build/windows -C Release --output-on-failure
 
       # 产物与本地同一条路径：版本/内容自检不过就直接失败。
       - name: 打绿色包
         shell: pwsh
-        run: ./tools/package/package_windows.ps1 -SkipBuild -BuildDir build-win -OutDir dist
+        run: ./tools/package/package_windows.ps1 -SkipBuild -BuildDir build/windows -OutDir dist
 
       # 安装包也走脚本：避免手写 digest/size。更新清单由 release-windows 工作流生成。
       # windows-latest 通常自带 Inno Setup 6，找不到时用 choco 补装。
@@ -77,8 +77,8 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "devcard-installer"
           Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path (Join-Path $stage "fonts") | Out-Null
-          Copy-Item -LiteralPath "build-win/shell/win/Release/DevCard.exe" -Destination $stage
-          Copy-Item -LiteralPath "build-win/server/Release/devcard-server.exe" -Destination $stage
+          Copy-Item -LiteralPath "build/windows/shell/win/Release/DevCard.exe" -Destination $stage
+          Copy-Item -LiteralPath "build/windows/server/Release/devcard-server.exe" -Destination $stage
           Copy-Item -LiteralPath "web/fonts/NotoSansSC-Regular.subset.ttf" -Destination (Join-Path $stage "fonts")
           Copy-Item -LiteralPath "web/fonts/NotoSansSC-Bold.subset.ttf" -Destination (Join-Path $stage "fonts")
 
@@ -92,8 +92,8 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
-            build-win/server/Release/devcard-server.exe
-            build-win/shell/win/Release/DevCard.exe
+            build/windows/server/Release/devcard-server.exe
+            build/windows/shell/win/Release/DevCard.exe
           if-no-files-found: error
           retention-days: 14
 

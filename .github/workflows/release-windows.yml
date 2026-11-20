@@ -86,13 +86,13 @@ jobs:
             --manifest-url "https://dl.xiaotu.online/devcard/updates/stable/manifest.json"
           if ($LASTEXITCODE -ne 0) { throw '版本/构建号递增校验失败' }
       - name: 配置
-        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=${{ env.DEVCARD_BUILD }}
+        run: cmake -S . -B build/windows -A x64 -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=${{ env.DEVCARD_BUILD }}
 
       # 只构建生产 target，跳过 tests 项目。
       # 原因：tests/test_api_contract.cpp 在 Windows SDK 10.0.26100 上因 ws2tcpip.h
       # 结构体条件编译差异会编译失败，但生产二进制(devcard-server + DevCard)不受影响。
       - name: 构建
-        run: cmake --build build-win --config Release --parallel --target devcard-server DevCard
+        run: cmake --build build/windows --config Release --parallel --target devcard-server DevCard
 
       - name: 发布（打绿色包/安装包 → manifest.json v2 → guard → 上传）
         shell: pwsh

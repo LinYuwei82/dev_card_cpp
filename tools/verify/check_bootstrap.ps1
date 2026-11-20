@@ -2,7 +2,7 @@
 #
 # 用法：    powershell -ExecutionPolicy Bypass -File tools\verify\check_bootstrap.ps1
 #           [-Server PATH] [-DataDir PATH] [-BuildDir PATH]
-# 前置条件：已在 Windows 实机构建 devcard-server.exe（默认 build-new\server\
+# 前置条件：已在 Windows 实机构建 devcard-server.exe（默认 build\windows\server\
 #           devcard-server.exe）；需要 Python 3。
 #           **这条必须在 Windows 实机执行**：macOS 上跑绿只能证明 POSIX 分支，
 #           不能替代 ACP 默认代码页下的结论。

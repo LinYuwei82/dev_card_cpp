@@ -33,7 +33,7 @@ if ($env:OS -ne "Windows_NT") {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = Join-Path $repoRoot "build-win"
+    $BuildDir = Join-Path $repoRoot "build\windows"
 }
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
     $OutDir = Join-Path $repoRoot "dist"

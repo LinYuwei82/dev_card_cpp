@@ -3,7 +3,7 @@
 #
 # 用法：    tools/verify/check_bootstrap.sh [--server PATH] [--data-dir PATH]
 #                                       [--build-dir PATH]
-# 前置条件：已构建 devcard-server（默认 build-new/server/devcard-server）；
+# 前置条件：已构建 devcard-server（默认 build/release/server/devcard-server）；
 #           需要 python3；ctest 与构建目录可选（缺了只跳过耗时那节）。
 # 退出码： 0 通过 / 1 失败 / 3 环境不具备（未构建、服务起不来）
 # 详细判据与「故意造坏输入」示例见 check_bootstrap.py 顶部注释。

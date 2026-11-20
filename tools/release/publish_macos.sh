@@ -8,7 +8,7 @@
 #
 # 用法：
 #   tools/release/publish_macos.sh                    # 构建并发布
-#   tools/release/publish_macos.sh --skip-build       # 复用已有 build-new 产物
+#   tools/release/publish_macos.sh --skip-build       # 复用已有 build/release 产物
 #   tools/release/publish_macos.sh --notes "更新说明"  # 写进 appcast 与 notes_url
 #   tools/release/publish_macos.sh --dry-run          # 只出包与清单，不上传
 #   ROLLOUT_PERCENT=10 tools/release/publish_macos.sh # 灰度 10%

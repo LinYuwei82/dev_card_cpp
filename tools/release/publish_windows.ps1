@@ -2,7 +2,7 @@
 #
 # 用法（PowerShell，仓库根目录或任意目录均可）：
 #   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
-#   ... -SkipBuild                  # 复用 build-win 产物
+#   ... -SkipBuild                  # 复用 build\windows 产物
 #   ... -Notes "本次更新内容"        # 仅提示用途；v2 清单不再写说明文本
 #   ... -Build 202611180930         # 构建号，缺省由 gen_build.py 生成（自动校验 > 线上）
 #   ... -DryRun                     # 只出包与清单，不上传
@@ -128,7 +128,7 @@ Push-Location $repoRoot
 try {
     Write-Host "===== 1/5 打绿色包"
     & (Join-Path $repoRoot "tools\package\package_windows.ps1") `
-        -SkipBuild:$SkipBuild -BuildDir build-win -OutDir dist -Build $Build
+        -SkipBuild:$SkipBuild -BuildDir build/windows -OutDir dist -Build $Build
     if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $zip)) { Fail "没有找到产物：$zip" }
 

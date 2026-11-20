@@ -24,8 +24,8 @@ curl -sS -D headers.txt -o body.json \
 ## 回放怎么用
 
 ```bash
-cmake --build build-new
-cd build-new
+cmake --build build/release
+cd build/release
 HOME=/tmp/updcheck \
 DEVCARD_SELFTEST_UPDATE=replay \
 DEVCARD_UPDATE_FIXTURE=$PWD/../tests/fixtures/release_latest_20261114T143647Z.json \
