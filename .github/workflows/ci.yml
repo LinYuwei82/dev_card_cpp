@@ -37,17 +37,22 @@ jobs:
         shell: pwsh
         run: ./shell/win/fetch-webview2.ps1
 
-      # 显式指定 x64：WebView2 SDK 的静态库只有 x64，不能让生成器自己挑。
+      # Ninja 不自带工具链定位能力，先由 msvc-dev-cmd 注入 x64 MSVC 环境（cl/ninja 进 PATH）。
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: 配置
-        run: cmake -S . -B build/windows -A x64 -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset windows-release
 
       - name: 构建
-        run: cmake --build build/windows --config Release --parallel
+        run: cmake --build build/windows --parallel
 
       # 5 条：core / web_assets / no_opposans / embed_web / api_contract。
-      # -C Release 对 VS 多配置生成器必填。
+      # Ninja 是单配置生成器，不再依赖 -C Release。
       - name: 测试
-        run: ctest --test-dir build/windows -C Release --output-on-failure
+        run: ctest --test-dir build/windows --output-on-failure
 
       # 产物与本地同一条路径：版本/内容自检不过就直接失败。
       - name: 打绿色包
@@ -77,8 +82,8 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP "devcard-installer"
           Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path (Join-Path $stage "fonts") | Out-Null
-          Copy-Item -LiteralPath "build/windows/shell/win/Release/DevCard.exe" -Destination $stage
-          Copy-Item -LiteralPath "build/windows/server/Release/devcard-server.exe" -Destination $stage
+          Copy-Item -LiteralPath "build/windows/shell/win/DevCard.exe" -Destination $stage
+          Copy-Item -LiteralPath "build/windows/server/devcard-server.exe" -Destination $stage
           Copy-Item -LiteralPath "web/fonts/NotoSansSC-Regular.subset.ttf" -Destination (Join-Path $stage "fonts")
           Copy-Item -LiteralPath "web/fonts/NotoSansSC-Bold.subset.ttf" -Destination (Join-Path $stage "fonts")
 
@@ -92,8 +97,8 @@ jobs:
           path: |
             dist/*.zip
             dist/*-setup.exe
-            build/windows/server/Release/devcard-server.exe
-            build/windows/shell/win/Release/DevCard.exe
+            build/windows/server/devcard-server.exe
+            build/windows/shell/win/DevCard.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -105,11 +110,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 配置
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset macos-release
 
       - name: 构建
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build/release --parallel
 
-      # -C Release 对单配置生成器是空操作，保留是为了两个 job 命令一致。
+      # Ninja 是单配置生成器，-C 已删除。
       - name: 测试
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build/release --output-on-failure

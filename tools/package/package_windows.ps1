@@ -74,10 +74,10 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
 $buildStampArg = @("-DDEVCARD_BUILD=$Build", "-DDEVCARD_RELEASE_BUILD=ON")
 if (-not $SkipBuild) {
     Write-Host "构建：$BuildDir（Release）"
-    Write-Host "  cmake configure：$BuildDir -DDEVCARD_BUILD=$Build"
-    & cmake -S $repoRoot -B $BuildDir -DCMAKE_BUILD_TYPE=Release @buildStampArg
+    Write-Host "  cmake configure：--preset windows-release -DDEVCARD_BUILD=$Build"
+    & cmake -S $repoRoot --preset windows-release @buildStampArg
     if ($LASTEXITCODE -ne 0) { Fail "cmake configure 失败（退出码 $LASTEXITCODE）" }
-    & cmake --build $BuildDir --config Release
+    & cmake --build $BuildDir --parallel
     if ($LASTEXITCODE -ne 0) { Fail "cmake --build 失败（退出码 $LASTEXITCODE）" }
 } else {
     Write-Host "构建：跳过（-SkipBuild）"
@@ -87,9 +87,9 @@ if (-not $SkipBuild) {
     # 增量足够且更快。
     if (-not [string]::IsNullOrWhiteSpace($Build)) {
         Write-Host " （带 -Build 但 SkipBuild，re-configure + 增量 rebuild）"
-        & cmake -S $repoRoot -B $BuildDir -DCMAKE_BUILD_TYPE=Release @buildStampArg
+        & cmake -S $repoRoot --preset windows-release @buildStampArg
         if ($LASTEXITCODE -ne 0) { Fail "cmake re-configure 失败（退出码 $LASTEXITCODE）" }
-        & cmake --build $BuildDir --config Release
+        & cmake --build $BuildDir --parallel
         if ($LASTEXITCODE -ne 0) { Fail "cmake --build（增量）失败（退出码 $LASTEXITCODE）" }
     }
 }

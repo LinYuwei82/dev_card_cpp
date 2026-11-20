@@ -56,7 +56,7 @@ ctest --test-dir build/release --output-on-failure
 - **会话持久化（1.2.2 起）**：登录会话落盘 `data_dir/sessions.json`（TTL 12 小时 = `kSessionTtlSeconds = 43200`），进程重启后旧 cookie 仍有效，不再每次重启都弹登录页；`last_seen` 由 `steady_clock` 改为 Unix epoch 秒（`steady_clock` 进程重启会重置且无法序列化）。创建 / 销毁 / 按用户失效会话与恢复备份后自动重写该文件；滑动 TTL 只改内存（性能考虑），所以 `last_seen` 落盘值有滞后。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」，超出时明确告知会截断。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0 / 公司名行 `x1-x0` = 44.35 mm，16 字那张截掉末尾「分公司」，整份文本层逐字相同。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt；Windows 侧新架构壳**已编译，`/VERYSILENT` 安装与卸载实测通过**，交互与实物打印仍待补（§10.9）。
-- **Windows**：先跑 `powershell -ExecutionPolicy Bypass -File shell/win/fetch-webview2.ps1` 取 WebView2 SDK（固定版本 + SHA256，不入库），再 `cmake -S . -B build/windows` + 构建；要求 VS2022 Build Tools 与 WebView2 Runtime。安装/卸载已按 `/VERYSILENT` 跑通；向导页、SmartScreen、WebView2 Runtime 缺失场景、导出桥与打印实物仍按 [§10.9](docs/改造技术方案.md) 逐条验证后再宣称可用。
+- **Windows**：先跑 `powershell -ExecutionPolicy Bypass -File shell/win/fetch-webview2.ps1` 取 WebView2 SDK（固定版本 + SHA256，不入库），再在已跑过 `vcvars64.bat` 的「x64 Native Tools Command Prompt for VS 2022」里执行 `cmake --preset windows-release` + `cmake --build --preset windows-release`（Ninja 单配置，产物在 `build/windows\shell\win\DevCard.exe`、`build/windows\server\devcard-server.exe`，没有 `Release\` 子目录）；要求 VS2022 Build Tools 与 WebView2 Runtime。安装/卸载已按 `/VERYSILENT` 跑通；向导页、SmartScreen、WebView2 Runtime 缺失场景、导出桥与打印实物仍按 [§10.9](docs/改造技术方案.md) 逐条验证后再宣称可用。
 
 ### 2.1 macOS 打包（一条命令）
 
@@ -157,7 +157,7 @@ dev_card_cpp/
 - macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico`（`shell/win/DevCard.ico`）、web `favicon.ico`、浏览器 shortcut icon（`favicon-16/32/48x*.png`）、Apple Touch（`apple-touch-icon.png`）、PWA 图标（`icons/pwa-*.png` + `icons/pwa-maskable-*.png`）与分享预览（`og-image.png`）**全部由 `tools/package/make_icons.sh` 从同一份母版统一生成**。母版已更新为 SF Pro Black 并转曲，三端几何与色彩一致。
 - Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/package_windows.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
-- CI 已接 GitHub Actions（`.github/workflows/ci.yml`）：Windows job 取 WebView2 SDK 后构建、跑 5 条 `ctest`（core / web_assets / no_opposans / embed_web / api_contract），并打绿色包上传 artifact；macOS job 构建并跑同一组测试。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
+- CI 已接 GitHub Actions（`.github/workflows/ci.yml`）：Windows job 配好 x64 MSVC 环境后用 `windows-release` preset 构建、跑 5 条 `ctest`（core / web_assets / no_opposans / embed_web / api_contract），并打绿色包上传 artifact；macOS job 用 `macos-release` preset 构建并跑同一组测试。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
 
 **当前已知边界（照实写）**：
