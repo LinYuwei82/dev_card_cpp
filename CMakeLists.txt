@@ -22,16 +22,16 @@ endif()
 # 默认 ON，构建行为与之前完全一致；留作将来 Win7/8 独立分支换壳的入口。
 # 注意：这不解决 Win7/8 的真正卡点（WebView2 Runtime 109、toolset 降级），见 docs §13。
 option(DEVCARD_BUILD_SHELL "构建桌面壳（macOS WKWebView / Windows WebView2）" ON)
-# 可选的构建号（Windows UTC yyyyMMddHHmm）。传入后编译期注入 DEVCARD_BUILD，
+# 可选的构建号（发布 tag v<semver>+<seq> 的序号）。传入后编译期注入 DEVCARD_BUILD，
 # 客户端同版本重发时按 build 比较（远端 build 大于本地才提示更新）；不传则
 # compiled_build_number() 返回 0，客户端回退到当前「同版本不比 build」的逻辑。
-# 统一用 tools/release/gen_build.py 生成（保证 > 线上 manifest.json 的 build 最大值）。
+# 正式发布由 tools/release/release_tag.py 取号（build = seq），再传入这里。
 set(DEVCARD_DEFAULT_BUILD "999999999")
-set(DEVCARD_BUILD "" CACHE STRING "构建号（gen_build.py 生成；开发态留空回落到 999999999）")
-option(DEVCARD_RELEASE_BUILD "发布/出包构建：DEVCARD_BUILD 必须显式提供（由 gen_build.py 生成）" OFF)
+set(DEVCARD_BUILD "" CACHE STRING "构建号（发布 tag 的 seq；开发态留空回落到 999999999）")
+option(DEVCARD_RELEASE_BUILD "发布/出包构建：DEVCARD_BUILD 必须显式提供（发布 tag 的 seq）" OFF)
 if(DEVCARD_RELEASE_BUILD)
   if(DEVCARD_BUILD STREQUAL "")
-    message(FATAL_ERROR "发布/出包构建必须显式指定 -DDEVCARD_BUILD=<build>，推荐：\n  BUILD=$(python3 tools/release/gen_build.py --product devcard --repo-root .)\n  cmake -B build -DDEVCARD_RELEASE_BUILD=ON -DDEVCARD_BUILD=$BUILD ...")
+    message(FATAL_ERROR "发布/出包构建必须显式指定 -DDEVCARD_BUILD=<seq>（发布 tag v<semver>+<seq> 的序号），例如：\n  cmake -B build/release -DDEVCARD_RELEASE_BUILD=ON -DDEVCARD_BUILD=2 ...")
   endif()
   if(NOT DEVCARD_BUILD MATCHES "^[0-9]+$")
     message(FATAL_ERROR "DEVCARD_BUILD 必须是纯数字：${DEVCARD_BUILD}")
@@ -44,7 +44,7 @@ elseif(DEVCARD_BUILD STREQUAL "")
   set(DEVCARD_BUILD "${DEVCARD_DEFAULT_BUILD}" CACHE STRING "" FORCE)
 endif()
 if(DEVCARD_BUILD STREQUAL DEVCARD_DEFAULT_BUILD)
-  message(WARNING "构建号 ${DEVCARD_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/package_macos.sh（内部调用 gen_build.py 自动生成）。")
+  message(WARNING "构建号 ${DEVCARD_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/package_macos.sh / package_windows.ps1（发布号来自 tag 序号）。")
 endif()
 message(STATUS "DevCard 版本：${DEVCARD_VERSION_STRING}")
 # SQLite 的唯一入口：两个平台都编译仓库自带的 amalgamation，不链接系统 libsqlite3。

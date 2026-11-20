@@ -14,7 +14,7 @@
 #
 # 用法：
 #   tools/release/publish_windows.sh                       # 自动找 dist/ 产物 + 自动识别构建号
-#   BUILD=202611180930 tools/release/publish_windows.sh
+#   BUILD=2 tools/release/publish_windows.sh
 #   ZIP_PATH=... SETUP_PATH=... tools/release/publish_windows.sh
 #   DRY_RUN=1 tools/release/publish_windows.sh             # 只生成清单 + 门禁，不上传
 #   ROLLOUT_PERCENT=10 MANDATORY=1 MANDATORY_REASON=SECURITY \

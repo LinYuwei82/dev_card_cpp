@@ -2,13 +2,13 @@
 
 ### 本次变更
 
-- **构建号可核对**：CMake 新增可选参数 `DEVCARD_BUILD=<UTC yyyyMMddHHmm>`，经 `cmake/devcard_version.cmake` 的 `devcard_add_build_stamp()` 拆分为整型与字符串双宏（`DEVCARD_BUILD_STAMP=<整数>` 给 core 里 `compiled_build_number()` 读、`DEVCARD_BUILD_STAMP_STR="<字符串>"` 给 shell/win/main.cpp 拼 `"DEVCARD_BUILD_STAMP="` 可执行文件内 grep 标记），打入所有生产 target（devcard_core / devcard_server / devcard-server / DevCard 壳 / 三测试 target）。客户端同版本重发时按清单 `build > 本机构建号` 才提示更新，未注入时自动回退到只比 version。本机 Windows 验证脚本 `tools/release/verify_build_stamp.ps1`（PowerShell 5 零依赖，T1–T7 全链路覆盖），guard.py preflight 强制 DevCard v2 清单同时含 `platforms.macos + platforms.windows`。
+- **构建号可核对**：CMake 新增可选参数 `DEVCARD_BUILD=<seq>`，经 `cmake/devcard_version.cmake` 的 `devcard_add_build_stamp()` 同时注入 `DEVCARD_BUILD`（整数，给 core 里 `compiled_build_number()` 读）与 `DEVCARD_BUILD_STR`（字符串，给 `shell/win/main.cpp` 拼 `"DEVCARD_BUILD="` 可执行文件内 grep 标记），打入所有生产 target（devcard_core / devcard_server / devcard-server / DevCard 壳 / 各测试 target）。客户端同版本重发时按清单 `build > 本机构建号` 才提示更新，未注入时自动回退到只比 version。构建号来源为发布 tag `v<semver>+<seq>` 的序号（1.3.0 当时为历史取号方式，1.3.1 起统一为 tag 序号）。本机 Windows 验证脚本 `tools/release/verify_build_stamp.ps1`，guard.py preflight 强制 DevCard v2 清单同时含 `platforms.macos + platforms.windows`。
 - **Windows 构建适配新版 SDK**：修正接口契约测试中 `winsock2.h` / `ws2tcpip.h` 的包含顺序，解决 Windows SDK 10.0.26100 下的编译失败，CI 恢复通过。
 - **macOS 签名与公证**：安装包使用 Developer ID 签名，附带安全时间戳并完成 Apple 公证。
 
 ### 构建与分发
 
-- Windows 安装包与绿色版同步更新，构建号 `202611191436`。
+- Windows 安装包与绿色版同步更新；构建号以当次发布 tag 为准（1.3.0 为历史发布，1.3.1 起构建号 = tag 序号）。
 
 ### 下载
 

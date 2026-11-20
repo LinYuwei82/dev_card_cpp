@@ -15,7 +15,7 @@
 #   configure 走 CMakePresets.json 的 macos-release preset（Ninja +
 #   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build/release/，与 tools/package/package_macos.sh
 #   的默认 BUILD_DIR（<repo>/build/release）是同一目录。本脚本只负责「编出来」；DMG 打包
-#   （依赖自检、ad-hoc 签名、hdiutil）仍由 package_macos.sh 负责，构建完直接复用产物：
+#   （依赖自检、Developer ID 签名 + Apple 公证、hdiutil）仍由 package_macos.sh 负责，构建完直接复用产物：
 #       tools/package/package_macos.sh --skip-build
 #   本脚本不反过来调用 package_macos.sh：构建入口与发布入口分开，避免每次构建都触发打包。
 #

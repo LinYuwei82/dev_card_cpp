@@ -6,10 +6,10 @@ Sparkle 拉这个 feed 做版本检查。appcast.xml 是一个 RSS，每个 chan
 
 用法：
     python3 generate_appcast.py \\
-        --version 1.2.0 \\
-        --build 2024111601 \\
-        --dmg-url https://oss.example.com/devcard/devcard-1.2.0-macos-arm64.dmg \\
-        --dmg /path/to/devcard-1.2.0-macos-arm64.dmg \\
+        --version 1.3.1 \\
+        --build 2 \\            # 发布 tag 的序号（v<semver>+<seq> 的 seq）
+        --dmg-url https://dl.xiaotu.online/devcard/devcard-1.3.1-macos-arm64.dmg \\
+        --dmg /path/to/devcard-1.3.1-macos-arm64.dmg \\
         --sig xxxxxxx \\          # 或者直接 --sign-dmg，脚本内部调 OpenSSL 签
         --release-notes "https://..." \\
         --output appcast.xml

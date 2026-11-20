@@ -1,5 +1,9 @@
 # 应用图标
 
+> **当前做法**：三端图标（macOS `.icns`、Windows `.ico`、web favicon / Apple Touch / PWA / OG）统一由 `tools/package/make_icons.sh` 从母版 `png/icon-1024.png` 生成，不要手工逐尺寸导出。下文的 `sips` / `iconutil` / ImageMagick 命令是早期手工流程，仅作原理参考。
+>
+> 产物位置：`shell/mac/DevCard.icns`、`shell/win/DevCard.ico`、`web/` 下各 PNG/ICO。macOS 的 `Info.plist` 由 CMake 生成（`CFBundleIconFile=DevCard.icns`），图标随包复制到 `Contents/Resources/`；Windows `.ico` 由 `shell/win/app.rc` 引用，安装包 `SetupIconFile` 复用同一文件。
+
 ## 图形与理由
 
 **深青底 + 米白 DC 字标。**
@@ -36,7 +40,7 @@ sips -z 1024 1024 png/icon-1024.png --out icon.iconset/icon_512x512@2x.png
 iconutil -c icns icon.iconset -o icon.icns
 ```
 
-接入 `.app`：在 `Info.plist` 写 `CFBundleIconFile = icon`，把 `icon.icns` 放进 `Contents/Resources/`。
+接入 `.app`：CMake 生成的 `Info.plist` 已写 `CFBundleIconFile=DevCard.icns`，并把 `DevCard.icns` 放进 `Contents/Resources/`；手工流程仅作参考。
 
 ## 生成 Windows `.ico`
 

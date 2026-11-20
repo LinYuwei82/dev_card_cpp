@@ -5,14 +5,14 @@
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File tools\release\verify_build_stamp.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\release\verify_build_stamp.ps1 -Stamp 202611211200
+#   powershell -ExecutionPolicy Bypass -File tools\release\verify_build_stamp.ps1 -Stamp 2
 #   powershell -ExecutionPolicy Bypass -File tools\release\verify_build_stamp.ps1 -SkipBuild
 #
 # 覆盖（逐项 PASS/FAIL）：
-#   T1  CMake configure 输出 4 行 DevCard 构建号注入（core/server/server-exe/shell-win）
+#   T1  CMake configure 对每个 target 打印 DevCard 构建号注入
 #   T2  CMakeCache.txt  DEVCARD_BUILD=<Stamp>
 #   T3  二进制可执行：devcard_core_tests（断言 DEVCARD_BUILD==Stamp）
-#   T4  devcard-server.exe 可 grep 到 "DEVCARD_BUILD=<Stamp>"
+#   T4  devcard-server.exe 的构建号由 T3 覆盖（core.lib 同源）
 #   T5  DevCard.exe（shell win）可 grep 到 "DEVCARD_BUILD=<Stamp>"
 #   T6  不带 DEVCARD_BUILD 构建 → 二进制内无该标记（fallback local_build=0）
 #   T7  manifest_v2.py generate → 产物 build 字段 == Stamp（签名密钥需本机）
@@ -174,7 +174,7 @@ Pass "T4" "已由 T3 devcard_core_tests 覆盖（core.lib = server.exe 运行时
 # ---------- T5: DevCard.exe（shell win）grep 字符串 ----------
 # DevCard.exe 壳层通过 shell/win/main.cpp 的 kBuildStamp 常量拼
 #   const char kBuildStamp[] = "DEVCARD_BUILD=" DEVCARD_BUILD_STR;
-# 所以二进制里必然出现 "DEVCARD_BUILD=<时间戳>" 字符串（guard.py 同前缀核对）。
+# 所以二进制里必然出现 "DEVCARD_BUILD=<构建号>" 字符串（guard.py 同前缀核对）。
 $devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
 if ($devcard -and (Test-Path $devcard)) {
     Write-Host ""

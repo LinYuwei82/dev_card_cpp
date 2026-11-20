@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
 #   ... -SkipBuild                  # 复用 build\windows 产物
 #   ... -Notes "本次更新内容"        # 仅提示用途；v2 清单不再写说明文本
-#   ... -Build 202611180930         # 构建号，缺省由 gen_build.py 生成（自动校验 > 线上）
+#   ... -Build 2                    # 构建号（发布 tag 的 seq）；缺省时脚本走本地兜底取号
 #   ... -DryRun                     # 只出包与清单，不上传
 #   ... -Rollout 10                 # 灰度 10%
 #   ... -Mandatory -MandatoryReason SECURITY -MandatoryDeadline 2026-12-01T00:00:00Z

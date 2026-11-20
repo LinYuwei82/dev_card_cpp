@@ -7,10 +7,12 @@
 - 线上清单不可读时默认失败；`--allow-missing` 仅用于首次发布。
 
 用法：
-  python3 tools/release/check_version_bump.py --build 20261120123000 \
+  python3 tools/release/check_version_bump.py --build 7 \
       --manifest-url https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json
-  python3 tools/release/check_version_bump.py --build 20261120123000 \
+  python3 tools/release/check_version_bump.py --build 7 \
       --manifest-file /tmp/manifest.json
+
+构建号即发布 tag `v<semver>+<seq>` 的序号（从 1 起）。
 """
 from __future__ import annotations
 
