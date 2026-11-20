@@ -50,13 +50,28 @@ if ([string]::IsNullOrWhiteSpace($version)) {
 Write-Host "版本：$version（来源 VERSION.txt）"
 
 # ---------- 1. 构建 ----------
-# 构建号：传入 -Build 时 configure 里加 -DDEVCARD_BUILD，让编译期宏 DEVCARD_BUILD_STAMP
-# 打进二进制；同时打开严格发布开关，拒绝占位构建号。缺省（空字符串）即不注入，
-# 保持开发态可编（不启用严格开关）。
-$buildStampArg = @()
-if (-not [string]::IsNullOrWhiteSpace($Build)) {
-    $buildStampArg = @("-DDEVCARD_BUILD=$Build", "-DDEVCARD_RELEASE_BUILD=ON")
+# 构建号：显式 -Build 优先；缺省时与另两仓一致，用 gen_build.py 自动生成，再通过
+# -DDEVCARD_BUILD 注入编译期宏 DEVCARD_BUILD_STAMP，并打开严格发布开关。
+if ([string]::IsNullOrWhiteSpace($Build)) {
+    $genBuild = Join-Path $repoRoot "tools\release\gen_build.py"
+    if (-not (Test-Path -LiteralPath $genBuild)) { Fail "缺少 $genBuild，无法生成构建号" }
+    # Windows 上 python3 常是 Store 占位程序，优先用 python
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
+    if (-not $py) { Fail "未找到 python，无法调用 gen_build.py" }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $genOutput = & $py.Source $genBuild --product devcard --repo-root $repoRoot 2>&1
+    $ErrorActionPreference = $prevEap
+    $genText = ($genOutput | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $genText -notmatch '^\d{4,}$') {
+        Fail "gen_build.py 生成构建号失败（退出码 $LASTEXITCODE）：$genText"
+    }
+    $Build = $genText
+    Write-Host "构建号：$Build（来源 gen_build.py）"
 }
+
+$buildStampArg = @("-DDEVCARD_BUILD=$Build", "-DDEVCARD_RELEASE_BUILD=ON")
 if (-not $SkipBuild) {
     Write-Host "构建：$BuildDir（Release）"
     Write-Host "  cmake configure：$BuildDir -DDEVCARD_BUILD=$Build"
