@@ -61,6 +61,19 @@ done
 [ -f "$REPO_ROOT/VERSION.txt" ] || fail "找不到 VERSION.txt"
 command -v python3 >/dev/null || fail "需要 python3"
 
+# 构建号：缺省由 gen_build.py 生成（year*10^12 + git_count，自动校验 > 线上），
+# 与 Windows 发布、另两仓库同口径；DEVCARD_BUILD 可显式覆盖。
+if [ -z "${DEVCARD_BUILD:-}" ]; then
+    DEVCARD_BUILD="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
+        --product devcard --repo-root "$REPO_ROOT")" \
+        || fail "gen_build.py 失败，无法生成构建号（可用 DEVCARD_BUILD 显式指定）"
+fi
+case "$DEVCARD_BUILD" in
+    ''|*[!0-9]*) fail "构建号必须为纯数字：$DEVCARD_BUILD" ;;
+esac
+export DEVCARD_BUILD
+echo "build：$DEVCARD_BUILD"
+
 # v2 清单签名种子（manifest.json 用；Sparkle 私钥只管 appcast，两者不能混用）
 SIGN_KEY="${DEVCARD_SIGN_KEY:-$HOME/.config/devcard/manifest-keys/ed25519_seed.b64}"
 [ -f "$SIGN_KEY" ] || fail "v2 清单签名种子不存在：$SIGN_KEY"
@@ -150,6 +163,7 @@ MANIFEST_ARGS=(
     --channel "$CHANNEL"
     --platform macos
     --version "$VERSION"
+    --build "$DEVCARD_BUILD"
     --min-os "$MIN_OS"
     --artifact "dmg=$DMG"
     --key-id "$KEY_ID"
