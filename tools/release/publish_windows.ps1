@@ -164,6 +164,10 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
     $pubHex = ($pubHex -join "").Trim()
     if ([string]::IsNullOrWhiteSpace($pubHex) -or $pubHex.Length -ne 64) { Fail "无法解析 Ed25519 公钥 hex（PS5 重定向编码问题）" }
 
+    Write-Host "  [DEBUG] pubHex=$pubHex  len=$($pubHex.Length)"
+    Write-Host "  [DEBUG] v2Setup=$v2Setup"
+    Write-Host "  [DEBUG] v2Zip=$v2Zip"
+
     Write-Host "===== 3.5/5 发布门禁（guard，v2）"
     $python = $null
     foreach ($candidate in @("python3", "python")) {
