@@ -152,8 +152,11 @@ int main() {
   }
 
   httplib::Client client("127.0.0.1", server->port());
-  client.set_connection_timeout(5, 0);
-  client.set_read_timeout(5, 0);
+  client.set_connection_timeout(15, 0);
+  client.set_read_timeout(15, 0);
+  // Windows 上复用 keep-alive 连接偶尔会撞上半关闭 socket，请求直接失败；
+  // 契约测试不关心连接复用，禁用后每次重新建连，避免负载高时误报。
+  client.set_keep_alive(false);
 
   const httplib::Headers kCsrf = {{"X-Requested-With", "DevCard"}};
   std::string cookie;  // 登录后填上，形如 sid=...
@@ -202,6 +205,13 @@ int main() {
     // /api/session/* 与 /api/health 是「免认证 + 免 CSRF」双白名单，
     // 登录本身必须在无会话时可用，所以 POST login 不带头会直达路由（401）。
     const auto no_csrf = client.Post("/api/devices", "{}", "application/json");
+    if (!no_csrf) {
+      std::cerr << "[诊断] no_csrf 请求失败 error="
+                << static_cast<int>(no_csrf.error()) << std::endl;
+    } else if (no_csrf->status != 403) {
+      std::cerr << "[诊断] no_csrf status=" << no_csrf->status
+                << " body=" << no_csrf->body << std::endl;
+    }
     CHECK(no_csrf && no_csrf->status == 403);
     if (no_csrf) {
       const json body = json::parse(no_csrf->body, nullptr, false);
