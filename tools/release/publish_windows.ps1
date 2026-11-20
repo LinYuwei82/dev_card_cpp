@@ -4,15 +4,15 @@
 #   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
 #   ... -SkipBuild                  # 复用 build-win 产物
 #   ... -Notes "本次更新内容"        # 仅提示用途；v2 清单不再写说明文本
-#   ... -Build 202611180930         # 构建号，缺省 = 当前 UTC 时间（分钟级）
+#   ... -Build 202611180930         # 构建号，缺省由 gen_build.py 生成（自动校验 > 线上）
 #   ... -DryRun                     # 只出包与清单，不上传
 #
 # 清单为统一 Schema v2（见 mote/docs/更新清单Schema-v2.md）：manifest.json
 # （platforms.windows，Ed25519 签名）。v1 清单（latest.json / windows.json）已于
 # 2026-11-18 全量删除，本脚本只生成 manifest.json（v2）。
 #
-# 构建号：v2 清单 windows 平台必须带 build（客户端同版本比对构建号），缺省取
-# 触发时刻 UTC（分钟级）；与 GitHub Actions 的构建号约定一致。
+# 构建号：v2 清单 windows 平台必须带 build（客户端同版本比对构建号），缺省由
+# tools\release\gen_build.py 生成（与 macOS 同口径，自动校验严格大于线上 build）。
 #
 # 签名种子：优先环境变量 DEVCARD_UPDATE_SIGNING_KEY（CI Secrets，32 字节种子 base64），
 # 其次本地 ~/.config/devcard/manifest-keys/ed25519_seed.b64。
@@ -45,8 +45,22 @@ if (-not (Test-Path -LiteralPath $versionFile)) { Fail "找不到 $versionFile" 
 $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($version)) { Fail "VERSION.txt 为空" }
 
-if ([string]::IsNullOrWhiteSpace($Build)) { $Build = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmm") }
-if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字，如 202611180930）" }
+# 构建号：缺省走 gen_build.py（year*10^12 + git_count，自动校验 > 线上），
+# 不再用 UTC 时间戳——三仓库统一口径，避免 macOS/Windows 各自生成导致撞号。
+if ([string]::IsNullOrWhiteSpace($Build)) {
+    $genBuild = Join-Path $repoRoot "tools\release\gen_build.py"
+    if (-not (Test-Path -LiteralPath $genBuild)) { Fail "找不到 gen_build.py：$genBuild" }
+    $py = Get-Command python3 -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+    if (-not $py) { Fail "找不到 python，无法运行 gen_build.py" }
+    $Build = (& $py.Source $genBuild --product devcard --repo-root $repoRoot 2>$null | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Build)) {
+        Fail "gen_build.py 失败，无法生成构建号（可用 -Build 显式指定）"
+    }
+    $Build = $Build.Trim()
+    Write-Host "build：$Build（来源 gen_build.py）"
+}
+if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字）" }
 
 # 签名种子：环境变量优先（CI），其次本地种子文件
 $signKeyPath = $null
