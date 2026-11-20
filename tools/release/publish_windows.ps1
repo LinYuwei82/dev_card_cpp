@@ -145,26 +145,24 @@ try {
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
 
     # PS5 重定向 python 输出会把 UTF-8 全角冒号按 OEM 编码变乱码，
-    # -replace '.*：', '' 正则匹配不上；改用 Python 直接从种子文件生成
-    # 公钥 hex，完全绕开 PS5 重定向编码问题。
-    $pyPub = @'
-import sys, base64
-seed_b64 = open(sys.argv[1]).read().strip()
-seed = base64.b64decode(seed_b64)
-if len(seed) != 32:
-    print("ERR: seed not 32 bytes", file=sys.stderr); sys.exit(1)
-# Ed25519 公钥 = SHA-512(seed)[0:32] bit-reversed + 常量，tweetnacl 已内嵌
-# 调用 manifest_v2.py pubkey --key 但直接用 Python 解析输出（内部 Unicode 无编码问题）
-import subprocess
-out = subprocess.check_output([sys.executable, sys.argv[2], "pubkey", "--key", sys.argv[1]], text=True, encoding="utf-8")
-# 取最后 64 个 hex 字符（Ed25519 公钥固定 32 字节 = 64 hex）
-import re
+    # -replace '.*：', '' 正则匹配不上；用临时 .py 文件（写文件时编码固定 UTF-8，
+    # Python 读 subprocess 内部输出也是 UTF-8）绕开所有 PS5 重定向编码问题。
+    $extractPubPy = Join-Path $env:TEMP "devcard_extract_pub_$(Get-Random).py"
+    @'
+import sys, subprocess, re
+sign_key, manifest_v2 = sys.argv[1], sys.argv[2]
+out = subprocess.check_output([sys.executable, manifest_v2, "pubkey", "--key", sign_key], text=True, encoding="utf-8")
 m = re.findall(r"[0-9a-fA-F]{64}", out)
-if m: print(m[-1], end="")
+if m: print(m[-1].strip())
 else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
-'@
-    $pubHex = & python -c $pyPub $signKeyPath (Join-Path $repoRoot "tools\release\manifest_v2.py") 2>$null
-    if ([string]::IsNullOrWhiteSpace($pubHex) -or $pubHex.Length -lt 60) { Fail "无法解析 Ed25519 公钥 hex（PS5 重定向编码问题）" }
+'@ | Out-File -FilePath $extractPubPy -Encoding utf8
+    try {
+        $pubHex = & python $extractPubPy $signKeyPath (Join-Path $repoRoot "tools\release\manifest_v2.py") 2>$null
+    } finally {
+        Remove-Item -LiteralPath $extractPubPy -Force -ErrorAction SilentlyContinue
+    }
+    $pubHex = ($pubHex -join "").Trim()
+    if ([string]::IsNullOrWhiteSpace($pubHex) -or $pubHex.Length -ne 64) { Fail "无法解析 Ed25519 公钥 hex（PS5 重定向编码问题）" }
 
     Write-Host "===== 3.5/5 发布门禁（guard，v2）"
     $python = $null
