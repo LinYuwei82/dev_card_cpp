@@ -108,6 +108,7 @@ SIG="$(python3 "$REPO_ROOT/tools/release/sign_update.py" "$DMG" | tail -1)"
 echo "===== 3/5 生成 appcast.xml"
 APPCAST_ARGS=(
     --version "$VERSION"
+    --build "$DEVCARD_BUILD"
     --dmg "$DMG"
     --dmg-url "$BASE_URL/$V2_DMG_NAME"
     --sig "$SIG"

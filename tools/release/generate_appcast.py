@@ -102,7 +102,7 @@ def build_appcast(args: argparse.Namespace) -> str:
 
     language = args.language or "zh-cn"
 
-    channel = f'<channel>\n    <title>DevCard Updates</title>\n    <link>https://devcard.anye.com/</link>\n    <description>DevCard macOS 发布更新</description>\n    <language>{escape_attr(language)}</language>\n    <lastBuildDate>{now}</lastBuildDate>\n\n    <item>\n        <title>{escape_attr(title)}</title>\n        <pubDate>{now}</pubDate>\n        <guid isPermaLink="false">{args.build or args.version}</guid>\n        <description>{description}</description>\n\n        <enclosure url="{escape_attr(args.dmg_url)}"\n                   sparkle:version="{escape_attr(args.version)}"\n                   sparkle:shortVersionString="{escape_attr(args.version)}"\n                   type="application/octet-stream"\n                   length="{dmg_size}"\n                   sparkle:edSignature="{escape_attr(sig or "")}"\n                   sparkle:sha256="{dmg_sha256}"/>\n\n    </item>\n</channel>'
+    channel = f'<channel>\n    <title>DevCard Updates</title>\n    <link>https://devcard.anye.com/</link>\n    <description>DevCard macOS 发布更新</description>\n    <language>{escape_attr(language)}</language>\n    <lastBuildDate>{now}</lastBuildDate>\n\n    <item>\n        <title>{escape_attr(title)}</title>\n        <pubDate>{now}</pubDate>\n        <guid isPermaLink="false">{args.build or args.version}</guid>\n        <description>{description}</description>\n\n        <enclosure url="{escape_attr(args.dmg_url)}"\n                   sparkle:version="{escape_attr(args.build)}"\n                   sparkle:shortVersionString="{escape_attr(args.version)}"\n                   type="application/octet-stream"\n                   length="{dmg_size}"\n                   sparkle:edSignature="{escape_attr(sig or "")}"\n                   sparkle:sha256="{dmg_sha256}"/>\n\n    </item>\n</channel>'
 
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -115,7 +115,8 @@ def build_appcast(args: argparse.Namespace) -> str:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--version", required=True, help="版本号，如 1.2.0")
-    p.add_argument("--build", default="", help="构建号，如 2024111601（可选）")
+    p.add_argument("--build", required=True,
+                   help="构建号（纯数字）；写入 sparkle:version，与 CFBundleVersion 同源")
     p.add_argument("--title", default="", help="item title（可选）")
     p.add_argument("--dmg-url", required=True, help="DMG 的 OSS 直链 URL")
     p.add_argument("--dmg", default="", help="本地 DMG 路径（用于算 size/sha256 + 可选自动签名）")
@@ -133,6 +134,8 @@ def main():
 
     if args.sign_key and not args.dmg:
         sys.stderr.write("error: --sign-key 需要 --dmg\n"); sys.exit(2)
+    if not args.build.isdigit():
+        sys.stderr.write(f"error: --build 必须是纯数字（收到 {args.build!r}）\n"); sys.exit(2)
 
     xml = build_appcast(args)
     with open(args.output, "w", encoding="utf-8") as f:
