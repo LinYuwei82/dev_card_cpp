@@ -103,7 +103,18 @@ if (-not $SkipBuild) {
     Write-Host "========== T1: cmake configure (带 DEVCARD_BUILD=$Stamp) =========="
     Push-Location $ROOT
     try {
-        $cfg = & cmake -S . -B $BUILD -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD="$Stamp" -DDEVCARD_BUILD_SHELL=ON 2>&1
+        # PowerShell 5 给外部程序传参时内联 "-DXXX=$var" 有变量展开不稳定的历史 bug，
+        # 统一用数组 splatting，每参数一个元素。
+        $cfgArgs = @(
+            "-S", ".",
+            "-B", $BUILD,
+            "-G", $GENERATOR,
+            "-A", $ARCH,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DDEVCARD_BUILD=$Stamp",
+            "-DDEVCARD_BUILD_SHELL=ON"
+        )
+        $cfg = & cmake @cfgArgs 2>&1
         $cfg | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
     } finally { Pop-Location }
 
@@ -185,7 +196,15 @@ if (-not $SkipBuild) {
     Write-Host "========== T6: 不带 DEVCARD_BUILD 回退构建 =========="
     Push-Location $ROOT
     try {
-        $cfg = & cmake -S . -B $FB -G $GENERATOR -A $ARCH -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD_SHELL=ON 2>&1
+        $cfgArgsFb = @(
+            "-S", ".",
+            "-B", $FB,
+            "-G", $GENERATOR,
+            "-A", $ARCH,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DDEVCARD_BUILD_SHELL=ON"
+        )
+        $cfg = & cmake @cfgArgsFb 2>&1
         $hits = @($cfg | Select-String -Pattern "DevCard 未注入构建号")
         if ($hits.Count -lt 4) { Fail "T6" "回退 configure 只输出 $($hits.Count) 行未注入日志，预期 ≥ 4" }
         else { Pass "T6" "回退 configure 输出 $($hits.Count) 行 DevCard 未注入构建号" }
