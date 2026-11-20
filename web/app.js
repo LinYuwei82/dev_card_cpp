@@ -565,8 +565,31 @@
 
   // checkUpdate(silent): silent=true（默认）只设顶栏 pill，不弹窗；
   // silent=false 表示用户主动触发（壳层菜单），有更新直接弹 modal，无更新弹 toast。
+  //
+  // Windows WebView2 壳里优先走 hostObjects.updater_win bridge（原生桥 + 验签），
+  // 浏览器里或 bridge 不可用时退回原有 HTTP 路径（/api/version + remoteCheck 拉 OSS 清单）。
   function checkUpdate(silent) {
     if (silent === undefined) silent = true;
+    lastCheckSilent = silent;
+
+    // —— Windows WebView2 壳优先走 updater_win bridge ——
+    var bridge = winUpdaterBridge();
+    if (bridge) {
+      // 静默检查也直接触发壳的清单拉取（updater_win 内部自己节流，不会重复打）
+      return bridge.checkNow().then(function () {
+        // 结果异步到达：chrome.webview.message → bridgeCheckNowResult
+        // 主动检查时等待一下让结果先回来，再决定要不要弹 modal
+        if (!silent) {
+          return bridge.poll().then(function (status) {
+            // poll 拿到的是 updater_win.statusJson() 结果
+            // bridgeCheckNowResult 已经在 message 事件里处理了 UI
+            return status;
+          });
+        }
+      });
+    }
+
+    // —— HTTP 兜底路径（浏览器或 macOS Sparkle 壳）——
     return api('GET', '/api/version')
       .then(function (data) {
         state.update = data || null;
@@ -649,6 +672,14 @@
       ];
     }
     if (/Windows/i.test(ua)) {
+      // Windows WebView2 壳有 updater_win bridge：自动下载+校验+静默安装
+      if (isWinWebview() && winUpdaterBridge()) {
+        return [
+          '点「安装并重启」，由壳层自动完成：拉取签名清单、下载安装包、SHA256 校验、',
+          '退出当前进程并运行安装器（ISCC /VERYSILENT 覆盖旧版）、自动重启新版。',
+          '数据目录在用户目录，升级不动它；也可在顶栏菜单「帮助 → 检查更新」手动触发。'
+        ];
+      }
       return [
         '点「下载更新包」把安装包下载到数据目录并校验（只下载，不安装）；也可打开下载页手动下载。',
         '先退出 DevCard，再运行安装包，装到原来的目录覆盖旧版本。',
@@ -719,12 +750,18 @@
       asset = null;
       state.updateAsset = null;
     }
+    // Windows WebView2 壳有 updater_win bridge：壳自己拉 manifest.json + WinHTTP 下载 +
+    // BCrypt SHA256 校验，不依赖前端 HTTP 服务的 asset/sh256/size。
+    var hasWinBridge = isWinWebview() && winUpdaterBridge();
     // macOS 桌面壳不需要前端下载安装包：Sparkle 自己下载并验签。
-    el.updateDownloadPackage.disabled = canSparkle || versionMismatch ||
-      !(asset && asset.sha256 && asset.size && isAdmin);
-    if (versionMismatch) {
+    el.updateDownloadPackage.disabled = canSparkle ||
+      (hasWinBridge ? false : (versionMismatch || !(asset && asset.sha256 && asset.size && isAdmin)));
+    if (versionMismatch && !hasWinBridge) {
       setUpdateProgress('清单里的安装包是 v' + assetVersion + '，与最新版本 v' + latest +
         ' 不一致，已停用自动安装（否则会装回旧版并反复提示更新）；请用下载页手动更新。', true);
+    } else if (hasWinBridge) {
+      setUpdateProgress('Windows 自动更新：点「下载更新包」由壳层 WinHTTP 拉清单并校验，' +
+        '或直接点「安装并重启」让壳层自动完成下载+校验+安装。');
     } else if (canSparkle) {
       setUpdateProgress('macOS 走 Sparkle 自动更新：点下方「用 Sparkle 安装并重启」，' +
         '在系统弹出的窗口中完成下载、验签与安装。');
@@ -738,10 +775,10 @@
       setUpdateProgress('');
     }
     // 阶段二：Windows 安装版走安装器；macOS 走 Sparkle。
-    // Windows 按钮先禁用，下载并通过校验后才放开；Sparkle 自己下载，不需要先点「下载更新包」。
     el.updateInstall.textContent = canSparkle ? '用 Sparkle 安装并重启' : '安装并重启';
     el.updateInstall.hidden = !(isAdmin && (isWindows || canSparkle));
-    el.updateInstall.disabled = isWindows || versionMismatch;
+    // Windows bridge 壳：壳自己管理下载+校验+安装，不需要先手动点下载
+    el.updateInstall.disabled = hasWinBridge ? false : (isWindows || versionMismatch);
     state.updateInstalling = false;
     // 服务端若已有「下载并校验完成」的包（同一次运行里关掉弹窗再打开），
     // 直接放开「安装并重启」，不必重新下载一遍。
@@ -796,18 +833,28 @@
   el.updateInstall.addEventListener('click', function () {
     if (state.updateInstalling) return;
     // macOS：交给 Sparkle 完成检查、下载、安装与重启。
-    // 服务端 /api/update/install 只在 Windows 实现，mac 不走这条路。
     if (isMacShell()) {
-      // 只用 Sparkle：不锁按钮，Sparkle 窗口是异步的，锁了会让用户以为卡死。
       if (!sendToShell('checkForUpdates')) {
         setUpdateProgress('当前不在桌面壳内，无法调用 Sparkle；请用下载页手动更新。', true);
         return;
       }
       el.updateInstall.disabled = true;
       setTimeout(function () { el.updateInstall.disabled = false; }, 3000);
-      setUpdateProgress('已请求 Sparkle 检查更新：按它弹出的窗口完成下载与安装。若没有弹出窗口，说明当前版本未启用 Sparkle，请用下载页手动更新。');
+      setUpdateProgress('已请求 Sparkle 检查更新：按它弹出的窗口完成下载与安装。');
       return;
     }
+    // Windows WebView2 壳：走 hostObjects.updater_win.installUpdate()
+    var bridge = winUpdaterBridge();
+    if (bridge) {
+      el.updateInstall.disabled = true;
+      setUpdateProgress('正在启动安装程序（ISCC /VERYSILENT 覆盖旧版）…');
+      bridge.installUpdate().catch(function (err) {
+        el.updateInstall.disabled = false;
+        setUpdateProgress('安装启动失败：' + (err && err.message ? err.message : err), true);
+      });
+      return;
+    }
+    // HTTP 兜底（服务端安装器）
     state.updateInstalling = true;
     el.updateInstall.disabled = true;
     setUpdateProgress('正在启动安装程序，服务即将停止…');
@@ -906,20 +953,31 @@
   }
 
   el.updateDownloadPackage.addEventListener('click', function () {
+    // Windows WebView2 壳：走 updater_win.downloadUpdate()，壳自己拉 manifest + 下载 + SHA256 校验
+    var bridge = winUpdaterBridge();
+    if (bridge) {
+      el.updateDownloadPackage.disabled = true;
+      setUpdateProgress('正在下载更新包（壳层 WinHTTP + BCrypt SHA256）…');
+      bridge.downloadUpdate().catch(function (err) {
+        el.updateDownloadPackage.disabled = false;
+        setUpdateProgress('下载启动失败：' + (err && err.message ? err.message : err), true);
+      });
+      return;
+    }
+    // macOS 壳或浏览器：走 HTTP 路径
     var asset = state.updateAsset;
     if (!asset || !asset.sha256 || !asset.size || state.updateDownloading) return;
-    var bridge = window.webkit && window.webkit.messageHandlers &&
-                 window.webkit.messageHandlers.devcard;
-    if (!window.__devcardShell || !bridge) {
+    var macBridge = window.webkit && window.webkit.messageHandlers &&
+                    window.webkit.messageHandlers.devcard;
+    if (!window.__devcardShell || !macBridge) {
       startUpdateDownload('');
       return;
     }
-    // 默认名用清单里的资产名（已含版本号与平台）；缺失时按版本号补一个 dmg 名。
     var has_ext = /\.[A-Za-z0-9]+$/.test(asset.name || '');
     var filename = has_ext ? asset.name
                            : 'DevCard-' + state.updateAssetVersion + '.dmg';
     pickUpdateSavePath(filename).then(function (path) {
-      if (!path) return;  // 取消：安静退出，不落文件、不改任何状态
+      if (!path) return;
       startUpdateDownload(path);
     });
   });
@@ -2097,6 +2155,109 @@
   function isMacShell() {
     return /Macintosh|Mac OS X/i.test(navigator.userAgent || '') && hasNativeBridge();
   }
+
+  // Windows WebView2 壳：有 chrome.webview + hostObjects（由 main.cpp 注册 updater_win）。
+  function isWinWebview() {
+    return !!(/Windows/i.test(navigator.userAgent || '') &&
+      window.chrome && window.chrome.webview && window.chrome.webview.hostObjects);
+  }
+
+  // Windows updater_win bridge：懒加载 hostObject。返回对象有 4 个方法，
+  // 每个都把 WebView2 异步代理（不保证 .then）包一层 async。
+  // 壳的异步回调（进度/结果）走 chrome.webview.addEventListener('message', ...)。
+  var winUpdaterBridgeInstance = null;
+  var winUpdaterListenerInstalled = false;
+
+  function winUpdaterBridge() {
+    if (!isWinWebview()) return null;
+    var hostObjects = window.chrome.webview.hostObjects;
+    if (!hostObjects || !hostObjects.updater_win) return null;
+    if (winUpdaterBridgeInstance) return winUpdaterBridgeInstance;
+
+    var updater = hostObjects.updater_win;
+    var result = {
+      checkNow: async function () { await updater.checkNow(); },
+      downloadUpdate: async function () { await updater.downloadUpdate(); },
+      installUpdate: async function () { await updater.installUpdate(); },
+      cancelPrefetch: async function () { await updater.cancelPrefetch(); },
+      statusJson: async function () {
+        var raw = await updater.statusJson();
+        try { return JSON.parse(raw); } catch (_) { return {}; }
+      },
+      // 等壳 checkNow 完成后（chrome.webview.message 事件）从 statusJson 取最新状态。
+      poll: function () {
+        return new Promise(function (resolve) {
+          setTimeout(function () {
+            updater.statusJson().then(function (raw) {
+              try { resolve(JSON.parse(raw)); } catch (_) { resolve({}); }
+            });
+          }, 800);  // 给 WinHTTP 拉 manifest 留一点时间
+        });
+      },
+    };
+    winUpdaterBridgeInstance = result;
+
+    // 一次性安装 message listener：壳 updater_win 完成检查/下载/安装后
+    // 用 chrome.webview.PostWebMessageAsJson 推 event+code+status。
+    if (!winUpdaterListenerInstalled) {
+      winUpdaterListenerInstalled = true;
+      window.chrome.webview.addEventListener('message', function (event) {
+        var msg = event && event.data;
+        if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (_) { msg = null; } }
+        if (!msg || typeof msg !== 'object' || !msg.event) return;
+        // 让 state.update / updateCheck 反映 bridge 结果
+        if (msg.event === 'checkNow') {
+          // msg.status = updater_win.statusJson()（检查后的最新状态）
+          // 用 status.manifest_version / status.manifest_build 判断有无更新
+          bridgeCheckNowResult(msg);
+        } else if (msg.event === 'downloadUpdate') {
+          bridgeDownloadResult(msg);
+        } else if (msg.event === 'installUpdate') {
+          bridgeInstallResult(msg);
+        }
+      });
+    }
+    return result;
+  }
+
+  // bridge 回调 → 界面状态更新。msg = {event, code, status: {...}}
+  function bridgeCheckNowResult(msg) {
+    var status = msg.status || {};
+    if (msg.code === 'UPDATE_AVAILABLE') {
+      var version = status.manifest_version || '';
+      var notes = status.notes_url || '';
+      if (version) {
+        state.update = { update_available: true, latest: version, notes: notes };
+        setUpdatePill(version, notes);
+        // 非静默检查 → 弹 modal
+        if (!lastCheckSilent && typeof openUpdateModal === 'function') openUpdateModal();
+      }
+    } else if (msg.code === 'NO_UPDATE') {
+      state.update = { update_available: false };
+      el.updatePill.hidden = true;
+      if (!lastCheckSilent) toast('已是最新版 v' + (state.version || '?'));
+    } else {
+      if (!lastCheckSilent) toast('检查更新失败：' + (msg.code || ''));
+    }
+  }
+  function bridgeDownloadResult(msg) {
+    if (msg.code === 'DONE') {
+      el.updateDownloadPackage.disabled = true;
+      el.updateInstall.disabled = false;
+      setUpdateProgress('更新包已下载并通过 SHA256 校验，可以点「安装并重启」');
+    } else {
+      setUpdateProgress('下载失败：' + (msg.code || ''), true);
+    }
+  }
+  function bridgeInstallResult(msg) {
+    // 壳会直接 exec ISCC 覆盖旧版；前端基本收不到成功回传
+    if (msg.code === 'STARTED') {
+      toast('安装程序已启动，DevCard 将自动重启');
+    } else if (msg.code === 'OPEN_FAILED') {
+      toast('安装程序启动失败：' + (msg.detail || msg.code));
+    }
+  }
+  var lastCheckSilent = true;
 
   // 壳层的两条输出通道共用同一份打印 DOM，只改变输出目标。
   function sendToShell(action, payload) {
