@@ -6,6 +6,8 @@
 #   ... -Notes "本次更新内容"        # 仅提示用途；v2 清单不再写说明文本
 #   ... -Build 202611180930         # 构建号，缺省由 gen_build.py 生成（自动校验 > 线上）
 #   ... -DryRun                     # 只出包与清单，不上传
+#   ... -Rollout 10                 # 灰度 10%
+#   ... -Mandatory -MandatoryReason SECURITY -MandatoryDeadline 2026-12-01T00:00:00Z
 #
 # 清单为统一 Schema v2（见 mote/docs/更新清单Schema-v2.md）：manifest.json
 # （platforms.windows，Ed25519 签名）。v1 清单（latest.json / windows.json）已于
@@ -28,6 +30,10 @@ param(
     [switch]$SkipBuild,
     [string]$Notes = "",
     [string]$Build = "",
+    [ValidateRange(1, 100)][int]$Rollout = 100,
+    [switch]$Mandatory,
+    [ValidateSet("SECURITY", "PROTOCOL", "REGULATORY", "MIN_SUPPORTED")][string]$MandatoryReason = "",
+    [string]$MandatoryDeadline = "",
     [switch]$DryRun
 )
 
@@ -37,6 +43,17 @@ function Fail([string]$Message) {
     Write-Host ""
     Write-Host "[失败] $Message" -ForegroundColor Red
     exit 1
+}
+
+# 灰度 / 强制更新参数校验（与 Mote / 小兔同一口径）
+if ($Mandatory -and -not $MandatoryReason) {
+    Fail "强制更新必须用 -MandatoryReason 指定 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一"
+}
+if (-not $Mandatory -and ($MandatoryReason -or $MandatoryDeadline)) {
+    Fail "-MandatoryReason / -MandatoryDeadline 只在 -Mandatory 时有效"
+}
+if ($MandatoryDeadline -and $MandatoryDeadline -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') {
+    Fail "-MandatoryDeadline 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）"
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -147,6 +164,11 @@ try {
         "--key", $signKeyPath, "--out", $manifest
     )
     # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
+    $manifestArgs += @("--rollout", "$Rollout")
+    if ($Mandatory) {
+        $manifestArgs += @("--mandatory", "--mandatory-reason", $MandatoryReason)
+        if ($MandatoryDeadline) { $manifestArgs += @("--mandatory-deadline", $MandatoryDeadline) }
+    }
     if ($notesUrl) { $manifestArgs += @("--notes-url", $notesUrl) }
     if (-not (Test-Path -LiteralPath $manifest)) {
         try { Invoke-WebRequest -Uri "$baseUrl/updates/$channel/manifest.json" -OutFile $manifest -UseBasicParsing } catch {

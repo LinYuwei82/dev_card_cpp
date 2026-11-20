@@ -11,6 +11,9 @@
 #   tools/release/publish_macos.sh --skip-build       # 复用已有 build-new 产物
 #   tools/release/publish_macos.sh --notes "更新说明"  # 写进 appcast 与 notes_url
 #   tools/release/publish_macos.sh --dry-run          # 只出包与清单，不上传
+#   ROLLOUT_PERCENT=10 tools/release/publish_macos.sh # 灰度 10%
+#   MANDATORY=1 MANDATORY_REASON=SECURITY MANDATORY_DEADLINE=2026-12-01T00:00:00Z \
+#     tools/release/publish_macos.sh                  # 强制更新
 #
 # 前置条件：
 #   - 公证凭证在 Keychain profile devcard-notary（make_dmg.sh 负责签名与公证）
@@ -153,6 +156,35 @@ if [ -z "$NOTES_URL" ] && [ -n "$NOTES_PAGE" ] && [ -f "$NOTES_PAGE" ]; then
 fi
 
 echo "===== 4/5 生成 manifest.json（v2，Ed25519 签名）"
+
+# ---- 灰度与强制更新（与 Mote / 小兔同一口径，默认全量 + 非强制）----
+ROLLOUT_PERCENT="${ROLLOUT_PERCENT:-100}"
+MANDATORY="${MANDATORY:-0}"
+MANDATORY_REASON="${MANDATORY_REASON:-}"
+MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-}"
+if ! [[ "$ROLLOUT_PERCENT" =~ ^[0-9]+$ ]] \
+   || (( ROLLOUT_PERCENT < 1 || ROLLOUT_PERCENT > 100 )); then
+  echo "ROLLOUT_PERCENT 必须是 1–100 的整数：$ROLLOUT_PERCENT" >&2; exit 2
+fi
+case "$MANDATORY" in
+  0|1) ;;
+  *) echo "MANDATORY 只能是 0 或 1：$MANDATORY" >&2; exit 2 ;;
+esac
+if [ "$MANDATORY" = "1" ]; then
+  case "$MANDATORY_REASON" in
+    SECURITY|PROTOCOL|REGULATORY|MIN_SUPPORTED) ;;
+    *) echo "MANDATORY=1 时必须指定 MANDATORY_REASON（SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED）" >&2; exit 2 ;;
+  esac
+  if [ -n "$MANDATORY_DEADLINE" ] \
+     && ! [[ "$MANDATORY_DEADLINE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "MANDATORY_DEADLINE 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）" >&2; exit 2
+  fi
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 强制更新（${MANDATORY_REASON}${MANDATORY_DEADLINE:+，截止 ${MANDATORY_DEADLINE}}）"
+else
+  [ -z "$MANDATORY_REASON$MANDATORY_DEADLINE" ] || {
+    echo "MANDATORY_REASON / MANDATORY_DEADLINE 只在 MANDATORY=1 时有效" >&2; exit 2; }
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 非强制"
+fi
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
 if [ ! -s "$MANIFEST" ]; then
   curl -fsSL "$BASE_URL/updates/$CHANNEL/manifest.json" -o "$MANIFEST" 2>/dev/null || rm -f "$MANIFEST"
@@ -170,6 +202,11 @@ MANIFEST_ARGS=(
     --key "$SIGN_KEY"
     --out "$MANIFEST"
 )
+MANIFEST_ARGS+=(--rollout "$ROLLOUT_PERCENT")
+if [ "$MANDATORY" = "1" ]; then
+    MANIFEST_ARGS+=(--mandatory --mandatory-reason "$MANDATORY_REASON")
+    [ -n "$MANDATORY_DEADLINE" ] && MANIFEST_ARGS+=(--mandatory-deadline "$MANDATORY_DEADLINE")
+fi
 [ -n "$NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$NOTES_URL")
 [ -s "$MANIFEST" ] && MANIFEST_ARGS+=(--prev "$MANIFEST")
 python3 "$REPO_ROOT/tools/release/manifest_v2.py" "${MANIFEST_ARGS[@]}"
