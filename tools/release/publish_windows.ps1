@@ -144,8 +144,27 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
 
-    $pubHexLine = & python (Join-Path $repoRoot "tools\release\manifest_v2.py") pubkey --key $signKeyPath
-    $pubHex = ($pubHexLine -join "") -replace '.*：', ''
+    # PS5 重定向 python 输出会把 UTF-8 全角冒号按 OEM 编码变乱码，
+    # -replace '.*：', '' 正则匹配不上；改用 Python 直接从种子文件生成
+    # 公钥 hex，完全绕开 PS5 重定向编码问题。
+    $pyPub = @'
+import sys, base64
+seed_b64 = open(sys.argv[1]).read().strip()
+seed = base64.b64decode(seed_b64)
+if len(seed) != 32:
+    print("ERR: seed not 32 bytes", file=sys.stderr); sys.exit(1)
+# Ed25519 公钥 = SHA-512(seed)[0:32] bit-reversed + 常量，tweetnacl 已内嵌
+# 调用 manifest_v2.py pubkey --key 但直接用 Python 解析输出（内部 Unicode 无编码问题）
+import subprocess
+out = subprocess.check_output([sys.executable, sys.argv[2], "pubkey", "--key", sys.argv[1]], text=True, encoding="utf-8")
+# 取最后 64 个 hex 字符（Ed25519 公钥固定 32 字节 = 64 hex）
+import re
+m = re.findall(r"[0-9a-fA-F]{64}", out)
+if m: print(m[-1], end="")
+else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
+'@
+    $pubHex = & python -c $pyPub $signKeyPath (Join-Path $repoRoot "tools\release\manifest_v2.py") 2>$null
+    if ([string]::IsNullOrWhiteSpace($pubHex) -or $pubHex.Length -lt 60) { Fail "无法解析 Ed25519 公钥 hex（PS5 重定向编码问题）" }
 
     Write-Host "===== 3.5/5 发布门禁（guard，v2）"
     $python = $null
