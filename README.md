@@ -86,7 +86,16 @@ tools/package/package_macos.sh --feed-url https://dl.xiaotu.online/devcard/updat
 # 一条命令发布：绿色包 → 安装包 → manifest.json（platforms.windows）→ 上传 OSS
 powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1
 powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Notes "本次更新内容" -DryRun
+```
 
+在 macOS 上发布已构建好的 Windows 产物（与另两仓同名同参数）：
+
+```bash
+tools/release/publish_windows.sh            # 自动找 dist/ 产物，构建号从包内 exe 反查
+DRY_RUN=1 tools/release/publish_windows.sh  # 只生成清单 + 过门禁，不上传
+```
+
+```powershell
 # 分步执行
 # 绿色版
 powershell -ExecutionPolicy Bypass -File tools\package\package_windows.ps1
@@ -117,7 +126,7 @@ dev_card_cpp/
 ├── tools/fonts/              # 字体子集脚本（make_subset.sh：变量字体定字重 + pyftsubset，可 --verify）
 ├── tools/mac/                # macOS 构建入口（build.sh：cmake configure + build；test.sh）
 ├── tools/package/            # 打包工具：package_macos.sh（macOS DMG：构建 + 签名 + 公证 + staple）、make_icons.sh（三端图标统一生成）、package_windows.ps1（Windows 绿色包）
-├── tools/release/            # 发布入口（publish_macos.sh / publish_windows.ps1）+ 共享清单生成 manifest_v2.py + 门禁 guard.py + appcast 生成 + selftest + verify_build_stamp.ps1（Windows 构建号注入验证）
+├── tools/release/            # 发布入口（publish_macos.sh / publish_windows.sh / publish_windows.ps1）+ 共享清单生成 manifest_v2.py + 门禁 guard.py + appcast 生成 + selftest + verify_build_stamp.ps1（Windows 构建号注入验证）
 ├── tests/                    # ctest 5 条（core / web_assets / no_opposans / embed_web / api_contract）+ fixture
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
 ├── docs/                     # 技术文档、样张
