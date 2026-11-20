@@ -77,18 +77,21 @@ VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 [ -n "$VERSION" ] || fail "VERSION.txt 为空"
 echo "版本：${VERSION}（来源 VERSION.txt）"
 
-# 构建号：纯数字，单调递增；CMake 根目录通过 -DDEVCARD_BUILD 接收，
-# 传给 devcard_add_build_stamp() 注入编译期宏 + gen_info_plist.py 写入 Info.plist。
-# 2026-11-20 起：发布脚本强制要求，缺失即失败（同版本重发靠 build 区分）。
-BUILD_NUMBER="${DEVCARD_BUILD:-}"
-if [ -z "$BUILD_NUMBER" ]; then
-  fail "打包必须显式设置 DEVCARD_BUILD（纯数字、单调递增），例如：
-  DEVCARD_BUILD=\$(date -u +%Y%m%d%H) tools/package/make_dmg.sh"
+# 构建号：自动从 gen_build.py 生成（year*10^12 + git_count，单调递增，自动校验 > 线上）。
+# CMake 根目录通过 -DDEVCARD_BUILD 接收，传给 devcard_add_build_stamp() 注入编译期宏
+# + gen_info_plist.py 写入 Info.plist。用户显式传 DEVCARD_BUILD 时优先使用（兼容）。
+if [ -n "${DEVCARD_BUILD:-}" ]; then
+  BUILD_NUMBER="$DEVCARD_BUILD"
+  case "$BUILD_NUMBER" in
+    *[!0-9]*|"") fail "DEVCARD_BUILD 必须是纯数字：$BUILD_NUMBER" ;;
+  esac
+  echo "构建号：${BUILD_NUMBER}（来源 DEVCARD_BUILD 环境变量）"
+else
+  BUILD_NUMBER="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
+    --product devcard --repo-root "$REPO_ROOT")" || {
+    fail "gen_build.py 失败，无法生成构建号"; }
+  echo "构建号：${BUILD_NUMBER}（来源 gen_build.py）"
 fi
-case "$BUILD_NUMBER" in
-  *[!0-9]*|"") fail "DEVCARD_BUILD 必须是纯数字：$BUILD_NUMBER" ;;
-esac
-echo "构建号：${BUILD_NUMBER}（来源 DEVCARD_BUILD 环境变量）"
 
 APP="$BUILD_DIR/shell/DevCard.app"
 BIN="$APP/Contents/MacOS/DevCard"
