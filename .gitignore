@@ -68,3 +68,4 @@ resources/tb_device.xlsx
 ._*
 Thumbs.db
 desktop.ini
+__pycache__/
