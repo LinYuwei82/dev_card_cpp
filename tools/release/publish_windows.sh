@@ -109,12 +109,12 @@ try:
         data = zf.read(name)
 except Exception:
     sys.exit(0)
-m = re.search(rb"DEVCARD_BUILD=(\d{4,})", data)
+m = re.search(rb"DEVCARD_BUILD=(\d+)", data)
 print(m.group(1).decode() if m else "")
 PY
 )"
 if [ -n "${BUILD:-}" ]; then
-  [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "BUILD 非法：${BUILD}" >&2; exit 1; }
+  [[ "$BUILD" =~ ^[0-9]+$ ]] || { echo "BUILD 非法：${BUILD}" >&2; exit 1; }
   if [ -n "$EXE_STAMP" ] && [ "$EXE_STAMP" != "$BUILD" ]; then
     echo "BUILD=$BUILD 与绿色包内构建号 $EXE_STAMP 不一致；请用编译时的构建号" >&2
     exit 1

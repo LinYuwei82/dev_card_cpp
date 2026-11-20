@@ -64,7 +64,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     $genOutput = & $py.Source $genBuild --product devcard --repo-root $repoRoot 2>&1
     $ErrorActionPreference = $prevEap
     $genText = ($genOutput | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $genText -notmatch '^\d{4,}$') {
+    if ($LASTEXITCODE -ne 0 -or $genText -notmatch '^\d+$') {
         Fail "gen_build.py 生成构建号失败（退出码 $LASTEXITCODE）：$genText"
     }
     $Build = $genText

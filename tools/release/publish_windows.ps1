@@ -94,7 +94,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     $Build = $Build.Trim()
     Write-Host "build：$Build（来源 gen_build.py）"
 }
-if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字）" }
+if ($Build -notmatch '^\d+$') { Fail "非法构建号：$Build（应为纯数字）" }
 
 # 签名种子：环境变量优先（CI），其次本地种子文件
 $signKeyPath = $null
