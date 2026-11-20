@@ -2,9 +2,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <random>
 
+#include "devcard/sha256.h"
 #include "devcard/update_package.h"
 
 extern "C" {
@@ -236,6 +239,17 @@ SignedManifest parse_signed_manifest(std::string_view raw_json,
       result.platform.artifacts.push_back(std::move(artifact));
     }
   }
+  // rollout_percent / min_os：v2 清单可选字段，Windows 版 Windows 清单不带 min_os，
+  // macOS 版 macOS 清单不带 rollout_percent（全量）。都用 as_number_integer 容错。
+  const auto rp = section->find("rollout_percent");
+  if (rp != section->end() && rp->is_number_integer()) {
+    const int pct = rp->get<int>();
+    result.platform.rollout_percent = std::clamp(pct, 0, 100);
+  }
+  const auto mo = section->find("min_os");
+  if (mo != section->end() && mo->is_number_integer()) {
+    result.platform.min_os = mo->get<std::int64_t>();
+  }
   result.ok = true;
   return result;
 }
@@ -246,6 +260,154 @@ std::uint64_t compiled_build_number() {
 #else
   return 0;
 #endif
+}
+
+// ---- 版本号工具 ----
+
+bool parse_product_version(std::string_view text, ProductVersion& out) {
+  ProductVersion parsed;
+  std::string_view rest = text;
+  int parts[3] = {0, 0, 0};
+  for (int i = 0; i < 3; ++i) {
+    const std::size_t dot = rest.find('.');
+    const std::string_view piece = dot == std::string_view::npos ? rest : rest.substr(0, dot);
+    if (piece.empty()) return false;
+    int value = 0;
+    for (const char ch : piece) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) return false;
+      value = value * 10 + (ch - '0');
+      if (value > 100000) return false;
+    }
+    parts[i] = value;
+    if (i < 2) {
+      if (dot == std::string_view::npos) return false;
+      rest = rest.substr(dot + 1);
+    } else if (dot != std::string_view::npos) {
+      return false;
+    }
+  }
+  out = ProductVersion{parts[0], parts[1], parts[2]};
+  return true;
+}
+
+int compare_product_version(const ProductVersion& a, const ProductVersion& b) {
+  if (a.major != b.major) return a.major < b.major ? -1 : 1;
+  if (a.minor != b.minor) return a.minor < b.minor ? -1 : 1;
+  if (a.patch != b.patch) return a.patch < b.patch ? -1 : 1;
+  return 0;
+}
+
+std::string format_product_version(const ProductVersion& version) {
+  return std::to_string(version.major) + "." + std::to_string(version.minor) + "." +
+         std::to_string(version.patch);
+}
+
+const char* current_product_version() {
+#if defined(DEVCARD_VERSION)
+  return DEVCARD_VERSION;
+#else
+  return "0.0.0";
+#endif
+}
+
+// ---- 灰度分桶 ----
+
+// 从 DevCard 已有的 sha256_hex 取前 8 字符 hex → 4 字节 → uint32。
+int rollout_bucket(std::string_view install_id, std::uint64_t build) {
+  const std::string material = std::string(install_id) + ":" + std::to_string(build);
+  const std::string hex = sha256_hex(material);
+  if (hex.size() < 8) return 0;
+  auto hex_to_byte = [](char c) -> unsigned {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + c - 'a';
+    if (c >= 'A' && c <= 'F') return 10 + c - 'A';
+    return 0;
+  };
+  std::uint32_t value = 0;
+  for (int i = 0; i < 8; ++i) {
+    value = (value << 4) | hex_to_byte(hex[i]);
+  }
+  return static_cast<int>(value % 100u);
+}
+
+bool rollout_allows(int percent, int bucket) {
+  return bucket >= 0 && bucket < std::clamp(percent, 0, 100);
+}
+
+std::int64_t check_retry_delay(int failures) {
+  if (failures <= 1) return 60;
+  if (failures == 2) return 600;
+  return 3600;
+}
+
+// ---- 判定 ----
+
+int compare_dotted_version(std::string_view a, std::string_view b) {
+  auto parse_one = [](std::string_view text) -> std::vector<std::int64_t> {
+    std::vector<std::int64_t> parts;
+    std::int64_t current = 0;
+    bool in_number = false;
+    for (char c : text) {
+      if (c >= '0' && c <= '9') {
+        current = current * 10 + (c - '0');
+        in_number = true;
+      } else if (c == '.') {
+        parts.push_back(current);
+        current = 0;
+        in_number = false;
+      }
+    }
+    if (in_number) parts.push_back(current);
+    return parts;
+  };
+  auto pa = parse_one(a);
+  auto pb = parse_one(b);
+  const std::size_t n = std::max(pa.size(), pb.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::int64_t va = i < pa.size() ? pa[i] : 0;
+    const std::int64_t vb = i < pb.size() ? pb[i] : 0;
+    if (va != vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+UpdateDecision evaluate_manifest(const ManifestPlatform& platform, const UpdateQuery& query,
+                                 std::int64_t /*now_epoch*/) {
+  UpdateDecision decision;
+  // v2：先比版本，同版本再比 build。
+  ProductVersion remote{};
+  ProductVersion local{};
+  if (!parse_product_version(platform.version, remote) ||
+      !parse_product_version(query.version, local)) {
+    decision.code = "VERSION_INVALID";
+    return decision;
+  }
+  const int order = compare_product_version(remote, local);
+  if (order < 0) {
+    decision.code = "NO_UPDATE";
+    return decision;
+  }
+  if (order == 0 && platform.build <= query.build) {
+    decision.code = "NO_UPDATE";
+    return decision;
+  }
+  // min_os 判定：v2 清单可选字段（Windows 平台清单一般不带）。
+  if (platform.min_os > 0 && query.os_version > 0 && query.os_version < platform.min_os) {
+    decision.code = "OS_UNSUPPORTED";
+    return decision;
+  }
+  // 灰度：percent < 100 且用户不在分桶里 → NOT_IN_ROLLOUT。
+  const int percent = platform.rollout_percent > 0 ? static_cast<int>(platform.rollout_percent) : 100;
+  if (percent < 100 && !query.install_id.empty()) {
+    const int bucket = rollout_bucket(query.install_id, platform.build);
+    if (!rollout_allows(percent, bucket)) {
+      decision.code = "NOT_IN_ROLLOUT";
+      return decision;
+    }
+  }
+  decision.update_available = true;
+  decision.code = "UPDATE_AVAILABLE";
+  return decision;
 }
 
 }  // namespace devcard

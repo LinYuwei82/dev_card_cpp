@@ -44,6 +44,14 @@ target_compile_definitions(devcard_core PRIVATE
     SQLITE_DQS=0
 )
 
+# 核心版本号注入：core 层 update_manifest.cpp 的 current_product_version() 返回此值。
+# 根 CMakeLists.txt 从 VERSION.txt 读 DEVCARD_VERSION_STRING。
+if(DEFINED DEVCARD_VERSION_STRING)
+    target_compile_definitions(devcard_core PRIVATE
+        DEVCARD_VERSION="${DEVCARD_VERSION_STRING}"
+    )
+endif()
+
 set_source_files_properties(
     "${DEVCARD_SQLITE_DIR}/sqlite3.c"
     "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c"
