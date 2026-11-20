@@ -104,7 +104,7 @@ set_target_properties(DevCard PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.anye.devcard.new"
     MACOSX_BUNDLE_ICON_FILE "DevCard.icns"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${DEVCARD_VERSION_STRING}"
-    MACOSX_BUNDLE_BUNDLE_VERSION "${DEVCARD_VERSION_STRING}"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${DEVCARD_BUILD}"
 )
 
 # 子集字体随包分发到 Contents/Resources/fonts：server 的 default_font_dir()
