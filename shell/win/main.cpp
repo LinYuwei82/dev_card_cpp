@@ -1086,6 +1086,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   ShowWindow(g.hwnd, SW_SHOW);
   UpdateWindow(g.hwnd);
 
+  // 启动 Windows 自更新桥：manifest_url 默认指向 OSS 统一清单，
+  // 客户端只取 platforms.windows 段做判定。channel=stable。
+  devcard::updater::UpdaterWin::instance().start(
+      "https://dl.xiaotu.online/devcard/updates/stable/manifest.json",
+      "stable");
+
   // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
   // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。
   // 这里启动一个后台线程，每 200ms 检查一次：如果 server 想退出，就 PostMessageW(WM_CLOSE)
