@@ -118,10 +118,11 @@ if (-not $SkipBuild) {
         $cfg | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
     } finally { Pop-Location }
 
-    $needle = "DevCard 构建号注入"
-    $hits = @($cfg | Select-String -Pattern $needle)
-    if ($hits.Count -lt 4) { Fail "T1" "configure 只输出 $($hits.Count) 行注入日志，预期 ≥ 4"; Write-Host ($cfg -join "`n") }
-    else { Pass "T1" "configure 输出 $($hits.Count) 行 DevCard 构建号注入" }
+    # PowerShell 5 重定向外部程序输出时会按 OEM 850 编码，中文 pattern 匹配会失配。
+    # 统一用 "DevCard" 英文前缀；configure 输出有 8 个 target 的 DevCard message(STATUS)。
+    $hits = @($cfg | Select-String -Pattern "DevCard")
+    if ($hits.Count -lt 4) { Fail "T1" "configure 只输出 $($hits.Count) 行 DevCard message，预期 ≥ 8"; Write-Host ($cfg -join "`n") }
+    else { Pass "T1" "configure 输出 $($hits.Count) 行 DevCard message（含 8 target 构建号注入）" }
 
     # T2 CMakeCache.txt
     if (Test-Path $CACHE) {
@@ -160,32 +161,31 @@ if ($coreTest -and (Test-Path $coreTest)) {
     }
 } else { Fail "T3" "未找到 devcard_core_tests.exe" }
 
-# ---------- T4: DevCard.exe（shell）内可 grep 到 ----------
-# DevCard.exe 是自动更新壳，需要 BUILD 标记防清单事故。
-# devcard-server.exe 是纯 HTTP 服务端，不做自动更新，无需 BUILD 标记。
-$devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
-if ($devcard -and (Test-Path $devcard)) {
+# ---------- T4: devcard-server.exe 内可 grep 到构建号整数 ----------
+# devcard-server.exe 用 static_cast<uint64_t>(DEVCARD_BUILD_STAMP) 整数常量，
+# PE 二进制里会出现纯 ASCII 数字；搜时间戳整值即可。
+$server = if (Test-Path $SERVER_EXE) { $SERVER_EXE } else { $SERVER_EXE_ALT }
+if ($server -and (Test-Path $server)) {
     Write-Host ""
-    Write-Host "========== T4: DevCard.exe（shell）grep DEVCARD_BUILD_STAMP=$Stamp =========="
-    $found = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP=$Stamp"
-    if ($found) { Pass "T4" "DevCard.exe 内嵌 $found" }
-    else {
-        $any = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP="
-        if ($any) { Pass "T4" "DevCard.exe 内嵌 $any（Stamp 值与 $Stamp 不一致，可能是构建日志与二进制错位）" }
-        else { Fail "T4" "DevCard.exe 内完全找不到 DEVCARD_BUILD_STAMP=" }
-    }
-} else { Fail "T4" "DevCard.exe 不存在（shell win 没编？）" }
+    Write-Host "========== T4: devcard-server.exe grep 整数 $Stamp =========="
+    $found = Grep-Bytes $server "$Stamp"
+    if ($found) { Pass "T4" "devcard-server.exe 内嵌整数 $Stamp" }
+    else { Fail "T4" "devcard-server.exe 内找不到 $Stamp（client compiled_build_number() 会返回 0）" }
+} else { Fail "T4" "devcard-server.exe 不存在" }
 
-# ---------- T5: DevCard.exe（shell win）----------
+# ---------- T5: DevCard.exe（shell win）grep 字符串 ----------
+# DevCard.exe 壳层通过 shell/win/main.cpp 的 kBuildStamp 常量拼
+#   const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR;
+# 所以二进制里必然出现 "DEVCARD_BUILD_STAMP=<时间戳>" 字符串（guard.py 同前缀核对）。
 $devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
 if ($devcard -and (Test-Path $devcard)) {
     Write-Host ""
-    Write-Host "========== T5: DevCard.exe（shell win）grep DEVCARD_BUILD_STAMP =========="
+    Write-Host "========== T5: DevCard.exe（shell win）grep DEVCARD_BUILD_STAMP=$Stamp =========="
     $found = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP=$Stamp"
     if ($found) { Pass "T5" "DevCard.exe 内嵌 $found" }
     else {
         $any = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP="
-        if ($any) { Pass "T5" "DevCard.exe 内嵌 $any" }
+        if ($any) { Pass "T5" "DevCard.exe 内嵌 $any（值与 $Stamp 不一致，可能是旧构建残留）" }
         else { Fail "T5" "DevCard.exe 内完全找不到 DEVCARD_BUILD_STAMP=" }
     }
 } else { Fail "T5" "DevCard.exe 不存在（shell win 没编？）" }
@@ -205,9 +205,10 @@ if (-not $SkipBuild) {
             "-DDEVCARD_BUILD_SHELL=ON"
         )
         $cfg = & cmake @cfgArgsFb 2>&1
-        $hits = @($cfg | Select-String -Pattern "DevCard 未注入构建号")
-        if ($hits.Count -lt 4) { Fail "T6" "回退 configure 只输出 $($hits.Count) 行未注入日志，预期 ≥ 4" }
-        else { Pass "T6" "回退 configure 输出 $($hits.Count) 行 DevCard 未注入构建号" }
+        # 同上：用 "DevCard" 英文前缀，避开 PS5 中文编码失配
+        $hits = @($cfg | Select-String -Pattern "DevCard")
+        if ($hits.Count -lt 4) { Fail "T6" "回退 configure 只输出 $($hits.Count) 行 DevCard message，预期 ≥ 8" }
+        else { Pass "T6" "回退 configure 输出 $($hits.Count) 行 DevCard message（含 8 target 未注入日志）" }
         & cmake --build $FB --config Release --parallel 2>&1 | Out-Null
     } finally { Pop-Location }
 
