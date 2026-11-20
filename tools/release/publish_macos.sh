@@ -260,4 +260,6 @@ fi
 
 echo
 echo "发布完成：DevCard ${VERSION}（macOS ${ARCH}）"
+GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+echo "  commit：$GIT_HASH"
 echo "  manifest.json：$BASE_URL/updates/$CHANNEL/manifest.json"
