@@ -20,7 +20,7 @@ if(NOT EXISTS "${DEVCARD_WEBVIEW2_INCLUDE}/WebView2.h"
         "无网环境：给该脚本传 -LocalPackage <nupkg 路径>。")
 endif()
 
-add_executable(DevCard WIN32 main.cpp app.manifest app.rc)
+add_executable(DevCard WIN32 main.cpp updater_win.cpp app.manifest app.rc)
 devcard_add_version_rc(DevCard)
 devcard_add_build_stamp(DevCard)
 
@@ -28,7 +28,11 @@ devcard_add_build_stamp(DevCard)
 # 搜索路径，避免从别的构建目录调用时找不到图标。
 target_include_directories(DevCard PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-target_compile_definitions(DevCard PRIVATE UNICODE _UNICODE)
+target_compile_definitions(DevCard PRIVATE UNICODE _UNICODE
+    # Windows updater_win bridge 用这个 hex 编码的 Ed25519 公钥验签 manifest.json。
+    # 与 Sparkle macOS 用的是同一密钥对（base64: qYiCyNabGf5xZYo8rWFXRoRXkZA6sgfwcyGZ0JNGaXA=）。
+    DEVCARD_UPDATER_PUBKEY_HEX="a98882c8d69b19fe71658a3cad615746845791903ab207f0732199d093466970"
+)
 target_include_directories(DevCard PRIVATE
     "${DEVCARD_WEBVIEW2_INCLUDE}"
     "${PROJECT_SOURCE_DIR}/third_party/nlohmann"
@@ -49,6 +53,8 @@ target_link_libraries(DevCard PRIVATE
     gdi32
     advapi32
     winspool
+    winhttp    # updater_win bridge: WinHTTP 拉 manifest.json
+    bcrypt     # updater_win bridge: BCrypt SHA256 校验下载包
 )
 
 # 子集字体放到 exe 旁的 fonts\：server 的 default_font_dir() 在 Windows 上
