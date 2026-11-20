@@ -29,6 +29,7 @@ PACKAGE_SCRIPTS = [
 # 每个发布脚本里必须出现的构建号来源标记
 PUBLISH_SCRIPTS = {
     "tools/release/publish_macos.sh": ["gen_build.py"],
+    "tools/release/publish_windows.sh": ["gen_build.py", "DEVCARD_BUILD_STAMP"],
     "tools/release/publish_windows.ps1": ["gen_build.py"],
 }
 LEGACY_PATHS = [
