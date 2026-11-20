@@ -49,6 +49,7 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 #include <nlohmann/json.hpp>
 
 #include "devcard/server.h"
+#include "updater_win.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -80,6 +81,124 @@ struct ShellState {
 
 ShellState g;
 std::unique_ptr<devcard::ServerHandle> g_server;
+
+// updater_win bridge：异步回调需要往前端推消息。
+// ControllerCompleted 里赋值，WM_DESTROY 里清 null。
+ICoreWebView2* g_webview_for_post = nullptr;
+std::mutex g_webview_mutex;
+
+// UTF-8 → UTF-16，供 PostWebMessageAsJson。
+static std::wstring utf8_to_wide(const std::string& s) {
+  if (s.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  if (n <= 0) return L"";
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
+
+static void post_web_message_json(const std::string& json) {
+  std::lock_guard<std::mutex> lock(g_webview_mutex);
+  if (!g_webview_for_post) return;
+  g_webview_for_post->PostWebMessageAsJson(utf8_to_wide(json).c_str());
+}
+
+// 把 updater_win 的 Completion 回调接 PostWebMessage 推前端。
+static devcard::updater::Completion BindCompletion(const std::string& event) {
+  return [event](const std::string& code, const std::string& detail) {
+    nlohmann::json j;
+    j["event"] = event;
+    j["code"] = code;
+    j["detail"] = detail;
+    try {
+      j["status"] = nlohmann::json::parse(
+          devcard::updater::UpdaterWin::instance().statusJson());
+    } catch (const nlohmann::json::exception&) {
+      j["status"] = nlohmann::json::object();
+    }
+    post_web_message_json(j.dump());
+  };
+}
+
+// UpdaterHost — 最小 IDispatch 实现，暴露给前端做 WebView2 HostObject。
+class UpdaterHost : public IDispatch {
+ public:
+  UpdaterHost() : ref_(1) {}
+  ~UpdaterHost() = default;
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown || riid == IID_IDispatch) {
+      *ppv = static_cast<IDispatch*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&ref_));
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
+    if (c == 0) delete this;
+    return c;
+  }
+  HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* ctinfo) override {
+    if (!ctinfo) return E_POINTER;
+    *ctinfo = 0;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR* names, UINT count, LCID, DISPID* ids) override {
+    static const wchar_t* kNames[] = {
+        L"checkNow", L"downloadUpdate", L"installUpdate",
+        L"cancelPrefetch", L"setOptions", L"statusJson",
+        L"checkMinSupportedVersion",
+    };
+    for (UINT i = 0; i < count; ++i) {
+      ids[i] = DISPID_UNKNOWN;
+      for (UINT j = 0; j < 7; ++j) {
+        if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
+      }
+      if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(DISPID dispid, REFIID, LCID, WORD flags,
+                                   DISPPARAMS* params, VARIANT* result,
+                                   EXCEPINFO*, UINT*) override {
+    (void)flags;
+    auto& upd = devcard::updater::UpdaterWin::instance();
+    auto set_str = [&](const std::string& s) -> HRESULT {
+      if (!result) return S_OK;
+      result->vt = VT_BSTR;
+      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
+      return result->bstrVal ? S_OK : E_OUTOFMEMORY;
+    };
+    switch (dispid) {
+      case 1: upd.checkNow(BindCompletion("checkNow")); return set_str("");
+      case 2: upd.downloadUpdate(BindCompletion("downloadUpdate")); return set_str("");
+      case 3: upd.installUpdate(BindCompletion("installUpdate")); return set_str("");
+      case 4: upd.cancelPrefetch(BindCompletion("cancelPrefetch")); return set_str("");
+      case 5: {
+        if (!params || params->cArgs < 2) return E_INVALIDARG;
+        bool ac = (params->rgvarg[params->cArgs - 2].vt == VT_BOOL) &&
+                  (params->rgvarg[params->cArgs - 2].boolVal != VARIANT_FALSE);
+        bool pf = (params->rgvarg[params->cArgs - 1].vt == VT_BOOL) &&
+                  (params->rgvarg[params->cArgs - 1].boolVal != VARIANT_FALSE);
+        upd.setOptions(ac, pf, BindCompletion("setOptions"));
+        return set_str("");
+      }
+      case 6: return set_str(upd.statusJson());
+      case 7: upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion")); return set_str("");
+      default: return DISP_E_MEMBERNOTFOUND;
+    }
+  }
+
+ private:
+  LONG ref_ = 1;
+};
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return std::wstring();
@@ -796,6 +915,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       }
       return 0;
     case WM_DESTROY:
+      // updater_win 后台回调还在跑，先清 post 指针防止往已释放的 webview 推消息。
+      {
+        std::lock_guard<std::mutex> lk(g_webview_mutex);
+        if (g_webview_for_post) { g_webview_for_post->Release(); g_webview_for_post = nullptr; }
+      }
       PostQuitMessage(0);
       return 0;
     default:
@@ -834,6 +958,27 @@ bool CreateWebView() {
                   ApplySettings();
                   RegisterHandlers();
                   InjectShim();
+
+                  // updater_win bridge：把 ICoreWebView2 指针给全局变量，供
+                  // updater_win 异步回调 PostWebMessageAsJson 推前端。
+                  {
+                    std::lock_guard<std::mutex> lk(g_webview_mutex);
+                    g_webview_for_post = g.webview.Get();
+                    g_webview_for_post->AddRef();
+                  }
+                  // 注册 HostObject：前端 window.chrome.webview.hostObjects.updater_win.*
+                  {
+                    VARIANT v;
+                    v.vt = VT_DISPATCH;
+                    v.pdispVal = new UpdaterHost();
+                    HRESULT hr = g.webview->AddHostObjectToScript(L"updater_win", &v);
+                    if (FAILED(hr)) {
+                      fprintf(stderr, "[updater] AddHostObjectToScript updater_win 失败: 0x%08X\n", hr);
+                      g_webview_for_post->Release();
+                      g_webview_for_post = nullptr;
+                    }
+                  }
+
                   const std::wstring url = g.origin + L"/";
                   g.webview->Navigate(url.c_str());
                   return S_OK;
