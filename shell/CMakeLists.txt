@@ -4,7 +4,13 @@ set(DEVCARD_APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/mac/DevCard.icns")
 set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources")
 
-add_executable(DevCard MACOSX_BUNDLE mac/main.mm ${DEVCARD_APP_ICON})
+add_executable(DevCard MACOSX_BUNDLE
+    mac/main.mm
+    mac/updater.mm
+    ${DEVCARD_APP_ICON})
+target_include_directories(DevCard PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/mac"
+    "${SPARKLE_ROOT}/Sparkle.framework/Headers")
 
 # Sparkle 2 自更新框架：放在仓库 3rdparty/sparkle，随包分发。
 # CMAKE_FRAMEWORK_PATH 让 find_library 能找到；
@@ -15,7 +21,6 @@ target_link_libraries(DevCard PRIVATE devcard_server
     "-framework Cocoa" "-framework WebKit"
     "-framework PDFKit" "-framework UniformTypeIdentifiers"
     "${SPARKLE}")
-target_include_directories(DevCard PRIVATE "${SPARKLE_ROOT}/Sparkle.framework/Headers")
 set_target_properties(DevCard PROPERTIES
     BUILD_RPATH "@loader_path/../Frameworks"
     INSTALL_RPATH "@loader_path/../Frameworks"

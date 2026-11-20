@@ -1,8 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #import <PDFKit/PDFKit.h>
-#import <Sparkle/Sparkle.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
+
+#import "updater.h"
 
 #include <exception>
 #include <memory>
@@ -188,48 +189,8 @@ API_AVAILABLE(macos(11.0))
 @property(nonatomic, copy) void (^onExportResult)(BOOL ok, NSString* message);
 // 打印期间持有 PDFDocument，避免任务释放后文档被回收。
 @property(nonatomic, retain) PDFDocument* printDocument;
-// Sparkle 自更新控制器：Info.plist 里 SUFeedURL + SUPublicEDKey 都有值才初始化。
-@property(nonatomic, strong) SPUStandardUpdaterController* updaterController;
-// Sparkle 代理：把 feed 拉取/版本比较/安装结果写到 NSLog，便于端到端实测取证。
-@property(nonatomic, strong) id<SPUUpdaterDelegate> updaterDelegate;
-// App 菜单里的「检查更新…」项，Sparkle 启用后把 target 绑定到 updaterController。
-@property(nonatomic, assign) NSMenuItem* checkUpdateMenuItem;
-@end
-
-// Sparkle 更新事件日志代理。只做观测，不改变 Sparkle 的默认行为。
-@interface DevCardUpdaterDelegate : NSObject <SPUUpdaterDelegate>
-@end
-
-@implementation DevCardUpdaterDelegate
-
-- (void)updater:(SPUUpdater*)updater didFindValidUpdate:(SUAppcastItem*)item {
-  NSLog(@"[sparkle] didFindValidUpdate version=%@ display=%@ url=%@",
-        item.versionString, item.displayVersionString, item.fileURL);
-}
-
-- (void)updaterDidNotFindUpdate:(SPUUpdater*)updater error:(NSError*)error {
-  NSLog(@"[sparkle] didNotFindUpdate error=%@", error.localizedDescription);
-}
-
-- (void)updater:(SPUUpdater*)updater
-    didFailToFetchAppcastWithError:(NSError*)error {
-  NSLog(@"[sparkle] didFailToFetchAppcast error=%@ code=%ld",
-        error.localizedDescription, (long)error.code);
-}
-
-- (void)updater:(SPUUpdater*)updater didDownloadUpdate:(SUAppcastItem*)item {
-  NSLog(@"[sparkle] didDownloadUpdate version=%@", item.versionString);
-}
-
-- (void)updater:(SPUUpdater*)updater willInstallUpdate:(SUAppcastItem*)item {
-  NSLog(@"[sparkle] willInstallUpdate version=%@", item.versionString);
-}
-
-- (void)updater:(SPUUpdater*)updater didAbortWithError:(NSError*)error {
-  NSLog(@"[sparkle] didAbortWithError error=%@ code=%ld",
-        error.localizedDescription, (long)error.code);
-}
-
+// Sparkle 自更新桥（从 shell/mac/updater.h 引入；桥内部持有 controller + delegate）。
+@property(nonatomic, strong) DevCardUpdaterBridge* updaterBridge;
 @end
 
 @implementation PrintBridge
@@ -285,11 +246,8 @@ API_AVAILABLE(macos(11.0))
     }
   } else if ([action isEqualToString:@"checkForUpdates"]) {
     // Sparkle 自更新：前端用户点「安装并重启」时转调 Sparkle。
-    // 开发期没有 SUFeedURL / SUPublicEDKey，updaterController 是 nil——
-    // 这种情况 fallback 到默认动作：让用户从菜单手动检查。
-    if (self.updaterController) {
-      [self.updaterController checkForUpdates:body[@"silent"] ? nil : nil];
-    } else {
+    // updaterBridge 内部处理 nil 场景（开发期无 SUFeedURL / SUPublicEDKey）。
+    if (![self.updaterBridge checkForUpdates]) {
       [self notify:@"Sparkle 未启用（缺少签名公钥或 feed URL）" kind:@"error"];
     }
   } else if ([action isEqualToString:@"quit"]) {
@@ -993,7 +951,8 @@ int main(int argc, const char* argv[]) {
     WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
     WKUserContentController* controller = [[WKUserContentController alloc] init];
     PrintBridge* bridge = [[PrintBridge alloc] init];
-    bridge.checkUpdateMenuItem = check_update_item_placeholder;
+    bridge.updaterBridge = [[DevCardUpdaterBridge alloc] init];
+    bridge.updaterBridge.checkUpdateMenuItem = check_update_item_placeholder;
     [controller addScriptMessageHandler:bridge name:@"devcard"];
     // 页面据此判断是壳内还是普通浏览器，决定「导出 PDF」按钮的行为。
     [controller
@@ -1025,52 +984,10 @@ int main(int argc, const char* argv[]) {
     window.delegate = bridge;
     [NSApp setDelegate:bridge];
 
-    // Sparkle 2 自更新：Info.plist 里必须有 SUFeedURL + SUPublicEDKey。
-    // 开发期两键为空时跳过——updaterController 是 nil，前端调 checkForUpdates 会收到提示。
-    {
-      NSDictionary* bundle_info = [NSBundle mainBundle].infoDictionary;
-      NSString* feed_url = bundle_info[@"SUFeedURL"];
-      NSString* pub_key = bundle_info[@"SUPublicEDKey"];
-      if (feed_url.length > 0 && pub_key.length > 0) {
-        DevCardUpdaterDelegate* del = [[DevCardUpdaterDelegate alloc] init];
-        bridge.updaterDelegate = del;
-        bridge.updaterController =
-            [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
-                                                            updaterDelegate:del
-                                                        userDriverDelegate:nil];
-        NSLog(@"[sparkle] 初始化完成 feed=%@", feed_url);
-      } else {
-        NSLog(@"[sparkle] 跳过初始化：SUFeedURL=%@ SUPublicEDKey=%@",
-              feed_url.length > 0 ? feed_url : @"(空)",
-              pub_key.length > 0 ? @"(已填)" : @"(空)");
-      }
-
-      // 绑定 App 菜单「检查更新…」的 target。
-      // Sparkle 启用时 target 设为 updaterController（它自己实现 checkForUpdates: + validateMenuItem:）；
-      // 未启用时把菜单项隐藏，避免用户点了报错。
-      if (bridge.checkUpdateMenuItem) {
-        if (bridge.updaterController) {
-          bridge.checkUpdateMenuItem.target = bridge.updaterController;
-          bridge.checkUpdateMenuItem.hidden = NO;
-        } else {
-          bridge.checkUpdateMenuItem.hidden = YES;
-        }
-      }
-
-      // 自动化验证：DEVCARD_SPARKLE_SELFTEST=1 时启动后自动发起一次更新检查，
-      // 便于脚本核对 feed 拉取、EdDSA 校验与版本比较。
-      if (bridge.updaterController &&
-          [NSProcessInfo.processInfo.environment[@"DEVCARD_SPARKLE_SELFTEST"]
-              isEqualToString:@"1"]) {
-        NSLog(@"[sparkle] SELFTEST 准备触发 checkForUpdates");
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
-            dispatch_get_main_queue(), ^{
-              NSLog(@"[sparkle] SELFTEST 触发 checkForUpdates");
-              [bridge.updaterController checkForUpdates:nil];
-            });
-      }
-    }
+    // Sparkle 2 自更新：从 Info.plist 读 SUFeedURL + SUPublicEDKey 初始化，
+    // 同时绑定 App 菜单 target + 处理 DEVCARD_SPARKLE_SELFTEST。
+    // 全部逻辑抽到 shell/mac/updater.mm 的 DevCardUpdaterBridge。
+    [bridge.updaterBridge start];
 
     // 自动化验证：把打印视图导出成 PDF 后退出，便于脚本核对页数与文字。
     NSString* selftest_pdf =
