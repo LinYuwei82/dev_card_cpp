@@ -55,16 +55,16 @@ jobs:
         shell: pwsh
         run: |
           $BUILD = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmm")
-          echo "DEVCARD_BUILD_STAMP=$BUILD" | Out-File -Encoding utf8 $env:GITHUB_ENV
+          echo "DEVCARD_BUILD=$BUILD" | Out-File -Encoding utf8 $env:GITHUB_ENV
           echo "构建号：$BUILD"
       - name: 校验版本 / 构建号递增
         shell: pwsh
         run: |
-          python tools\release\check_version_bump.py --product devcard --build $env:DEVCARD_BUILD_STAMP `
+          python tools\release\check_version_bump.py --product devcard --build $env:DEVCARD_BUILD `
             --manifest-url "https://dl.xiaotu.online/devcard/updates/stable/manifest.json"
           if ($LASTEXITCODE -ne 0) { throw '版本/构建号递增校验失败' }
       - name: 配置
-        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=${{ env.DEVCARD_BUILD_STAMP }}
+        run: cmake -S . -B build-win -A x64 -DCMAKE_BUILD_TYPE=Release -DDEVCARD_BUILD=${{ env.DEVCARD_BUILD }}
 
       # 只构建生产 target，跳过 tests 项目。
       # 原因：tests/test_api_contract.cpp 在 Windows SDK 10.0.26100 上因 ws2tcpip.h
@@ -84,7 +84,7 @@ jobs:
         run: |
           # 显式命名参数：数组 splat 传 -Switch 不可靠，容易静默丢失（dry-run 变成真发布）
           $dry = '${{ inputs.dry_run }}' -eq 'true'
-          ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry -Build $env:DEVCARD_BUILD_STAMP
+          ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry -Build $env:DEVCARD_BUILD
 
       - name: 上传构建产物（留档）
         if: always()

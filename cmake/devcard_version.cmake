@@ -12,7 +12,7 @@ function(devcard_add_version_rc target)
     endif()
 endfunction()
 
-# 可选构建号注入：传入时把数值作为 DEVCARD_BUILD_STAMP 编译期宏打入 target。
+# 可选构建号注入：传入时把数值作为 DEVCARD_BUILD 编译期宏打入 target。
 # 客户端 core/include/devcard/update_manifest.h 的 compiled_build_number() 读此常量。
 # 不传（DEVCARD_BUILD 为空）时客户端函数返回 0，回退到当前行为。
 # 注意：只能传数值，不能用 static_cast 等表达式——CMake 的 target_compile_definitions
@@ -20,12 +20,12 @@ endfunction()
 function(devcard_add_build_stamp target)
     if(DEFINED DEVCARD_BUILD AND NOT DEVCARD_BUILD STREQUAL "")
         # 两个独立宏：
-        #   DEVCARD_BUILD_STAMP=<number>       — 整数，core 里 static_cast<uint64_t> 用
-        #   DEVCARD_BUILD_STAMP_STR="<number>" — 字符串，shell 里 "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR 拼接用
+        #   DEVCARD_BUILD=<number>       — 整数，core 里 static_cast<uint64_t> 用
+        #   DEVCARD_BUILD_STR="<number>" — 字符串，shell 里 "DEVCARD_BUILD=" DEVCARD_BUILD_STR 拼接用
         target_compile_definitions(${target} PRIVATE
-            DEVCARD_BUILD_STAMP=${DEVCARD_BUILD}
-            DEVCARD_BUILD_STAMP_STR="${DEVCARD_BUILD}")
-        message(STATUS "DevCard 构建号注入（${target}）：DEVCARD_BUILD_STAMP=${DEVCARD_BUILD}")
+            DEVCARD_BUILD=${DEVCARD_BUILD}
+            DEVCARD_BUILD_STR="${DEVCARD_BUILD}")
+        message(STATUS "DevCard 构建号注入（${target}）：DEVCARD_BUILD=${DEVCARD_BUILD}")
     else()
         message(STATUS "DevCard 未注入构建号（${target}，DEVCARD_BUILD 为空），同版本不比 build")
     endif()

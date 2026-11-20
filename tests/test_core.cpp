@@ -642,11 +642,11 @@ void run_update_manifest_case() {
 
   std::cout << "[update-manifest] signature + parse checks done\n";
 
-  // 构建号读取断言：如果编译期注入了 DEVCARD_BUILD_STAMP，必须等于该值；
+  // 构建号读取断言：如果编译期注入了 DEVCARD_BUILD，必须等于该值；
   // 未注入时必须返回 0（回退路径）。这一条保证两端都走得通。
-#if defined(DEVCARD_BUILD_STAMP)
+#if defined(DEVCARD_BUILD)
   CHECK(devcard::compiled_build_number() ==
-        static_cast<std::uint64_t>(DEVCARD_BUILD_STAMP));
+        static_cast<std::uint64_t>(DEVCARD_BUILD));
 #else
   CHECK(devcard::compiled_build_number() == 0);
 #endif

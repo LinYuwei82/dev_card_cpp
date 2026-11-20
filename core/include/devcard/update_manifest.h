@@ -35,7 +35,7 @@ std::string format_product_version(const ProductVersion& version);
 const char* current_product_version();
 
 // 返回编译期注入的构建号。
-// CMake 通过 -DDEVCARD_BUILD_STAMP=<数值> 注入；未注入时返回 0。
+// CMake 通过 -DDEVCARD_BUILD=<数值> 注入；未注入时返回 0。
 std::uint64_t compiled_build_number();
 
 // ---- 清单验签与解析 ----

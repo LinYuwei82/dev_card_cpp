@@ -1,6 +1,6 @@
 # DevCard 测试套件：独立 CMakeLists.txt，由根 CMakeLists.txt 最后 add_subdirectory 引入。
 # 三个测试 target 都 link devcard_core 或 devcard_server，所以需要和这些库共享
-# 同一个 DEVCARD_BUILD_STAMP 编译期宏；devcard_add_build_stamp() 已在根 CMakeLists.txt
+# 同一个 DEVCARD_BUILD 编译期宏；devcard_add_build_stamp() 已在根 CMakeLists.txt
 # include，这里直接调用即可（空值时自动 no-op）。
 
 add_executable(devcard_core_tests test_core.cpp)

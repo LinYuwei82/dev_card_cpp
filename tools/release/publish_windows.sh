@@ -9,7 +9,7 @@
 # 输入：绿色包 zip（必需）、安装包 setup.exe（可选；缺省时只发绿色包）
 # 动作：Ed25519 签名 manifest.json（v2）→ guard 门禁 → 上传 dl.xiaotu.online → 线上校验
 #
-# 构建号：显式 BUILD → 绿色包内 DevCard.exe 的 DEVCARD_BUILD_STAMP 标记 →
+# 构建号：显式 BUILD → 绿色包内 DevCard.exe 的 DEVCARD_BUILD 标记 →
 #   gen_build.py 兜底；显式值与包内标记不一致直接失败（避免清单比二进制「新」）。
 #
 # 用法：
@@ -97,7 +97,7 @@ else
 fi
 
 # ---- 构建号：显式 → 包内标记 → gen_build ----
-# 绿色包内的 DevCard.exe 带 "DEVCARD_BUILD_STAMP=<digits>" 静态串，用它反查编译时的构建号
+# 绿色包内的 DevCard.exe 带 "DEVCARD_BUILD=<digits>" 静态串，用它反查编译时的构建号
 EXE_STAMP="$(python3 - "$ZIP_PATH" <<'PY'
 import re, sys, zipfile
 try:
@@ -109,7 +109,7 @@ try:
         data = zf.read(name)
 except Exception:
     sys.exit(0)
-m = re.search(rb"DEVCARD_BUILD_STAMP=(\d{4,})", data)
+m = re.search(rb"DEVCARD_BUILD=(\d{4,})", data)
 print(m.group(1).decode() if m else "")
 PY
 )"

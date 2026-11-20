@@ -51,7 +51,7 @@ Write-Host "版本：$version（来源 VERSION.txt）"
 
 # ---------- 1. 构建 ----------
 # 构建号：显式 -Build 优先；缺省时与另两仓一致，用 gen_build.py 自动生成，再通过
-# -DDEVCARD_BUILD 注入编译期宏 DEVCARD_BUILD_STAMP，并打开严格发布开关。
+# -DDEVCARD_BUILD 注入编译期宏 DEVCARD_BUILD，并打开严格发布开关。
 if ([string]::IsNullOrWhiteSpace($Build)) {
     $genBuild = Join-Path $repoRoot "tools\release\gen_build.py"
     if (-not (Test-Path -LiteralPath $genBuild)) { Fail "缺少 $genBuild，无法生成构建号" }
@@ -82,7 +82,7 @@ if (-not $SkipBuild) {
 } else {
     Write-Host "构建：跳过（-SkipBuild）"
     # SkipBuild 但带 -Build：先 re-configure 把构建号写入 CMakeCache，
-    # 然后增量 rebuild——CMake 会检测到编译期宏 DEVCARD_BUILD_STAMP 变化，
+    # 然后增量 rebuild——CMake 会检测到编译期宏 DEVCARD_BUILD 变化，
     # 重新编译 update_manifest.cpp（唯一引用点）；clean-first 代价太高，
     # 增量足够且更快。
     if (-not [string]::IsNullOrWhiteSpace($Build)) {

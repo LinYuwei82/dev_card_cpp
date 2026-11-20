@@ -11,9 +11,9 @@
 # 覆盖（逐项 PASS/FAIL）：
 #   T1  CMake configure 输出 4 行 DevCard 构建号注入（core/server/server-exe/shell-win）
 #   T2  CMakeCache.txt  DEVCARD_BUILD=<Stamp>
-#   T3  二进制可执行：devcard_core_tests（断言 DEVCARD_BUILD_STAMP==Stamp）
-#   T4  devcard-server.exe 可 grep 到 "DEVCARD_BUILD_STAMP=<Stamp>"
-#   T5  DevCard.exe（shell win）可 grep 到 "DEVCARD_BUILD_STAMP=<Stamp>"
+#   T3  二进制可执行：devcard_core_tests（断言 DEVCARD_BUILD==Stamp）
+#   T4  devcard-server.exe 可 grep 到 "DEVCARD_BUILD=<Stamp>"
+#   T5  DevCard.exe（shell win）可 grep 到 "DEVCARD_BUILD=<Stamp>"
 #   T6  不带 DEVCARD_BUILD 构建 → 二进制内无该标记（fallback local_build=0）
 #   T7  manifest_v2.py generate → 产物 build 字段 == Stamp（签名密钥需本机）
 
@@ -162,7 +162,7 @@ if ($coreTest -and (Test-Path $coreTest)) {
 } else { Fail "T3" "未找到 devcard_core_tests.exe" }
 
 # ---------- T4= devcard-server.exe 构建号：已由 T3 覆盖 ----------
-# devcard-server.exe 把构建号当 static_cast<uint64_t>(DEVCARD_BUILD_STAMP)
+# devcard-server.exe 把构建号当 static_cast<uint64_t>(DEVCARD_BUILD)
 # 整数常量，PE 里存的是 8 字节小端二进制，不是 ASCII。
 # grep 时间戳整值字符串永远找不到。T3 的 devcard_core_tests
 # 直接断言 compiled_build_number()==$Stamp，是 devcard-server.exe
@@ -173,18 +173,18 @@ Pass "T4" "已由 T3 devcard_core_tests 覆盖（core.lib = server.exe 运行时
 
 # ---------- T5: DevCard.exe（shell win）grep 字符串 ----------
 # DevCard.exe 壳层通过 shell/win/main.cpp 的 kBuildStamp 常量拼
-#   const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR;
-# 所以二进制里必然出现 "DEVCARD_BUILD_STAMP=<时间戳>" 字符串（guard.py 同前缀核对）。
+#   const char kBuildStamp[] = "DEVCARD_BUILD=" DEVCARD_BUILD_STR;
+# 所以二进制里必然出现 "DEVCARD_BUILD=<时间戳>" 字符串（guard.py 同前缀核对）。
 $devcard = if (Test-Path $DEV_EXE) { $DEV_EXE } else { $DEV_EXE_ALT }
 if ($devcard -and (Test-Path $devcard)) {
     Write-Host ""
-    Write-Host "========== T5: DevCard.exe（shell win）grep DEVCARD_BUILD_STAMP=$Stamp =========="
-    $found = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP=$Stamp"
+    Write-Host "========== T5: DevCard.exe（shell win）grep DEVCARD_BUILD=$Stamp =========="
+    $found = Grep-Bytes $devcard "DEVCARD_BUILD=$Stamp"
     if ($found) { Pass "T5" "DevCard.exe 内嵌 $found" }
     else {
-        $any = Grep-Bytes $devcard "DEVCARD_BUILD_STAMP="
+        $any = Grep-Bytes $devcard "DEVCARD_BUILD="
         if ($any) { Pass "T5" "DevCard.exe 内嵌 $any（值与 $Stamp 不一致，可能是旧构建残留）" }
-        else { Fail "T5" "DevCard.exe 内完全找不到 DEVCARD_BUILD_STAMP=" }
+        else { Fail "T5" "DevCard.exe 内完全找不到 DEVCARD_BUILD=" }
     }
 } else { Fail "T5" "DevCard.exe 不存在（shell win 没编？）" }
 
@@ -224,9 +224,9 @@ if (-not $SkipBuild) {
         Join-Path $FB "server\Release\devcard-server.exe"
     } else { Join-Path $FB "server\devcard-server.exe" }
     if (Test-Path $serverFb) {
-        $found = Grep-Bytes $serverFb "DEVCARD_BUILD_STAMP="
-        if ($null -eq $found) { Pass "T6c" "回退 devcard-server.exe 内无 DEVCARD_BUILD_STAMP=（fallback 0）" }
-        else { Fail "T6c" "回退二进制内意外找到 DEVCARD_BUILD_STAMP=：$found" }
+        $found = Grep-Bytes $serverFb "DEVCARD_BUILD="
+        if ($null -eq $found) { Pass "T6c" "回退 devcard-server.exe 内无 DEVCARD_BUILD=（fallback 0）" }
+        else { Fail "T6c" "回退二进制内意外找到 DEVCARD_BUILD=：$found" }
     } else { Fail "T6c" "回退 devcard-server.exe 不存在" }
 }
 

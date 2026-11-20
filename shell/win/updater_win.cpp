@@ -36,17 +36,17 @@ namespace devcard::updater {
 
 // ---- 二进制内构建号标记（供 guard.py 二次校验）
 //
-// 发布脚本 publish_windows.ps1 从 CMakeCache 读出 DEVCARD_BUILD_STAMP 写入清单，
+// 发布脚本 publish_windows.ps1 从 CMakeCache 读出 DEVCARD_BUILD 写入清单，
 // guard.py 上传前扫描绿色包 / setup.exe 里的 EXE 字节，比对清单 build 与
 // 本机构建号一致——防止脚本读错 CMakeCache 导致同版本反复提示。
-// 这里放一条不会被 LTO 扔掉的静态字符串 "DEVCARD_BUILD_STAMP=<digits>"。
-#ifndef DEVCARD_BUILD_STAMP_STR
+// 这里放一条不会被 LTO 扔掉的静态字符串 "DEVCARD_BUILD=<digits>"。
+#ifndef DEVCARD_BUILD_STR
 #define STRINGIFY_(x) #x
 #define STRINGIFY(x) STRINGIFY_(x)
-#define DEVCARD_BUILD_STAMP_STR STRINGIFY(DEVCARD_BUILD_STAMP)
+#define DEVCARD_BUILD_STR STRINGIFY(DEVCARD_BUILD)
 #endif
 namespace {
-constexpr const char kBuildStamp[] = "DEVCARD_BUILD_STAMP=" DEVCARD_BUILD_STAMP_STR;
+constexpr const char kBuildStamp[] = "DEVCARD_BUILD=" DEVCARD_BUILD_STR;
 constexpr const char *const kBuildStampRef = kBuildStamp;  // 防优化器丢弃
 }
 

@@ -22,7 +22,7 @@ endif()
 # 默认 ON，构建行为与之前完全一致；留作将来 Win7/8 独立分支换壳的入口。
 # 注意：这不解决 Win7/8 的真正卡点（WebView2 Runtime 109、toolset 降级），见 docs §13。
 option(DEVCARD_BUILD_SHELL "构建桌面壳（macOS WKWebView / Windows WebView2）" ON)
-# 可选的构建号（Windows UTC yyyyMMddHHmm）。传入后编译期注入 DEVCARD_BUILD_STAMP，
+# 可选的构建号（Windows UTC yyyyMMddHHmm）。传入后编译期注入 DEVCARD_BUILD，
 # 客户端同版本重发时按 build 比较（远端 build 大于本地才提示更新）；不传则
 # compiled_build_number() 返回 0，客户端回退到当前「同版本不比 build」的逻辑。
 # 统一用 tools/release/gen_build.py 生成（保证 > 线上 manifest.json 的 build 最大值）。

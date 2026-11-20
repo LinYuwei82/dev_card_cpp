@@ -1058,7 +1058,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     // 本平台的最新版本与构建号来自验签通过的清单；build 只在同版本时参与
     // 判定（见下方 available）。
     const std::string latest = manifest.latest;
-    // 本机构建号：CMake 注入 DEVCARD_BUILD_STAMP 时有值，未注入时返回 0。
+    // 本机构建号：CMake 注入 DEVCARD_BUILD 时有值，未注入时返回 0。
     // 同版本只有当远端 build 严格大于本地（且双方都 > 0）才提示更新；
     // 任一为 0 时回退到只比 version——旧客户端未注入构建号时不被同版本重发包
     // 反复打扰，旧清单 build 缺失时也不会突然多触发更新。
