@@ -103,6 +103,7 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
   cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DDEVCARD_BUILD="$BUILD_NUMBER" \
+    -DDEVCARD_RELEASE_BUILD=ON \
     -DDEVCARD_SPARKLE_FEED_URL="$FEED_URL" >/dev/null
   cmake --build "$BUILD_DIR" --target DevCard --parallel "$(sysctl -n hw.ncpu)" \
     >/dev/null

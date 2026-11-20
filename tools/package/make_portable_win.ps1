@@ -51,9 +51,12 @@ Write-Host "版本：$version（来源 VERSION.txt）"
 
 # ---------- 1. 构建 ----------
 # 构建号：传入 -Build 时 configure 里加 -DDEVCARD_BUILD，让编译期宏 DEVCARD_BUILD_STAMP
-# 打进二进制；客户端同版本重发时按 build 比较。缺省（空字符串）即不注入。
+# 打进二进制；同时打开严格发布开关，拒绝占位构建号。缺省（空字符串）即不注入，
+# 保持开发态可编（不启用严格开关）。
 $buildStampArg = @()
-if (-not [string]::IsNullOrWhiteSpace($Build)) { $buildStampArg = @("-DDEVCARD_BUILD=$Build") }
+if (-not [string]::IsNullOrWhiteSpace($Build)) {
+    $buildStampArg = @("-DDEVCARD_BUILD=$Build", "-DDEVCARD_RELEASE_BUILD=ON")
+}
 if (-not $SkipBuild) {
     Write-Host "构建：$BuildDir（Release）"
     Write-Host "  cmake configure：$BuildDir -DDEVCARD_BUILD=$Build"
