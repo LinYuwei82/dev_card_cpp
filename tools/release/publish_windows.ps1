@@ -174,6 +174,7 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($cmd) { $python = $cmd.Source; break }
     }
+    Write-Host "  [DEBUG] python=$python"
     if (-not $python) { Fail "找不到 python3 / python（guard 需要）" }
     $guardArgs = @(
         "--product", "devcard", "--kind", "win", "--channel", $channel,
@@ -182,6 +183,7 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
     )
     # guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
     if ($DryRun) { $guardArgs += "--offline" }
+    Write-Host "  [DEBUG] guardArgs=$($guardArgs -join ' ')"
     & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
     if ($LASTEXITCODE -ne 0) { Fail "guard preflight 未通过（v2 命名/版本/覆盖/内嵌地址/签名）" }
 
