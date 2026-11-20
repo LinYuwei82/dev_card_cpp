@@ -614,14 +614,6 @@ void UpdaterWin::checkNow(Completion cb) {
   auto local_build = compiled_build_number();
   bool update_available =
       version_cmp > 0 || (version_cmp == 0 && pw.build > local_build);
-  std::cerr << "[updater] 判断: remote ver=" << pw.version
-            << " build=" << pw.build
-            << " | local ver=" << devcard::current_product_version()
-            << " build=" << local_build
-            << " | version_cmp=" << version_cmp
-            << " | pw.build>local=" << (pw.build > local_build)
-            << " | rollout_percent=" << pw.rollout_percent
-            << " → update_available=" << update_available << std::endl;
 
   if (update_available && !pw.mandatory) {
     // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
