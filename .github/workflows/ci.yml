@@ -50,7 +50,7 @@ jobs:
       # 产物与本地同一条路径：版本/内容自检不过就直接失败。
       - name: 打绿色包
         shell: pwsh
-        run: ./tools/package/make_portable_win.ps1 -SkipBuild -BuildDir build-win -OutDir dist
+        run: ./tools/package/package_windows.ps1 -SkipBuild -BuildDir build-win -OutDir dist
 
       # 安装包也走脚本：避免手写 digest/size。更新清单由 release-windows 工作流生成。
       # windows-latest 通常自带 Inno Setup 6，找不到时用 choco 补装。

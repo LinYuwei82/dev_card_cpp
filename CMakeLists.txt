@@ -44,7 +44,7 @@ elseif(DEVCARD_BUILD STREQUAL "")
   set(DEVCARD_BUILD "${DEVCARD_DEFAULT_BUILD}" CACHE STRING "" FORCE)
 endif()
 if(DEVCARD_BUILD STREQUAL DEVCARD_DEFAULT_BUILD)
-  message(WARNING "构建号 ${DEVCARD_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/make_dmg.sh（内部调用 gen_build.py 自动生成）。")
+  message(WARNING "构建号 ${DEVCARD_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/package_macos.sh（内部调用 gen_build.py 自动生成）。")
 endif()
 message(STATUS "DevCard 版本：${DEVCARD_VERSION_STRING}")
 # SQLite 的唯一入口：两个平台都编译仓库自带的 amalgamation，不链接系统 libsqlite3。

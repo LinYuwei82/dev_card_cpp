@@ -6,10 +6,10 @@
 # 「能打出来但换台机器跑不起来」的 DMG。
 #
 # 用法：
-#   tools/package/make_dmg.sh                # 构建 + 打包
-#   tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
-#   tools/package/make_dmg.sh --out dir      # 指定输出目录（默认 dist/）
-#   tools/package/make_dmg.sh --feed-url URL # 指定 Sparkle feed（默认线上 appcast）
+#   tools/package/package_macos.sh                # 构建 + 打包
+#   tools/package/package_macos.sh --skip-build   # 用已有 build-new 产物重打包
+#   tools/package/package_macos.sh --out dir      # 指定输出目录（默认 dist/）
+#   tools/package/package_macos.sh --feed-url URL # 指定 Sparkle feed（默认线上 appcast）
 #
 # Sparkle feed 默认取 https://dl.xiaotu.online/devcard/updates/stable/appcast.xml，也可用
 # 环境变量 DEVCARD_SPARKLE_FEED_URL 覆盖；显式传空字符串表示不启用 Sparkle
@@ -65,7 +65,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ "$(uname -s)" = "Darwin" ] || fail "make_dmg.sh 只能在 macOS 上运行"
+[ "$(uname -s)" = "Darwin" ] || fail "package_macos.sh 只能在 macOS 上运行"
 
 for tool in cmake otool codesign hdiutil shasum; do
   command -v "$tool" >/dev/null 2>&1 || fail "缺少命令：$tool"

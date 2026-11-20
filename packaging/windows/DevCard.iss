@@ -23,7 +23,7 @@
   #error VERSION.txt 为空
 #endif
 #ifndef SourceRoot
-  ; 默认取 make_portable_win.ps1 的打包目录命名；官方发布路径由
+  ; 默认取 package_windows.ps1 的打包目录命名；官方发布路径由
   ; publish_windows.ps1 显式传 -DSourceRoot，这里只服务于手工编译。
   #define SourceRoot "..\..\dist\DevCard-" + AppVersion + "-win64-portable"
 #endif

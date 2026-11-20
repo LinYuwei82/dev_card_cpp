@@ -15,7 +15,7 @@
        必须与 VERSION.txt 逐字符相等，任一不等即失败。
     3. macOS 只看**真产物** build-new/shell/DevCard.app/Contents/Info.plist 的
        CFBundleShortVersionString；不一致即失败。
-       packaging/mac/Info.plist 是旧 Qt 线的冻结文件，make_dmg.sh 不引用它，
+       packaging/mac/Info.plist 是旧 Qt 线的冻结文件，package_macos.sh 不引用它，
        只作为一行信息列出，不参与判定。
 
 退出码：
@@ -36,9 +36,9 @@ import subprocess
 import sys
 
 ISS = pathlib.Path("packaging/windows/DevCard.iss")
-# 判据只指向真产物：make_dmg.sh:123-125 读的就是这份，不一致直接 fail。
+# 判据只指向真产物：package_macos.sh:123-125 读的就是这份，不一致直接 fail。
 APP_PLIST = pathlib.Path("build-new/shell/DevCard.app/Contents/Info.plist")
-# 旧 Qt 线的冻结文件，make_dmg.sh 里一次都没出现；只列出，不判。
+# 旧 Qt 线的冻结文件，package_macos.sh 里一次都没出现；只列出，不判。
 FROZEN_PLIST = pathlib.Path("packaging/mac/Info.plist")
 
 
@@ -76,7 +76,7 @@ def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, list[str], b
     messages = []
     failures = []
     for key in PLIST_KEYS:
-        # 缺失也判失败：make_dmg.sh:123-134 是双键都比，缺一个就不算同源。
+        # 缺失也判失败：package_macos.sh:123-134 是双键都比，缺一个就不算同源。
         match = re.search(rf"{key}</key>\s*<string>([^<]*)</string>", text)
         if not match:
             messages.append(f"{key} 缺失")

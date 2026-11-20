@@ -13,11 +13,11 @@
 #
 # 与既有脚本的调用关系（不复制实现）：
 #   configure 走 CMakePresets.json 的 macos-release preset（Ninja +
-#   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build-new/，与 tools/package/make_dmg.sh
+#   CMAKE_BUILD_TYPE=Release），产物落在仓库下 build-new/，与 tools/package/package_macos.sh
 #   的默认 BUILD_DIR（<repo>/build-new）是同一目录。本脚本只负责「编出来」；DMG 打包
-#   （依赖自检、ad-hoc 签名、hdiutil）仍由 make_dmg.sh 负责，构建完直接复用产物：
-#       tools/package/make_dmg.sh --skip-build
-#   本脚本不反过来调用 make_dmg.sh：构建入口与发布入口分开，避免每次构建都触发打包。
+#   （依赖自检、ad-hoc 签名、hdiutil）仍由 package_macos.sh 负责，构建完直接复用产物：
+#       tools/package/package_macos.sh --skip-build
+#   本脚本不反过来调用 package_macos.sh：构建入口与发布入口分开，避免每次构建都触发打包。
 #
 # 兼容性：macOS 自带 /bin/bash 是 3.2。本脚本不用 mapfile/readarray、关联数组、declare -A、
 #   ${var,,}、readlink -f、stat -c、grep -P、date -d、sed -i 一类 bash4/GNU 专有写法；
@@ -187,4 +187,4 @@ note "可执行：${APP_BIN}"
 note "服务端：${SERVER_BIN}"
 say ""
 say "打包（仍走既有脚本，本脚本不复制 DMG 实现，产物目录已对齐）："
-note "\"${REPO_ROOT}/tools/package/make_dmg.sh\" --skip-build"
+note "\"${REPO_ROOT}/tools/package/package_macos.sh\" --skip-build"

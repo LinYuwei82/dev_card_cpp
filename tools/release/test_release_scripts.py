@@ -1,11 +1,11 @@
 """DevCard 发布脚本 shell 层测试。
 
-覆盖：tools/release/publish_macos.sh、tools/package/make_dmg.sh。
-全部用 --dry-run（publish_macos.sh）或直接拒绝路径（make_dmg.sh），
+覆盖：tools/release/publish_macos.sh、tools/package/package_macos.sh。
+全部用 --dry-run（publish_macos.sh）或直接拒绝路径（package_macos.sh），
 不碰真实签名、公证、oss2 venv。
 
 注意：devcard publish_windows.ps1 是 PowerShell，本测试只覆盖 bash 脚本。
-devcard 发布脚本依赖 cmake/otool/codesign/hdiutil/shasum（make_dmg.sh 要求），
+devcard 发布脚本依赖 cmake/otool/codesign/hdiutil/shasum（package_macos.sh 要求），
 本测试通过 --skip-build 和拒绝路径跳过真实构建。
 
 运行前保证：python3（系统自带）、VERSION.txt 非空。
@@ -103,15 +103,15 @@ class TestPublishMacos(unittest.TestCase):
         self.skipTest("PATH 屏蔽在 macOS homebrew 同目录下过于脆弱，CI 环境再测")
 
 
-# --------------------------------------------------------------------------- make_dmg.sh
+# --------------------------------------------------------------------------- package_macos.sh
 
 class TestMakeDmg(unittest.TestCase):
-    """devcard make_dmg.sh：命令行参数 + 依赖检查。"""
+    """devcard package_macos.sh：命令行参数 + 依赖检查。"""
 
     @classmethod
     def setUpClass(cls):
         cls.r = Runner()
-        cls.script = str(PKG / "make_dmg.sh")
+        cls.script = str(PKG / "package_macos.sh")
 
     def test_help_zero_exit(self):
         self.r.run(self.script, ["--help"], expect_code=0)

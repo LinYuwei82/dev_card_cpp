@@ -16,7 +16,7 @@
 #     tools/release/publish_macos.sh                  # 强制更新
 #
 # 前置条件：
-#   - 公证凭证在 Keychain profile devcard-notary（make_dmg.sh 负责签名与公证）
+#   - 公证凭证在 Keychain profile devcard-notary（package_macos.sh 负责签名与公证）
 #   - Sparkle 私钥在 ~/.config/devcard/sparkle-keys/private_key.pem（appcast 用）
 #   - v2 清单签名种子在 ~/.config/devcard/manifest-keys/ed25519_seed.b64
 #   - OSS 凭据在 ~/.config/devcard/release.env（OSS_ACCESS_KEY_ID 等）
@@ -94,7 +94,7 @@ MANIFEST="$DIST/manifest.json"
 APPCAST="$DIST/appcast.xml"
 
 echo "===== 1/5 出包"
-"$REPO_ROOT/tools/package/make_dmg.sh" ${DMG_ARGS[@]+"${DMG_ARGS[@]}"}
+"$REPO_ROOT/tools/package/package_macos.sh" ${DMG_ARGS[@]+"${DMG_ARGS[@]}"}
 [ -f "$DMG" ] || fail "没有找到产物：$DMG"
 # 上传与清单一律按 v2 命名；本地产物改名后，Sparkle 签名与 appcast 同步跟随
 mv -f "$DMG" "$V2_DMG"

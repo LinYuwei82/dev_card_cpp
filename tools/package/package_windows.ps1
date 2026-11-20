@@ -1,8 +1,8 @@
 ﻿# DevCard Windows 绿色版打包：构建 → 暂存 → 版本/内容自检 → zip → 体积与 SHA256。
 #
 # 用法（在 PowerShell 里，仓库根目录或任意目录均可）：
-#   powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1 -SkipBuild
+#   powershell -ExecutionPolicy Bypass -File tools\package\package_windows.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\package\package_windows.ps1 -SkipBuild
 #   ... -BuildDir D:\build\devcard -OutDir D:\dist
 #
 # 产物：<OutDir>\DevCard-<版本>-win64-portable.zip（默认 dist\）
@@ -28,7 +28,7 @@ function Fail([string]$Message) {
 }
 
 if ($env:OS -ne "Windows_NT") {
-    Fail "make_portable_win.ps1 只能在 Windows 上运行"
+    Fail "package_windows.ps1 只能在 Windows 上运行"
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path

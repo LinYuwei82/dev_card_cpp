@@ -23,7 +23,7 @@
 #
 # 【以下是「假设」，尚未在 macOS 上真实执行过】mac 上第一次运行请以实际输出为准修正：
 #   1. 假设构建目录是 preset macos-release 产出的 build-new（与 tools/mac/build.sh、
-#      tools/package/make_dmg.sh 同一目录）；缺 CMakeCache.txt 时按「环境不具备」报 3，
+#      tools/package/package_macos.sh 同一目录）；缺 CMakeCache.txt 时按「环境不具备」报 3，
 #      而不是当成 0 通过。
 #   2. 假设 tools/verify 下每个 .sh 都是 POSIX sh 入口（现有 check_bom / check_bootstrap /
 #      check_migrations / check_path_helpers / check_version 五个都是 #!/bin/sh 后转派

@@ -11,7 +11,7 @@
 >
 > 开发期版本为 `0.x`（仅内部）；当前版本为 **1.2.8**（2026-11-19 上线：macOS DMG 与 Windows 安装包/绿色包，`manifest.json` 双平台均为 `latest=1.2.8`），唯一来源是仓库根目录的 `VERSION.txt`（server / Windows 版本资源 / macOS bundle 都从它读取）。
 >
-> 改造前的旧 Qt 线已从**仓库历史**删除（不是仅工作区删除）：历史已重写，旧 commit hash 一律不可引用，`v1.1.3` tag（本地与两个远端）已删，`backup-m7-*` 分支已删；`src/`、`resources/`、`dev_card.pro`、`build.bat`、`DevCard_resource.rc`、`packaging/mac/*`、`make_portable_win.ps1` 与 6 份旧线文档在仓库与历史里都取不到。旧版数据不再支持导入，迁移路径已整体删除（详见 [改造技术方案 §0.1](docs/改造技术方案.md)）。
+> 改造前的旧 Qt 线已从**仓库历史**删除（不是仅工作区删除）：历史已重写，旧 commit hash 一律不可引用，`v1.1.3` tag（本地与两个远端）已删，`backup-m7-*` 分支已删；`src/`、`resources/`、`dev_card.pro`、`build.bat`、`DevCard_resource.rc`、`packaging/mac/*`、`package_windows.ps1` 与 6 份旧线文档在仓库与历史里都取不到。旧版数据不再支持导入，迁移路径已整体删除（详见 [改造技术方案 §0.1](docs/改造技术方案.md)）。
 
 ## 1. 项目定位
 
@@ -65,9 +65,9 @@ tools/release/publish_macos.sh           # 出包 → 签名 → appcast/manifes
 tools/release/publish_macos.sh --notes "本次更新内容"
 tools/release/publish_macos.sh --dry-run # 只出包与清单，不上传
 
-tools/package/make_dmg.sh                # 只出 DMG：构建 + 依赖自检 + Developer ID 签名 + 公证 + staple
-tools/package/make_dmg.sh --skip-build   # 用已有 build-new 产物重打包
-tools/package/make_dmg.sh --feed-url https://dl.xiaotu.online/devcard/updates/stable/appcast.xml
+tools/package/package_macos.sh                # 只出 DMG：构建 + 依赖自检 + Developer ID 签名 + 公证 + staple
+tools/package/package_macos.sh --skip-build   # 用已有 build-new 产物重打包
+tools/package/package_macos.sh --feed-url https://dl.xiaotu.online/devcard/updates/stable/appcast.xml
 ```
 
 - 版本读 `VERSION.txt`，并与 `Info.plist` 的 `CFBundleShortVersionString` 核对；不一致直接失败。
@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Note
 
 # 分步执行
 # 绿色版
-powershell -ExecutionPolicy Bypass -File tools\package\make_portable_win.ps1
+powershell -ExecutionPolicy Bypass -File tools\package\package_windows.ps1
 # 安装版（Inno Setup 6；SourceRoot 指向含两个 exe 与 fonts\ 的暂存目录）
 ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
 # 更新清单：由 publish_windows.ps1 调 tools/release/manifest_v2.py 生成并签名
@@ -116,7 +116,7 @@ dev_card_cpp/
 ├── web/                      # 原生 JS/CSS 前端（构建期内嵌进二进制）；web/fonts/ 放子集 TTF（随包进 Resources）
 ├── tools/fonts/              # 字体子集脚本（make_subset.sh：变量字体定字重 + pyftsubset，可 --verify）
 ├── tools/mac/                # macOS 构建入口（build.sh：cmake configure + build；test.sh）
-├── tools/package/            # 打包工具：make_dmg.sh（macOS DMG：构建 + 签名 + 公证 + staple）、make_icons.sh（三端图标统一生成）、make_portable_win.ps1（Windows 绿色包）
+├── tools/package/            # 打包工具：package_macos.sh（macOS DMG：构建 + 签名 + 公证 + staple）、make_icons.sh（三端图标统一生成）、package_windows.ps1（Windows 绿色包）
 ├── tools/release/            # 发布入口（publish_macos.sh / publish_windows.ps1）+ 共享清单生成 manifest_v2.py + 门禁 guard.py + appcast 生成 + selftest + verify_build_stamp.ps1（Windows 构建号注入验证）
 ├── tests/                    # ctest 5 条（core / web_assets / no_opposans / embed_web / api_contract）+ fixture
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/noto-sans-sc/ 存原始 Noto Sans SC 变量字体与 OFL.txt
@@ -136,7 +136,7 @@ dev_card_cpp/
 | [docs/改造技术方案.md](docs/改造技术方案.md) | 去 Qt 的目标架构、DAO 与迁移、UI/图标重设计、构建打包、分阶段路径、风险与工作量、Win7/8 可行性结论与决策清单 | 部分已实现（M0–M5、M6 检查 + 告知与自更新阶段一；**Windows 阶段二已端到端实测通过**；**macOS 自更新改由 Sparkle 承担，已端到端实测通过**） |
 | [docs/M4-卡片打印样张-17条-2页.pdf](docs/M4-卡片打印样张-17条-2页.pdf) | 17 条实测数据导出的完整 2 页 A4 卡片样张（新架构打印链路产物） | 实测样张 |
 
-改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 为验收门槛；libharu 已随旧线删除，不再是待删项）；原生 JS/CSS + 两个通用件（实际未拆，全在 `app.js`）；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；SQL 主要在 DAO（`settings`/`audit`/`backup`/`heartbeat` 仍有裸 SQL，未完全收口）+ 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG（**Developer ID 签名 + Apple 公证 + staple，2026-11 起，取代 ad-hoc**）；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本 `tools/package/make_portable_win.ps1` 已入库并实跑）；**macOS 自更新用 Sparkle 2.10.1（1.2.2 起菜单栏「检查更新…」与 Web 顶栏「检查更新」按钮两个入口，前者走 Sparkle 原生菜单、后者经原生桥转交 Sparkle）**；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
+改造决策：D1–D13 **全部已定** —— 不支持 Win7/8（旧线已从仓库历史删除，存量客户不再获得更新，也无法从本仓库重建旧版）；打印双通道（导出 PDF + 直接打印，两通道实物叠图均 ≤ 1 mm 为验收门槛；libharu 已随旧线删除，不再是待删项）；原生 JS/CSS + 两个通用件（实际未拆，全在 `app.js`）；单进程；导入保持现状（同一文件导入两次即翻倍）；macOS 15+（三方库按 15.0 构建，13/14 不支持）；SQL 主要在 DAO（`settings`/`audit`/`backup`/`heartbeat` 仍有裸 SQL，未完全收口）+ 方言 helper；网络版最小可用；Argon2id + 强制改密 + 命令行重置；深青视觉；macOS 只出 DMG（**Developer ID 签名 + Apple 公证 + staple，2026-11 起，取代 ad-hoc**）；Windows 出安装版 + 绿色版（安装器 `packaging/windows/DevCard.iss` 在 Windows 线 `win/mac-build-scripts`，本分支没有该目录；已实测静默安装；绿色版打包脚本 `tools/package/package_windows.ps1` 已入库并实跑）；**macOS 自更新用 Sparkle 2.10.1（1.2.2 起菜单栏「检查更新…」与 Web 顶栏「检查更新」按钮两个入口，前者走 Sparkle 原生菜单、后者经原生桥转交 Sparkle）**；字体改用思源黑体 / Noto Sans SC 子集。**旧版数据不再支持导入**（迁移路径与导入器已删除）。详见 [改造技术方案 §14](docs/改造技术方案.md)。
 
 ---
 
@@ -146,7 +146,7 @@ dev_card_cpp/
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版自 2026-11-17 起用 Developer ID Application 签名并经 Apple 公证 + staple，首次打开无需手动放行；此前基于 ad-hoc 签名的旧包仍需右键「打开」放行。
 - macOS 图标已随包（`shell/mac/DevCard.icns`，DC 字标）；Windows `.ico`（`shell/win/DevCard.ico`）、web `favicon.ico`、浏览器 shortcut icon（`favicon-16/32/48x*.png`）、Apple Touch（`apple-touch-icon.png`）、PWA 图标（`icons/pwa-*.png` + `icons/pwa-maskable-*.png`）与分享预览（`og-image.png`）**全部由 `tools/package/make_icons.sh` 从同一份母版统一生成**。母版已更新为 SF Pro Black 并转曲，三端几何与色彩一致。
-- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/make_portable_win.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
+- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并在结束时提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。绿色版打包脚本为 `tools/package/package_windows.ps1`（产物 `DevCard-<版本>-portable.zip`，打包前自检版本与内容）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - CI 已接 GitHub Actions（`.github/workflows/ci.yml`）：Windows job 取 WebView2 SDK 后构建、跑 5 条 `ctest`（core / web_assets / no_opposans / embed_web / api_contract），并打绿色包上传 artifact；macOS job 构建并跑同一组测试。许可证为 **AGPL-3.0**（全文见 [LICENSE](LICENSE)），如需商业授权请另行联系作者。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
