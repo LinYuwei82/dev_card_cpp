@@ -49,14 +49,19 @@ function Fail([string]$Message) {
 
 # 灰度 / 强制更新参数校验：唯一实现在 tools/release/publish_args.py（三仓库共享）。
 # 非 0 退出直接 exit 2，脚本里不再重复 if 校验。
-$pyArgs = Get-Command python3 -ErrorAction SilentlyContinue
-if (-not $pyArgs) { $pyArgs = Get-Command python -ErrorAction SilentlyContinue }
+# Windows 上 python3 常是 Microsoft Store 的占位程序（退出码 9009），优先用 python
+$pyArgs = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pyArgs) { $pyArgs = Get-Command python3 -ErrorAction SilentlyContinue }
 if (-not $pyArgs) { Fail "找不到 python（publish_args / manifest_v2 / gen_build 需要）" }
 $mandatoryArg = if ($Mandatory) { "1" } else { "0" }
 $argsOutput = & $pyArgs.Source (Join-Path $repoRoot "tools\release\publish_args.py") validate `
     "--product=devcard" "--rollout=$Rollout" "--mandatory=$mandatoryArg" `
     "--mandatory-reason=$MandatoryReason" "--mandatory-deadline=$MandatoryDeadline" --emit sh
-if ($LASTEXITCODE -ne 0) { exit 2 }
+if ($LASTEXITCODE -ne 0) {
+    $argsOutput | Out-Host
+    Write-Host "[失败] 发布参数校验失败（publish_args.py 退出码 $LASTEXITCODE）"
+    exit 2
+}
 foreach ($line in @($argsOutput)) {
     if ($line -notmatch "^([A-Z_]+)='(.*)'$") { continue }
     $key = $Matches[1]
@@ -79,8 +84,8 @@ if ([string]::IsNullOrWhiteSpace($version)) { Fail "VERSION.txt 为空" }
 if ([string]::IsNullOrWhiteSpace($Build)) {
     $genBuild = Join-Path $repoRoot "tools\release\gen_build.py"
     if (-not (Test-Path -LiteralPath $genBuild)) { Fail "找不到 gen_build.py：$genBuild" }
-    $py = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
     if (-not $py) { Fail "找不到 python，无法运行 gen_build.py" }
     $Build = (& $py.Source $genBuild --product devcard --repo-root $repoRoot 2>$null | Select-Object -Last 1)
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Build)) {
