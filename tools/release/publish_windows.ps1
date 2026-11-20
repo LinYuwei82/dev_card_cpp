@@ -170,12 +170,22 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
 
     Write-Host "===== 3.5/5 发布门禁（guard，v2）"
     $python = $null
-    foreach ($candidate in @("python3", "python")) {
+    foreach ($candidate in @("python", "python3")) {
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($cmd) { $python = $cmd.Source; break }
+        if ($cmd -and $cmd.Source -notmatch "WindowsApps") { $python = $cmd.Source; break }
+    }
+    if (-not $python) {
+        # 兜底：扫常见安装路径
+        foreach ($p in @(
+            "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+            "$env:ProgramFiles\Python311\python.exe",
+            "$env:ProgramFiles\Python312\python.exe"
+        )) { if (Test-Path -LiteralPath $p) { $python = $p; break } }
     }
     Write-Host "  [DEBUG] python=$python"
-    if (-not $python) { Fail "找不到 python3 / python（guard 需要）" }
+    if (-not $python) { Fail "找不到 python（guard 需要，Windows Store python3 别名已排除）" }
     $guardArgs = @(
         "--product", "devcard", "--kind", "win", "--channel", $channel,
         "--file", $v2Setup, "--zip", $v2Zip,
