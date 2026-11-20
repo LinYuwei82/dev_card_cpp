@@ -67,6 +67,8 @@ set_source_files_properties(
 
 find_package(Threads REQUIRED)
 target_link_libraries(devcard_core PUBLIC Threads::Threads)
+# UTF-8 边界（路径 ↔ UTF-8、宽窄转换、控制台代码页）：PUBLIC 让 server/shell 直接用。
+target_link_libraries(devcard_core PUBLIC win_encoding)
 
 # 可选构建号注入（Windows UTC yyyyMMddHHmm）：客户端同版本重发时按 build 比较。
 devcard_add_build_stamp(devcard_core)

@@ -32,6 +32,8 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 
 #include <WebView2.h>
 
+#include "win_encoding/encoding.h"
+
 #include <atomic>
 #include <cstdio>
 #include <cwchar>
@@ -1002,6 +1004,10 @@ bool CreateWebView() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
+  // 从 cmd 启动或重定向时，stderr 里的中文按 UTF-8 写出，需要把控制台代码页切到 UTF-8；
+  // 纯 GUI 启动（无控制台）时本调用是空操作。
+  win_encoding::init_console();
+
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
     Fatal(L"COM 初始化失败（需要 STA 线程）。");
     return 1;

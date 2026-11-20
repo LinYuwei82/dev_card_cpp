@@ -8,6 +8,12 @@ target_link_libraries(devcard_core_tests PRIVATE devcard_core)
 devcard_add_build_stamp(devcard_core_tests)
 add_test(NAME devcard_core_tests COMMAND devcard_core_tests)
 
+# UTF-8 边界模块：严格校验、宽窄往返、ACP 兜底、路径往返、系统错误文本。
+add_executable(devcard_win_encoding_tests test_win_encoding.cpp)
+target_link_libraries(devcard_win_encoding_tests PRIVATE win_encoding)
+devcard_add_build_stamp(devcard_win_encoding_tests)
+add_test(NAME devcard_win_encoding_tests COMMAND devcard_win_encoding_tests)
+
 # 内嵌前端与 web/ 源文件的字节数/SHA256 一致性（抓 C2026 静默截断）；
 # 顺带复核字体清单里的字节数与 SHA256（构建期从 web/fonts/ 生成）。
 add_executable(devcard_web_assets_tests test_web_assets.cpp)
