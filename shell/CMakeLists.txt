@@ -70,6 +70,7 @@ execute_process(
     COMMAND ${Python3_EXECUTABLE}
             "${PROJECT_SOURCE_DIR}/tools/release/gen_info_plist.py"
             --version "${DEVCARD_VERSION_STRING}"
+            --build "${DEVCARD_BUILD}"
             --bundle-id "com.anye.devcard.new"
             --name "DevCard"
             --feed-url "${DEVCARD_SPARKLE_FEED_URL}"
@@ -87,6 +88,7 @@ add_custom_command(
     COMMAND ${Python3_EXECUTABLE}
             "${PROJECT_SOURCE_DIR}/tools/release/gen_info_plist.py"
             --version "${DEVCARD_VERSION_STRING}"
+            --build "${DEVCARD_BUILD}"
             --bundle-id "com.anye.devcard.new"
             --name "DevCard"
             --feed-url "${DEVCARD_SPARKLE_FEED_URL}"

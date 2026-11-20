@@ -26,13 +26,20 @@ def key(d, k, v):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--version", required=True)
+    p.add_argument("--version", required=True,
+                   help="版本号（x.y.z，CFBundleShortVersionString）")
+    p.add_argument("--build", default="",
+                   help="构建号（纯数字，CFBundleVersion；留空则回退到 version）")
     p.add_argument("--bundle-id", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--feed-url", default="")
     p.add_argument("--pubkey", default="")
     p.add_argument("--output", default="Info.plist")
     args = p.parse_args()
+
+    # CFBundleVersion 是 Sparkle 版本比较用的整数；构建号传了就用构建号，
+    # 没传（开发态 / 同版本不比 build）就回退到 version。
+    build = args.build if args.build else args.version
 
     root = ET.Element("plist", version="1.0")
     d = ET.SubElement(root, "dict")
@@ -65,7 +72,7 @@ def main():
     plist("CFBundlePackageType", "APPL")
     plist("CFBundleShortVersionString", args.version)
     plist("CFBundleSignature", "????")
-    plist("CFBundleVersion", args.version)
+    plist("CFBundleVersion", build)
 
     d.append(ET.Element("key"))
     d[-1].text = "CSResourcesFileMapped"
