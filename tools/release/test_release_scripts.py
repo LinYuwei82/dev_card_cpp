@@ -27,6 +27,7 @@ PKG = REPO / "tools" / "package"
 VERSION = (REPO / "VERSION.txt").read_text().strip()
 TEST_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 TEST_SEED_B64 = base64.b64encode(bytes.fromhex(TEST_SEED_HEX)).decode()
+IS_DARWIN = sys.platform == "darwin"
 
 
 # --------------------------------------------------------------------------- Runner
@@ -74,6 +75,7 @@ class Runner:
 
 # --------------------------------------------------------------------------- publish_macos.sh
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestPublishMacos(unittest.TestCase):
     """devcard publish_macos.sh：命令行参数 + 前置依赖校验。"""
 
@@ -105,6 +107,7 @@ class TestPublishMacos(unittest.TestCase):
 
 # --------------------------------------------------------------------------- package_macos.sh
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestMakeDmg(unittest.TestCase):
     """devcard package_macos.sh：命令行参数 + 依赖检查。"""
 
@@ -146,12 +149,12 @@ class TestMakeDmg(unittest.TestCase):
 def main() -> int:
     print(f"\n=== devcard manifest_v2 selftest ===")
     r1 = subprocess.run(
-        ["python3", str(RELEASE / "manifest_v2.py"), "selftest"],
+        [sys.executable, str(RELEASE / "manifest_v2.py"), "selftest"],
         check=False,
     )
     print(f"\n=== devcard guard selftest ===")
     r2 = subprocess.run(
-        ["python3", str(RELEASE / "guard.py"), "selftest"],
+        [sys.executable, str(RELEASE / "guard.py"), "selftest"],
         check=False,
     )
     print(f"\n=== devcard release_scripts unittest ===")
