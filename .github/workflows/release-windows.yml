@@ -8,13 +8,16 @@ name: Windows 发布
 # 且安装包是 immutable 长缓存，同名覆盖不会生效。
 
 on:
-on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       notes:
         description: 更新说明（写进 manifest.json，可留空）
+        required: false
+        default: ""
+      build:
+        description: "手动构建号（正式发布请用 tag v<semver>+<seq>）"
         required: false
         default: ""
       dry_run:
@@ -32,6 +35,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # guard 是三仓库共用的单一规则源（见 mote/docs/OSS-发布布局.md）
       # Windows 检出可能把哈希文件转成 CRLF，先去掉 \r 再校验
@@ -51,12 +56,24 @@ jobs:
         shell: pwsh
         run: ./shell/win/fetch-webview2.ps1
 
-      - name: 生成构建号（UTC yyyyMMddHHmm）
+      - name: 生成构建号（tag v<semver>+<seq> 或手动）
         shell: pwsh
         run: |
-          $BUILD = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmm")
-          echo "DEVCARD_BUILD=$BUILD" | Out-File -Encoding utf8 $env:GITHUB_ENV
-          echo "构建号：$BUILD"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $parsed = python tools\release\release_tag.py parse --ensure-latest --tag $env:GITHUB_REF_NAME --emit sh
+            if ($LASTEXITCODE -ne 0) { throw "tag 解析失败：$env:GITHUB_REF_NAME" }
+            foreach ($line in $parsed) {
+              $kv = $line -split '=', 2
+              if ($kv.Count -eq 2) { Set-Item -Path "Env:$($kv[0])" -Value $kv[1] }
+            }
+            echo "DEVCARD_BUILD=$env:BUILD" | Out-File -Encoding utf8 $env:GITHUB_ENV
+            Write-Host "构建号来自 tag：$env:GITHUB_REF_NAME → $env:BUILD"
+          } else {
+            $b = '${{ inputs.build }}'
+            if (-not $b) { throw '手动触发必须提供 build 参数；正式发布请用 tag v<semver>+<seq>' }
+            echo "DEVCARD_BUILD=$b" | Out-File -Encoding utf8 $env:GITHUB_ENV
+            Write-Host "构建号：$b（手动）"
+          }
       - name: 校验版本 / 构建号递增
         shell: pwsh
         run: |
