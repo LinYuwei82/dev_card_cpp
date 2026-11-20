@@ -164,10 +164,6 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
     $pubHex = ($pubHex -join "").Trim()
     if ([string]::IsNullOrWhiteSpace($pubHex) -or $pubHex.Length -ne 64) { Fail "无法解析 Ed25519 公钥 hex（PS5 重定向编码问题）" }
 
-    Write-Host "  [DEBUG] pubHex=$pubHex  len=$($pubHex.Length)"
-    Write-Host "  [DEBUG] v2Setup=$v2Setup"
-    Write-Host "  [DEBUG] v2Zip=$v2Zip"
-
     Write-Host "===== 3.5/5 发布门禁（guard，v2）"
     $python = $null
     foreach ($candidate in @("python", "python3")) {
@@ -184,7 +180,6 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
             "$env:ProgramFiles\Python312\python.exe"
         )) { if (Test-Path -LiteralPath $p) { $python = $p; break } }
     }
-    Write-Host "  [DEBUG] python=$python"
     if (-not $python) { Fail "找不到 python（guard 需要，Windows Store python3 别名已排除）" }
     $guardArgs = @(
         "--product", "devcard", "--kind", "win", "--channel", $channel,
@@ -193,7 +188,6 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
     )
     # guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
     if ($DryRun) { $guardArgs += "--offline" }
-    Write-Host "  [DEBUG] guardArgs=$($guardArgs -join ' ')"
     & $python (Join-Path $repoRoot "tools\release\guard.py") preflight @guardArgs
     if ($LASTEXITCODE -ne 0) { Fail "guard preflight 未通过（v2 命名/版本/覆盖/内嵌地址/签名）" }
 
