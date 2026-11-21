@@ -92,6 +92,8 @@ class UpdaterWin {
 
   // 强制升级握手：读服务端 /api/health 的 min_supported_version
   void checkMinSupportedVersion(Completion cb);
+  // 壳启动后告知 updater 本机服务地址（http://127.0.0.1:<port>），供上面的握手使用。
+  void setServerOrigin(const std::string& origin);
 
   const Status& status() const { return status_; }
 
@@ -122,6 +124,7 @@ class UpdaterWin {
   void loadStatus();
 
   std::string manifest_url_;
+  std::string server_origin_;
   Status status_;
   mutable std::mutex status_mutex_;
 

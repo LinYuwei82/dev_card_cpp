@@ -838,6 +838,7 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
       downloadUpdate: async function () { await updater.downloadUpdate(); },
       installUpdate: async function () { await updater.installUpdate(); },
       cancelPrefetch: async function () { await updater.cancelPrefetch(); },
+      checkMinSupportedVersion: async function () { await updater.checkMinSupportedVersion(); },
       statusJson: async function () {
         var raw = await updater.statusJson();
         try { return JSON.parse(raw); } catch (_) { return {}; }

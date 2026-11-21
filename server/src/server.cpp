@@ -1044,10 +1044,15 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.server.Get("/api/health", [&state, schema, version](
                                      const httplib::Request&,
                                      httplib::Response& response) {
-    set_json(response, json{{"status", "ok"},
-                            {"version", version},
-                            {"schema_version", schema},
-                            {"mode", state.network ? "network" : "local"}});
+    nlohmann::json body{{"status", "ok"},
+                        {"version", version},
+                        {"schema_version", schema},
+                        {"mode", state.network ? "network" : "local"}};
+    // 强制升级握手：只有管理员显式配置了 min_supported_version 才下发，
+    // 老服务端/未配置时不出现这个键，客户端按「无要求」处理。
+    const std::string min_supported = get_setting(*state.db, "min_supported_version");
+    if (!min_supported.empty()) body["min_supported_version"] = min_supported;
+    set_json(response, body);
   });
 
   // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。

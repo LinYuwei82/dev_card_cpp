@@ -1039,6 +1039,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
 
   g.origin = L"http://127.0.0.1:" + std::to_wstring(g_server->port());
+  devcard::updater::UpdaterWin::instance().setServerOrigin(Narrow(g.origin));
 
   WNDCLASSEXW window_class = {};
   window_class.cbSize = sizeof(window_class);

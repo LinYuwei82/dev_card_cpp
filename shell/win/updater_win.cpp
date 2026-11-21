@@ -887,10 +887,65 @@ void UpdaterWin::setOptions(bool auto_check, bool prefetch, Completion cb) {
   if (cb) cb("UPDATED", "");
 }
 
+void UpdaterWin::setServerOrigin(const std::string& origin) {
+  std::lock_guard<std::mutex> lock(status_mutex_);
+  server_origin_ = origin;
+}
+
 void UpdaterWin::checkMinSupportedVersion(Completion cb) {
-  // 简单实现：当前 shell 不直接查 health endpoint；让前端调壳内服务端的 /api/health
-  // 或在 shell 里加一个直连。暂留 TODO。
-  if (cb) cb("UNAVAILABLE", "checkMinSupportedVersion 未实现");
+  std::string origin;
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    origin = server_origin_;
+  }
+  if (origin.empty()) {
+    recordOutcome("UNAVAILABLE", "尚未拿到本机服务地址", true);
+    if (cb) cb("UNAVAILABLE", "尚未拿到本机服务地址");
+    return;
+  }
+
+  std::string body, err_code, err_detail;
+  if (!fetchManifest(origin + "/api/health", body, err_code, err_detail)) {
+    recordOutcome("FETCH_FAILED", err_code + ":" + err_detail, true);
+    if (cb) cb("FETCH_FAILED", err_code + ":" + err_detail);
+    return;
+  }
+
+  nlohmann::json j;
+  try {
+    j = nlohmann::json::parse(body);
+  } catch (const nlohmann::json::exception& e) {
+    recordOutcome("HEALTH_PARSE_ERROR", e.what(), true);
+    if (cb) cb("HEALTH_PARSE_ERROR", e.what());
+    return;
+  }
+
+  std::string required;
+  if (j.contains("min_supported_version") && j["min_supported_version"].is_string()) {
+    required = j["min_supported_version"].get<std::string>();
+  }
+  if (required.empty()) {
+    // 服务端没配下限：显式返回当前版本，前端据此解除「必须升级」状态。
+    recordOutcome("SUPPORTED", devcard::current_product_version(), false);
+    if (cb) cb("SUPPORTED", devcard::current_product_version());
+    return;
+  }
+
+  devcard::ProductVersion min_version;
+  devcard::ProductVersion local_version;
+  if (!devcard::parse_product_version(required, min_version) ||
+      !devcard::parse_product_version(devcard::current_product_version(), local_version)) {
+    recordOutcome("HEALTH_INVALID", "min_supported_version 无法解析: " + required, true);
+    if (cb) cb("HEALTH_INVALID", "min_supported_version 无法解析: " + required);
+    return;
+  }
+  if (devcard::compare_product_version(local_version, min_version) < 0) {
+    recordOutcome("UPDATE_REQUIRED", required, false);
+    if (cb) cb("UPDATE_REQUIRED", required);
+    return;
+  }
+  recordOutcome("SUPPORTED", required, false);
+  if (cb) cb("SUPPORTED", required);
 }
 
 }  // namespace devcard::updater
