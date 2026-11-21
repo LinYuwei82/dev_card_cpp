@@ -135,7 +135,7 @@ ISCC.exe /DSourceRoot=<暂存目录> packaging\windows\DevCard.iss
 - **发布脚本**：macOS `tools/release/publish_macos.sh`；Windows `tools/release/publish_windows.ps1`（Windows 本机一条龙）或 `tools/release/publish_windows.sh`（macOS 上只发布现成产物）。本地清单落在 `dist/manifest.json`、`dist/appcast.xml`，上传后即 OSS 上的同名对象。
 - **OSS**：bucket `xiaotu-update`，前缀 `devcard/`，域名 `https://dl.xiaotu.online`；appcast 的 `sparkle:version` = `build`（即 tag 序号）。
 - **CI**：`.github/workflows/ci.yml`——`release-guard`（guard 哈希、selftest、发布脚本布局检查）、`windows-build`（取 WebView2 SDK → MSVC 环境 → `windows-release` 构建/ctest → 绿色包 + 安装包）、`macos-build`（`macos-release` 构建/ctest）。`.github/workflows/release-windows.yml`——tag 或手动触发，解析构建号 → 版本/构建号递增校验 → `windows-release` 构建 → 发布。
-- **测试**：C++ 测试在 `tests/`（`ctest` 5 条：core / web_assets / no_opposans / embed_web / api_contract）；发布工具测试为 `tools/release/test_release_tag.py`、`test_version_bump.py`、`test_guard.py`、`test_guard_manifest.py`（v2 清单字段/跨平台构建号/artifact 校验）、`test_release_layout.py`、`test_publish_release.py`、`test_shared_sync.py`（兄弟仓库存在时比对共享文件，单仓环境自动跳过）、`test_release_scripts.py`（shell 用例仅 macOS 执行）、`test_appcast.py`。
+- **测试**：C++ 测试在 `tests/`（`ctest` 6 条：core / win_encoding / web_assets / no_opposans / embed_web / api_contract）；发布工具测试为 `tools/release/test_release_tag.py`、`test_version_bump.py`、`test_guard.py`、`test_guard_manifest.py`（v2 清单字段/跨平台构建号/artifact 校验）、`test_release_layout.py`、`test_publish_release.py`、`test_shared_sync.py`（兄弟仓库存在时比对共享文件，单仓环境自动跳过）、`test_release_scripts.py`（shell 用例仅 macOS 执行）、`test_appcast.py`。
 
 ---
 
@@ -158,7 +158,7 @@ dev_card_cpp/
 │   └── release/              # publish_* / release_tag.py / manifest_v2.py / guard.py / check_version_bump.py
 │                             #   / generate_appcast.py / upload_oss.py / test_*.py / update_compare_vectors.json
 ├── packaging/windows/        # DevCard.iss（Inno Setup 安装包）
-├── tests/                    # ctest 5 条 + fixture
+├── tests/                    # ctest 6 条 + fixture
 ├── 3rdparty/ third_party/    # SQLite amalgamation / 内嵌第三方依赖；3rdparty/fonts/ 存原始 Noto Sans SC
 ├── docs/                     # 技术文档、用户手册、样张
 ├── dist/                     # 本地打包产物与清单（已 gitignore）
