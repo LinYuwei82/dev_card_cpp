@@ -2,6 +2,8 @@
 
 #include <vector>
 
+#include "devcard/dao/setting_dao.h"
+
 namespace devcard {
 namespace {
 
@@ -46,31 +48,15 @@ double codepoint_width(unsigned int point) {
 }  // namespace
 
 std::string get_setting(const Db& db, std::string_view key) {
-  std::string value;
-  db.read([&](sqlite3* conn) {
-    Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = ?");
-    stmt.bind(1, key);
-    if (stmt.step()) value = stmt.text(0);
-  });
-  return value;
+  return SettingDao().get(db, key);
 }
 
 bool has_setting(const Db& db, std::string_view key) {
-  bool found = false;
-  db.read([&](sqlite3* conn) {
-    Stmt stmt(conn, "SELECT 1 FROM app_setting WHERE key = ? LIMIT 1");
-    stmt.bind(1, key);
-    found = stmt.step();
-  });
-  return found;
+  return SettingDao().has(db, key);
 }
 
 void set_setting(sqlite3* conn, std::string_view key, std::string_view value) {
-  Stmt stmt(conn,
-            "INSERT INTO app_setting(key,value) VALUES(?,?)"
-            " ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-  stmt.bind(1, key).bind(2, value);
-  stmt.run();
+  SettingDao().set(conn, key, value);
 }
 
 std::string company_name(const Db& db) {

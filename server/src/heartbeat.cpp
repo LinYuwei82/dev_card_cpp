@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "devcard/audit.h"
+#include "devcard/dao/instance_dao.h"
 #include "devcard/db.h"
 
 #ifdef _WIN32
@@ -18,17 +19,6 @@
 
 namespace devcard {
 namespace {
-
-constexpr int kOwnerId = 1;
-
-struct Owner {
-  std::string instance_id;
-  long long pid = 0;
-  std::string host;
-  std::string listen;
-  std::string started_at;
-  std::string heartbeat_at;
-};
 
 std::string lowercase(std::string value) {
   for (char& ch : value) {
@@ -91,7 +81,7 @@ std::time_t parse_utc(const std::string& text) {
 #endif
 }
 
-std::string owner_text(const Owner& owner, long long age_seconds) {
+std::string owner_text(const InstanceOwner& owner, long long age_seconds) {
   std::string text = "数据库内的心跳行显示另一个 DevCard 实例正在使用这个库：\n";
   text += "  实例: " + owner.instance_id + "（PID " + std::to_string(owner.pid) +
           " @ " + owner.host + "）\n";
@@ -110,19 +100,9 @@ std::string owner_text(const Owner& owner, long long age_seconds) {
 }
 
 void write_owner(sqlite3* conn, const std::string& instance_id) {
-  const std::string host = local_host_name();
   const std::string now = now_iso8601_utc();
-  Stmt stmt(conn,
-            "INSERT OR REPLACE INTO instance_heartbeat"
-            "(id,instance_id,pid,host,listen,started_at,heartbeat_at)"
-            " VALUES(?,?,?,?,'',?,?)");
-  stmt.bind(1, static_cast<std::int64_t>(kOwnerId))
-      .bind(2, instance_id)
-      .bind(3, process_id())
-      .bind(4, host)
-      .bind(5, now)
-      .bind(6, now);
-  stmt.run();
+  InstanceDao().write(conn, instance_id, process_id(), local_host_name(), now,
+                      now);
 }
 
 }  // namespace
@@ -131,19 +111,8 @@ bool claim_heartbeat(Db& db, const std::string& instance_id,
                      std::string* error) {
   std::string message;
   db.write([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "SELECT instance_id,pid,host,listen,started_at,heartbeat_at"
-              " FROM instance_heartbeat WHERE id = ?");
-    stmt.bind(1, static_cast<std::int64_t>(kOwnerId));
-    if (stmt.step()) {
-      Owner owner;
-      owner.instance_id = stmt.text(0);
-      owner.pid = stmt.i64(1);
-      owner.host = stmt.text(2);
-      owner.listen = stmt.text(3);
-      owner.started_at = stmt.text(4);
-      owner.heartbeat_at = stmt.text(5);
-
+    InstanceOwner owner;
+    if (InstanceDao().read(conn, owner)) {
       const std::time_t beat = parse_utc(owner.heartbeat_at);
       const std::time_t now = std::time(nullptr);
       const long long age =
@@ -173,14 +142,7 @@ bool claim_heartbeat(Db& db, const std::string& instance_id,
 bool refresh_heartbeat(Db& db, const std::string& instance_id) {
   bool still_owner = false;
   db.write([&](sqlite3* conn) {
-    Stmt update(conn,
-                "UPDATE instance_heartbeat SET heartbeat_at = ?"
-                " WHERE id = ? AND instance_id = ?");
-    update.bind(1, now_iso8601_utc())
-        .bind(2, static_cast<std::int64_t>(kOwnerId))
-        .bind(3, instance_id);
-    update.run();
-    still_owner = sqlite3_changes(conn) > 0;
+    still_owner = InstanceDao().touch(conn, instance_id, now_iso8601_utc());
   });
   if (still_owner) db.checkpoint();
   return still_owner;
@@ -194,23 +156,14 @@ void force_heartbeat(Db& db, const std::string& instance_id) {
 void set_heartbeat_listen(Db& db, const std::string& instance_id,
                           const std::string& listen) {
   db.write([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "UPDATE instance_heartbeat SET listen = ?"
-              " WHERE id = ? AND instance_id = ?");
-    stmt.bind(1, listen)
-        .bind(2, static_cast<std::int64_t>(kOwnerId))
-        .bind(3, instance_id);
-    stmt.run();
+    InstanceDao().set_listen(conn, instance_id, listen);
   });
   db.checkpoint();
 }
 
 void release_heartbeat(Db& db, const std::string& instance_id) {
   db.write([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "DELETE FROM instance_heartbeat WHERE id = ? AND instance_id = ?");
-    stmt.bind(1, static_cast<std::int64_t>(kOwnerId)).bind(2, instance_id);
-    stmt.run();
+    InstanceDao().erase(conn, instance_id);
   });
 }
 

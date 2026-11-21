@@ -30,6 +30,10 @@ class UserDao {
   void clear_failed_login(sqlite3* conn, std::string_view name) const;
   void erase(sqlite3* conn, std::string_view name) const;
   std::int64_t count_admins(sqlite3* conn) const;
+  // 是否还有账号处于「首次登录必须改密」状态。
+  bool any_must_change(const Db& db) const;
+  // 本地默认账号的候选：管理员优先，其次按用户名排序取第一个。
+  std::string first_user_name(const Db& db) const;
 
  private:
   static void read_row(Stmt& stmt, User& user);

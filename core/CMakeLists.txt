@@ -4,6 +4,10 @@ add_library(devcard_core STATIC
     src/audit.cpp
     src/dao/device_dao.cpp
     src/dao/user_dao.cpp
+    src/dao/setting_dao.cpp
+    src/dao/audit_dao.cpp
+    src/dao/backup_dao.cpp
+    src/dao/instance_dao.cpp
     src/service/device_service.cpp
     src/service/user_service.cpp
     src/backup.cpp

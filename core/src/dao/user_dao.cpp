@@ -144,4 +144,26 @@ std::int64_t UserDao::count_admins(sqlite3* conn) const {
   return total;
 }
 
+bool UserDao::any_must_change(const Db& db) const {
+  bool found = false;
+  db.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT 1 FROM app_user WHERE must_change_password = 1 LIMIT 1");
+    found = stmt.step();
+  });
+  return found;
+}
+
+std::string UserDao::first_user_name(const Db& db) const {
+  std::string name;
+  db.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT user_name FROM app_user"
+              " ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, user_name"
+              " LIMIT 1");
+    if (stmt.step()) name = stmt.text(0);
+  });
+  return name;
+}
+
 }  // namespace devcard

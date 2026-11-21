@@ -218,14 +218,7 @@ void UserService::reset_password(std::string_view name,
   db_.write([&](sqlite3* conn) { dao_.set_password(conn, name, hash, true); });
 }
 
-bool UserService::any_must_change() const {
-  bool found = false;
-  db_.read([&](sqlite3* conn) {
-    Stmt stmt(conn, "SELECT 1 FROM app_user WHERE must_change_password = 1 LIMIT 1");
-    found = stmt.step();
-  });
-  return found;
-}
+bool UserService::any_must_change() const { return dao_.any_must_change(db_); }
 
 std::string UserService::local_user() const {
   const std::string configured = get_setting(db_, "local_user");
@@ -233,15 +226,7 @@ std::string UserService::local_user() const {
     User user;
     if (dao_.find(db_, configured, user)) return configured;
   }
-  std::string name;
-  db_.read([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "SELECT user_name FROM app_user"
-              " ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, user_name"
-              " LIMIT 1");
-    if (stmt.step()) name = stmt.text(0);
-  });
-  return name;
+  return dao_.first_user_name(db_);
 }
 
 SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
