@@ -1,8 +1,10 @@
 name: Windows 发布
 
-# 手动触发的 Windows 发布流水线：构建 → guard 门禁 → 上传 OSS → 线上校验。
+# 手动触发的 Windows 发布流水线：构建 → guard 门禁 → 上传 OSS（清单含 notes_url）
+# → 线上校验 → 创建 GitHub / Gitee Release（dry_run 跳过上传与 Release）。
 # Windows 机器不再需要 OSS 凭据与发布环境，任何能打开 GitHub 的电脑都能发版。
-# 前置 secrets：OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（仅授予 PutObject）。
+# 前置 secrets：OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（仅授予 PutObject）、
+# DEVCARD_UPDATE_SIGNING_KEY、GITEE_TOKEN（Gitee releases + 附件上传权限）。
 #
 # 注意：发布前先确认 VERSION.txt 是要比线上更新的版本；guard 会拒绝版本回退，
 # 且安装包是 immutable 长缓存，同名覆盖不会生效。
@@ -26,7 +28,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write   # 创建/更新 GitHub Release 需要写权限（Gitee 走 GITEE_TOKEN）
 
 # Windows 英文 runner 默认 cp1252，Python 打印中文会崩；统一 UTF-8 输出
 env:
@@ -114,6 +116,19 @@ jobs:
           # 显式命名参数：数组 splat 传 -Switch 不可靠，容易静默丢失（dry-run 变成真发布）
           $dry = '${{ inputs.dry_run }}' -eq 'true'
           ./tools/release/publish_windows.ps1 -SkipBuild -Notes $env:DEVCARD_NOTES -DryRun:$dry -Build $env:DEVCARD_BUILD
+
+      # 与 OSS 发布同一版本：GitHub 用工作流 token，Gitee 用 secret GITEE_TOKEN。
+      # macOS dmg 若已在 OSS（本地未留档）会自动回源；单平台发版时缺的附件跳过。
+      - name: 创建 GitHub / Gitee Release
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          REQUIRE_GITEE: "true"
+          ALLOW_MISSING_ATTACHMENTS: "true"
+          SKIP_TAG_PUSH: "true"
+        run: bash tools/release/publish_release.sh
 
       - name: 上传构建产物（留档）
         if: always()
