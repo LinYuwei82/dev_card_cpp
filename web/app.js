@@ -968,7 +968,9 @@
     });
   }
 
-  el.updateInstall.addEventListener('click', function () {
+  el.updateInstall.addEventListener('click', handleUpdateInstall);
+
+  function handleUpdateInstall() {
     if (updateState.installing) return;
     // macOS：交给 Sparkle 完成检查、下载、安装与重启。
     if (isMacShell()) {
@@ -1003,7 +1005,7 @@
       el.updateInstall.disabled = false;
       setUpdateProgress('安装未启动：' + error.message, true);
     });
-  });
+  }
 
   function closeUpdateModal(force) {
     // 强制更新到期后不允许关闭；安装完成或升级后重新打开才解除
@@ -1093,7 +1095,9 @@
     });
   }
 
-  el.updateDownloadPackage.addEventListener('click', function () {
+  el.updateDownloadPackage.addEventListener('click', handleUpdateDownloadPackage);
+
+  function handleUpdateDownloadPackage() {
     // Windows WebView2 壳：走 updater_win.downloadUpdate()，壳自己拉 manifest + 下载 + SHA256 校验
     var bridge = winUpdaterBridge();
     if (bridge) {
@@ -1121,7 +1125,7 @@
       if (!path) return;
       startUpdateDownload(path);
     });
-  });
+  }
 
   // 轮询本地服务拿进度；失败一律回到「只提示」，不禁用台账，也不自动替换。
   function pollUpdateDownload() {
@@ -1306,7 +1310,9 @@
     el.passwordModal.hidden = true;
   });
 
-  el.passwordForm.addEventListener('submit', function (event) {
+  el.passwordForm.addEventListener('submit', submitPasswordForm);
+
+  function submitPasswordForm(event) {
     event.preventDefault();
     el.passwordError.hidden = true;
     if (el.newPassword.value !== el.newPassword2.value) {
@@ -1330,7 +1336,7 @@
         el.passwordError.textContent = error.message;
         el.passwordError.hidden = false;
       });
-  });
+  }
 
   // ---------- 视图切换 ----------
 
@@ -1747,7 +1753,9 @@
 
   el.companyName.addEventListener('input', updateCompanyHint);
 
-  el.saveCompany.addEventListener('click', function () {
+  el.saveCompany.addEventListener('click', saveCompanyName);
+
+  function saveCompanyName() {
     el.saveCompany.disabled = true;
     api('PUT', '/api/system/company', { company_name: el.companyName.value.trim() })
       .then(function (data) {
@@ -1768,13 +1776,15 @@
       .then(function () {
         el.saveCompany.disabled = false;
       });
-  });
+  }
 
   el.pickLogo.addEventListener('click', function () {
     el.logoFile.click();
   });
 
-  el.logoFile.addEventListener('change', function () {
+  el.logoFile.addEventListener('change', handleLogoFile);
+
+  function handleLogoFile() {
     var file = el.logoFile.files && el.logoFile.files[0];
     el.logoFile.value = '';
     if (!file) return;
@@ -1805,7 +1815,7 @@
       .catch(function (error) {
         toast(error.message, 'error');
       });
-  });
+  }
 
   el.resetLogo.addEventListener('click', function () {
     api('DELETE', '/api/system/company-logo')
@@ -2010,7 +2020,9 @@
 
   el.cancelDelete.addEventListener('click', closeDelete);
 
-  el.confirmDelete.addEventListener('click', function () {
+  el.confirmDelete.addEventListener('click', handleConfirmDelete);
+
+  function handleConfirmDelete() {
     var id = devicesState.pendingDeleteId;
     var version = devicesState.pendingDeleteVersion;
     if (!id) return;
@@ -2033,7 +2045,7 @@
       .then(function () {
         el.confirmDelete.disabled = false;
       });
-  });
+  }
 
   // ---------- 用户 ----------
 
@@ -2105,7 +2117,9 @@
     usersState.editingUser = null;
   });
 
-  el.userForm.addEventListener('submit', function (event) {
+  el.userForm.addEventListener('submit', submitUserForm);
+
+  function submitUserForm(event) {
     event.preventDefault();
     el.userError.hidden = true;
     var editing = usersState.editingUser;
@@ -2136,9 +2150,11 @@
         el.userError.textContent = error.message;
         el.userError.hidden = false;
       });
-  });
+  }
 
-  el.userRows.addEventListener('click', function (event) {
+  el.userRows.addEventListener('click', handleUserRowClick);
+
+  function handleUserRowClick(event) {
     var button = event.target.closest('button[data-user-action]');
     if (!button) return;
     var name = button.getAttribute('data-name');
@@ -2166,14 +2182,16 @@
           toast(error.message, 'error');
         });
     }
-  });
+  }
 
   el.resetCancel.addEventListener('click', function () {
     el.resetModal.hidden = true;
     usersState.resetUser = null;
   });
 
-  el.resetForm.addEventListener('submit', function (event) {
+  el.resetForm.addEventListener('submit', submitResetPasswordForm);
+
+  function submitResetPasswordForm(event) {
     event.preventDefault();
     el.resetError.hidden = true;
     if (!usersState.resetUser) return;
@@ -2195,7 +2213,7 @@
         el.resetError.textContent = error.message;
         el.resetError.hidden = false;
       });
-  });
+  }
 
   // ---------- 备份与恢复 ----------
 
