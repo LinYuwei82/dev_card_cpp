@@ -3,7 +3,24 @@
 
   var PAGE_SIZE = 20;
 
-  var state = {
+  // 状态按域拆分：每个对象只被对应视图读写，改一处不会误伤其他视图。
+  // 新增字段放进对应域，不要再往扁平对象上挂。
+
+  // 会话与应用元信息：登录用户、版本号、数据目录、当前视图。
+  var appState = {
+    user: null,
+    version: '',
+    schemaVersion: '',
+    dataDir: '',
+    view: 'devices',
+    forcedPassword: false,
+    // 打印字体能覆盖的码位区间 [[start,end], ...]，来自 /api/fonts/coverage，
+    // 也就是随包字体 cmap 的真实内容，不是手写表。台账与打印共用。
+    fontRanges: null
+  };
+
+  // 设备台账：分页、筛选、编辑与删除的乐观锁现场。
+  var devicesState = {
     page: 0,
     total: 0,
     totalAll: 0,
@@ -13,31 +30,44 @@
     // 编辑/删除时带回的乐观锁版本号：服务端用它判断页面是不是过期了。
     editingVersion: 0,
     pendingDeleteId: null,
-    pendingDeleteVersion: 0,
-    user: null,
-    version: '',
-    schemaVersion: '',
-    dataDir: '',
-    // 打印字体能覆盖的码位区间 [[start,end], ...]，来自 /api/fonts/coverage，
-    // 也就是随包字体 cmap 的真实内容，不是手写表。
-    fontRanges: null,
-    view: 'devices',
+    pendingDeleteVersion: 0
+  };
+
+  var usersState = {
     users: [],
-    backups: [],
     editingUser: null,
-    resetUser: null,
-    forcedPassword: false,
-    printItems: [],
-    printTruncated: false,
-    printBusy: false,
+    resetUser: null
+  };
+
+  // 系统设置：公司名/图标（「账号」页的打印设置区）与备份列表。
+  var systemState = {
     companyName: '',
     companyNamePrint: '',
     companyNameMaxWidth: 13,
-    update: null,
+    backups: []
+  };
+
+  // 卡片打印：当前筛选命中的数据快照与导出状态。
+  var printState = {
+    items: [],
+    truncated: false,
+    busy: false
+  };
+
+  // 自更新：远端检查结论、下载/安装进度与一次性定时器。
+  var updateState = {
+    // 本地清单通道下发的更新信息（/api/bootstrap 的 update 段）。
+    info: null,
     // 远端检查的原始结论（含接口原文），自检与核对用；
     // 这层出过「拿假数据截图」的事，解析结果必须能对回原文。
-    updateCheck: null,
-    updateUrl: ''
+    check: null,
+    url: '',
+    timer: null,
+    downloading: false,
+    asset: null,
+    assetVersion: '',
+    force: false,
+    installing: false
   };
 
   var el = {
@@ -190,6 +220,15 @@
       .replace(/'/g, '&#39;');
   }
 
+  // 字节数统一按 1024 进制显示（KiB/MiB）。更新包进度与备份大小共用这一份：
+  // 两处各写一次时，同一屏会出现两套单位，且同作用域的后定义会静默覆盖前一个。
+  function formatBytes(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+    return (bytes / 1024 / 1024).toFixed(2) + ' MiB';
+  }
+
   function api(method, url, body) {
     var options = {
       method: method,
@@ -253,26 +292,26 @@
   // ---------- 底部状态栏（M4.2） ----------
 
   function updateStatusIdentity() {
-    if (!state.user) return;
-    el.statusUser.textContent = state.user.display_name || state.user.user_name;
+    if (!appState.user) return;
+    el.statusUser.textContent = appState.user.display_name || appState.user.user_name;
     // 有原生桥 = 桌面壳（单机版）；纯浏览器访问 = 网络版。
     el.statusMode.textContent = hasNativeBridge() ? '单机版' : '网络版';
-    el.statusVersion.textContent = 'v' + (state.version || '—');
-    el.statusSchema.textContent = 'schema ' + (state.schemaVersion || '—');
-    el.statusDatadir.textContent = state.dataDir || '—';
-    el.statusDatadir.title = '打开数据目录：' + (state.dataDir || '—');
+    el.statusVersion.textContent = 'v' + (appState.version || '—');
+    el.statusSchema.textContent = 'schema ' + (appState.schemaVersion || '—');
+    el.statusDatadir.textContent = appState.dataDir || '—';
+    el.statusDatadir.title = '打开数据目录：' + (appState.dataDir || '—');
   }
 
   function filtersActive() {
-    var f = state.filters;
+    var f = devicesState.filters;
     return !!(f.keyword || f.field || f.name || f.location);
   }
 
-  // 条数与页脚同源：都用 state.total，不另算一次。
+  // 条数与页脚同源：都用 devicesState.total，不另算一次。
   function updateStatusCount() {
     el.statusCount.textContent = filtersActive()
-      ? '筛选后 ' + state.total + ' 条 / 共 ' + state.totalAll + ' 条'
-      : '共 ' + state.total + ' 条';
+      ? '筛选后 ' + devicesState.total + ' 条 / 共 ' + devicesState.totalAll + ' 条'
+      : '共 ' + devicesState.total + ' 条';
   }
 
   function setStatusError(message) {
@@ -307,14 +346,14 @@
   });
 
   el.statusDatadir.addEventListener('click', function () {
-    if (!state.dataDir) return;
-    if (sendToShell('openDataDir', { path: state.dataDir })) return;
+    if (!appState.dataDir) return;
+    if (sendToShell('openDataDir', { path: appState.dataDir })) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(state.dataDir).then(function () {
-        toast('数据目录路径已复制：' + state.dataDir);
+      navigator.clipboard.writeText(appState.dataDir).then(function () {
+        toast('数据目录路径已复制：' + appState.dataDir);
       });
     } else {
-      toast('数据目录：' + state.dataDir);
+      toast('数据目录：' + appState.dataDir);
     }
   });
 
@@ -448,13 +487,6 @@
     return null;
   }
 
-  function formatBytes(value) {
-    var bytes = Number(value) || 0;
-    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
-    return bytes + ' B';
-  }
-
   // 一次远端检查。永远 resolve，不抛：失败路径要和「没有新版本」在界面上不可区分。
   function remoteCheck(config, timeoutMs) {
     var limit = Number(timeoutMs) > 0 ? Number(timeoutMs) : UPDATE_TIMEOUT_MS;
@@ -462,9 +494,27 @@
     if (!/^https?:\/\//i.test(endpoint)) {
       return Promise.resolve({ status: 'disabled', endpoint: endpoint, raw: '', release: null });
     }
+    var guard = updateTimeoutGuard(limit);
+    return Promise.race([fetchRemoteManifest(endpoint, guard.controller), guard.timeout])
+      .then(function (result) {
+        clearTimeout(guard.timer);
+        if (result && result.timedOut) {
+          return {
+            status: 'timeout',
+            endpoint: endpoint,
+            raw: '',
+            release: null,
+            detail: '超过 ' + limit + ' ms 没有响应'
+          };
+        }
+        return result;
+      });
+  }
+
+  // 超时不能只靠 abort：没有 AbortController（或传输层不认 signal）时，
+  // 那个请求会一直挂着，界面永远等不到结论。所以超时自己是竞速的一方。
+  function updateTimeoutGuard(limit) {
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
-    // 超时不能只靠 abort：没有 AbortController（或传输层不认 signal）时，
-    // 那个请求会一直挂着，界面永远等不到结论。所以超时自己是竞速的一方。
     var timer = null;
     var timeout = new Promise(function (resolve) {
       timer = setTimeout(function () {
@@ -474,6 +524,11 @@
         resolve({ timedOut: true });
       }, limit);
     });
+    return { controller: controller, timer: timer, timeout: timeout };
+  }
+
+  // HTTP 取清单原文并解析；传输层与 HTTP 错误都归成 unreachable。
+  function fetchRemoteManifest(endpoint, controller) {
     var options = {
       method: 'GET',
       cache: 'no-store',
@@ -481,7 +536,7 @@
     };
     if (controller) options.signal = controller.signal;
     var transport = updateTransport || function (url, opts) { return fetch(url, opts); };
-    var request = transport(endpoint, options)
+    return transport(endpoint, options)
       .then(function (response) {
         if (!response || !response.ok) {
           throw new Error('HTTP ' + (response ? response.status : '?'));
@@ -489,36 +544,7 @@
         return response.text();
       })
       .then(function (text) {
-        var doc = null;
-        try {
-          doc = JSON.parse(text);
-        } catch (error) {
-          doc = null;
-        }
-        var release = parseRelease(doc);
-        var fallback = {
-          status: release ? 'parsed' : (doc ? 'invalid-version' : 'invalid-json'),
-          endpoint: endpoint,
-          raw: String(text || ''),
-          release: release
-        };
-        // v2 远端清单的 artifacts 不能直接采信（WebView 里没有 Ed25519 验签能力）：
-        // 把清单原文交回服务端，用编译期内嵌公钥验签，通过的资产才挂到
-        // release.assets。没有这一步，运维没往数据目录投放本地清单时，
-        // 「下载更新包 / 安装并重启」会永远是灰的。
-        if (!release || !doc || doc.manifest_version !== 2) return fallback;
-        return api('POST', '/api/version/verify', { manifest: String(text || '') })
-          .then(function (verified) {
-            if (verified && verified.ok && Array.isArray(verified.assets) &&
-                verified.assets.length) {
-              release.assets = parseAssets(verified.assets);
-            }
-            return fallback;
-          })
-          .catch(function () {
-            // 验签接口不可用就退回「只提示版本」，不影响台账。
-            return fallback;
-          });
+        return parseRemoteManifest(endpoint, text);
       })
       .catch(function (error) {
         return {
@@ -529,19 +555,38 @@
           detail: (error && error.message) || String(error)
         };
       });
-    return Promise.race([request, timeout]).then(function (result) {
-      clearTimeout(timer);
-      if (result && result.timedOut) {
-        return {
-          status: 'timeout',
-          endpoint: endpoint,
-          raw: '',
-          release: null,
-          detail: '超过 ' + limit + ' ms 没有响应'
-        };
-      }
-      return result;
-    });
+  }
+
+  // 解析远端清单。v2 清单的 artifacts 不能直接采信（WebView 里没有 Ed25519
+  // 验签能力）：把原文交回服务端用内嵌公钥验签，通过的资产才挂到 release.assets。
+  // 没有这一步，运维没往数据目录投放本地清单时，下载与安装按钮会永远是灰的。
+  function parseRemoteManifest(endpoint, text) {
+    var doc = null;
+    try {
+      doc = JSON.parse(text);
+    } catch (error) {
+      doc = null;
+    }
+    var release = parseRelease(doc);
+    var fallback = {
+      status: release ? 'parsed' : (doc ? 'invalid-version' : 'invalid-json'),
+      endpoint: endpoint,
+      raw: String(text || ''),
+      release: release
+    };
+    if (!release || !doc || doc.manifest_version !== 2) return Promise.resolve(fallback);
+    return api('POST', '/api/version/verify', { manifest: String(text || '') })
+      .then(function (verified) {
+        if (verified && verified.ok && Array.isArray(verified.assets) &&
+            verified.assets.length) {
+          release.assets = parseAssets(verified.assets);
+        }
+        return fallback;
+      })
+      .catch(function () {
+        // 验签接口不可用就退回「只提示版本」，不影响台账。
+        return fallback;
+      });
   }
 
   // 频率：上次检查时间存本地（WebView 自己的存储），每 interval 小时最多查一次。
@@ -578,85 +623,92 @@
     if (silent === undefined) silent = true;
     lastCheckSilent = silent;
 
-    // —— Windows WebView2 壳优先走 updater_win bridge ——
     var bridge = winUpdaterBridge();
-    if (bridge) {
-      // 静默检查也直接触发壳的清单拉取（updater_win 内部自己节流，不会重复打）
-      return bridge.checkNow().then(function () {
-        // 结果异步到达：chrome.webview.message → bridgeCheckNowResult
-        // 主动检查时等待一下让结果先回来，再决定要不要弹 modal
-        if (!silent) {
-          return bridge.poll().then(function (status) {
-            // poll 拿到的是 updater_win.statusJson() 结果
-            // bridgeCheckNowResult 已经在 message 事件里处理了 UI
-            return status;
-          });
-        }
-      });
-    }
+    if (bridge) return checkViaWinBridge(bridge, silent);
 
     // —— HTTP 兜底路径（浏览器或 macOS Sparkle 壳）——
     return api('GET', '/api/version')
       .then(function (data) {
-        state.update = data || null;
-        // 本地清单（M5 路径）仍然优先：运维可以直接投放 update.json 指定版本。
-        if (data && data.update_available && data.latest) {
-          setUpdatePill(data.latest, data.notes || '');
-          if (!silent) openUpdateModal();
-          return;
-        }
+        updateState.info = data || null;
+        if (applyLocalManifest(data, silent)) return;
         var check = (data && data.check) || {};
         if (!check.enabled) {
-          if (!silent) toast('已是最新版 v' + (state.version || '?'));
+          if (!silent) toast('已是最新版 v' + (appState.version || '?'));
           return;
         }
         var hours = Number(check.interval_hours) > 0 ? Number(check.interval_hours) : 24;
         if (!silent) {
-          // 用户主动触发时跳过硬编码节流（但仍尊重 update.json 的 enabled）
-          // 直接发起远端检查
+          // 用户主动触发时跳过硬编码节流（但仍尊重 update.json 的 enabled）。
           return remoteCheck(check, UPDATE_MANUAL_TIMEOUT_MS).then(function (result) {
-            state.updateCheck = result;
-            if (result.status !== 'parsed' || !result.release) {
-              // 失败原因分开说：第一次冷连接超时最容易被误读成「数据格式不合法」。
-              if (result.status === 'timeout') {
-                toast('检查更新失败：连接更新服务器超时，请稍后重试');
-              } else if (result.status === 'unreachable') {
-                toast('检查更新失败：无法连接更新服务器');
-              } else {
-                toast('检查更新失败：返回数据格式不合法');
-              }
-              return;
-            }
-            var current = state.version || (data && data.version) || '';
-            if (compareVersion(result.release.version, current) <= 0) {
-              toast('已是最新版 v' + current);
-              return;
-            }
-            setUpdatePill(result.release.version, result.release.notes || '');
-            openUpdateModal();
+            applyManualRemoteCheck(result, data);
           });
         }
-        // 静默路径：启动时自动检查，节流 + 延迟首屏之后才发请求
-        if (!updateThrottleAllows(hours)) return;
-        return new Promise(function (resolve) {
-          setTimeout(resolve, UPDATE_DELAY_MS);
-        }).then(function () {
-          return remoteCheck(check);
-        }).then(function (result) {
-          state.updateCheck = result;
-          updateThrottleMark();
-          if (result.status !== 'parsed' || !result.release) return;
-          var current = state.version || (data && data.version) || '';
-          if (compareVersion(result.release.version, current) <= 0) return;
-          setUpdatePill(result.release.version, result.release.notes || '');
-        });
+        return runSilentRemoteCheck(check, data, hours);
       })
       .catch(function () {
         // 检查失败不打扰台账操作，也不保留上一次的提示。
-        state.update = null;
-        if (!state.updateCheck) el.updatePill.hidden = true;
+        updateState.info = null;
+        if (!updateState.check) el.updatePill.hidden = true;
         if (!silent) toast('检查更新失败：无法连接服务器');
       });
+  }
+
+  // Windows WebView2 壳优先走 updater_win bridge：壳自己拉清单并验签。
+  // 结果异步到达：chrome.webview.message → bridgeCheckNowResult 已经在 message 事件里处理 UI。
+  function checkViaWinBridge(bridge, silent) {
+    // 静默检查也直接触发壳的清单拉取（updater_win 内部自己节流，不会重复打）。
+    return bridge.checkNow().then(function () {
+      // 主动检查时等待一下让结果先回来，再决定要不要弹 modal。
+      if (!silent) return bridge.poll();
+    });
+  }
+
+  // 本地清单（M5 路径）仍然优先：运维可以直接投放 update.json 指定版本。
+  // 命中时返回 true，调用方不再走远端检查。
+  function applyLocalManifest(data, silent) {
+    if (!data || !data.update_available || !data.latest) return false;
+    setUpdatePill(data.latest, data.notes || '');
+    if (!silent) openUpdateModal();
+    return true;
+  }
+
+  // 用户主动触发：失败原因分开说（第一次冷连接超时最容易被误读成「数据格式不合法」）。
+  function applyManualRemoteCheck(result, data) {
+    updateState.check = result;
+    if (result.status !== 'parsed' || !result.release) {
+      if (result.status === 'timeout') {
+        toast('检查更新失败：连接更新服务器超时，请稍后重试');
+      } else if (result.status === 'unreachable') {
+        toast('检查更新失败：无法连接更新服务器');
+      } else {
+        toast('检查更新失败：返回数据格式不合法');
+      }
+      return;
+    }
+    var current = appState.version || (data && data.version) || '';
+    if (compareVersion(result.release.version, current) <= 0) {
+      toast('已是最新版 v' + current);
+      return;
+    }
+    setUpdatePill(result.release.version, result.release.notes || '');
+    openUpdateModal();
+  }
+
+  // 启动时自动检查：节流 + 延迟首屏之后才发请求，失败保持静默。
+  function runSilentRemoteCheck(check, data, hours) {
+    if (!updateThrottleAllows(hours)) return;
+    return new Promise(function (resolve) {
+      setTimeout(resolve, UPDATE_DELAY_MS);
+    }).then(function () {
+      return remoteCheck(check);
+    }).then(function (result) {
+      updateState.check = result;
+      updateThrottleMark();
+      if (result.status !== 'parsed' || !result.release) return;
+      var current = appState.version || (data && data.version) || '';
+      if (compareVersion(result.release.version, current) <= 0) return;
+      setUpdatePill(result.release.version, result.release.notes || '');
+    });
   }
 
   // 手动更新的步骤要按平台写清楚：只说「有新版本」等于没说。
@@ -716,72 +768,89 @@
     return !isFinite(at) || Date.now() >= at;
   }
 
-  function openUpdateModal() {
-    var manifest = state.update || {};
-    var result = state.updateCheck || null;    // 本地清单命中时以本地为准（与 checkUpdate 的「本地优先」一致）：
-    // 此时不会拉远端，资产只能来自 /api/version 透传的 manifest.assets。
+  // 汇总弹窗要用的数据：本地清单命中时以本地为准（与 checkUpdate 的「本地优先」一致），
+  // 此时不会拉远端，资产只能来自 /api/version 透传的 manifest.assets。
+  function updateModalInfo() {
+    var manifest = updateState.info || {};
+    var result = updateState.check || null;
     var localWins = !!(manifest.update_available && manifest.latest);
     var release = (!localWins && result && result.release) ? result.release : null;
-    var latest = release ? release.version : (manifest.latest || '');
     // 下载页优先用后端 download_page（运维给的是页面地址）；
     // update.json 的 download_url 在自管清单里指向具体安装包文件，
     // 只有当后端没给页面时才退回它，避免「打开下载页」直接下载一个 exe。
     var url = (release && release.url) || manifest.download_page ||
       manifest.download_url || '';
-    state.updateUrl = /^https?:\/\//i.test(url) ? url : '';
-    el.updateVersion.textContent = '当前版本 v' + (state.version || '?') +
-      (latest ? '，最新版本 v' + latest : '');
-    var notes = (release && release.notes) || manifest.notes || '';
-    el.updateNotes.textContent = notes;
-    el.updateNotes.hidden = !notes;
+    return {
+      manifest: manifest,
+      release: release,
+      latest: release ? release.version : (manifest.latest || ''),
+      url: url,
+      notes: (release && release.notes) || manifest.notes || '',
+      mandatory: !!(manifest.mandatory || (release && release.mandatory)),
+      deadline: (release && release.mandatory_deadline) ||
+        manifest.mandatory_deadline || '',
+      reason: (release && release.mandatory_reason) ||
+        manifest.mandatory_reason || '',
+      assets: (release && release.assets) || parseAssets(manifest.assets || [])
+    };
+  }
+
+  // 标题区的版本号、更新说明与操作步骤。
+  function renderUpdateSummary(info) {
+    updateState.url = /^https?:\/\//i.test(info.url) ? info.url : '';
+    el.updateVersion.textContent = '当前版本 v' + (appState.version || '?') +
+      (info.latest ? '，最新版本 v' + info.latest : '');
+    el.updateNotes.textContent = info.notes;
+    el.updateNotes.hidden = !info.notes;
     el.updateSteps.innerHTML = '';
     updateSteps().forEach(function (text) {
       var item = document.createElement('li');
       item.textContent = text;
       el.updateSteps.appendChild(item);
     });
-    el.updateDownload.disabled = !state.updateUrl;
+    el.updateDownload.disabled = !updateState.url;
+  }
 
-    // 强制更新：截止前仍可「稍后」，到期后弹窗不可关闭（与 Mote / 小兔同一口径）。
-    var mFlag = !!(manifest.mandatory || (release && release.mandatory));
-    var mDeadline = (release && release.mandatory_deadline) ||
-      manifest.mandatory_deadline || '';
-    var mReason = (release && release.mandatory_reason) ||
-      manifest.mandatory_reason || '';
-    // 没有下载入口时不阻塞：否则用户既升不了级又关不掉弹窗
-    state.updateForce = mandatoryActive({ mandatory: mFlag, deadline: mDeadline }) &&
-      !!state.updateUrl;
-    var force = state.updateForce;
+  // 强制更新：截止前仍可「稍后」，到期后弹窗不可关闭（与 Mote / 小兔同一口径）。
+  function renderUpdateMandatory(info) {
+    // 没有下载入口时不阻塞：否则用户既升不了级又关不掉弹窗。
+    updateState.force = mandatoryActive({
+      mandatory: info.mandatory,
+      deadline: info.deadline
+    }) && !!updateState.url;
+    var force = updateState.force;
     el.updateTitle.textContent = force ? '必须更新' : '发现新版本';
     el.updateLater.hidden = force;
-    if (mFlag) {
-      var label = MANDATORY_REASON_LABELS[mReason] || '';
-      el.updateMandatory.textContent = force
-        ? '此更新已到截止时间' + (mDeadline ? '（' + mDeadline + '）' : '') +
-          '，不能跳过。' + (label ? '原因：' + label + '。' : '')
-        : '该版本为强制更新' + (label ? '（' + label + '）' : '') +
-          (mDeadline ? '，请在 ' + mDeadline + ' 前完成升级，到期后将无法跳过。' : '。');
-      el.updateMandatory.hidden = false;
-      el.updateMandatory.classList.toggle('is-error', force);
-    } else {
+    if (!info.mandatory) {
       el.updateMandatory.hidden = true;
       el.updateMandatory.textContent = '';
       el.updateMandatory.classList.remove('is-error');
+      return;
     }
+    var label = MANDATORY_REASON_LABELS[info.reason] || '';
+    el.updateMandatory.textContent = force
+      ? '此更新已到截止时间' + (info.deadline ? '（' + info.deadline + '）' : '') +
+        '，不能跳过。' + (label ? '原因：' + label + '。' : '')
+      : '该版本为强制更新' + (label ? '（' + label + '）' : '') +
+        (info.deadline ? '，请在 ' + info.deadline + ' 前完成升级，到期后将无法跳过。' : '。');
+    el.updateMandatory.hidden = false;
+    el.updateMandatory.classList.toggle('is-error', force);
+  }
 
-    // 阶段一：只下载 + 校验。按钮是否可用取决于清单里有没有「带 SHA256 与
-    // 字节数」的当前平台资产；缺任一条件就退回只提示，不给下载入口。
-    // 资产两个来源：远端检查结果，或本地清单直接写的 assets（服务端原样透传）。
-    var assets = (release && release.assets) || parseAssets(manifest.assets || []);
-    state.updateAsset = pickUpdateAsset(assets);
-    state.updateAssetVersion = release ? release.version : (manifest.latest || '');
-    state.updateDownloading = false;
-    if (state.updateTimer) {
-      clearTimeout(state.updateTimer);
-      state.updateTimer = null;
+  // 阶段一：只下载 + 校验。按钮是否可用取决于清单里有没有「带 SHA256 与
+  // 字节数」的当前平台资产；缺任一条件就退回只提示，不给下载入口。
+  // 资产两个来源：远端检查结果，或本地清单直接写的 assets（服务端原样透传）。
+  function renderUpdateAssets(info) {
+    updateState.asset = pickUpdateAsset(info.assets);
+    updateState.assetVersion = info.release ? info.release.version
+      : (info.manifest.latest || '');
+    updateState.downloading = false;
+    if (updateState.timer) {
+      clearTimeout(updateState.timer);
+      updateState.timer = null;
     }
-    var asset = state.updateAsset;
-    var isAdmin = state.user && state.user.role === 'admin';
+    var asset = updateState.asset;
+    var isAdmin = appState.user && appState.user.role === 'admin';
     var ua = navigator.userAgent || '';
     var isWindows = /Windows/i.test(ua);
     // macOS 的替换与重启交给 Sparkle：只有桌面壳里有桥，浏览器里没有。
@@ -795,10 +864,11 @@
       var matched = /-(\d+\.\d+\.\d+)(?:[-.]|$)/.exec(asset.name);
       if (matched) assetVersion = matched[1];
     }
-    var versionMismatch = !!(assetVersion && latest && assetVersion !== latest);
+    var versionMismatch = !!(assetVersion && info.latest &&
+      assetVersion !== info.latest);
     if (versionMismatch) {
       asset = null;
-      state.updateAsset = null;
+      updateState.asset = null;
     }
     // Windows WebView2 壳有 updater_win bridge：壳自己拉 manifest.json + WinHTTP 下载 +
     // BCrypt SHA256 校验，不依赖前端 HTTP 服务的 asset/sh256/size。
@@ -807,8 +877,8 @@
     el.updateDownloadPackage.disabled = canSparkle ||
       (hasWinBridge ? false : (versionMismatch || !(asset && asset.sha256 && asset.size && isAdmin)));
     if (versionMismatch && !hasWinBridge) {
-      setUpdateProgress('清单里的安装包是 v' + assetVersion + '，与最新版本 v' + latest +
-        ' 不一致，已停用自动安装（否则会装回旧版并反复提示更新）；请用下载页手动更新。', true);
+      setUpdateProgress('清单里的安装包是 v' + assetVersion + '，与最新版本 v' +
+        info.latest + ' 不一致，已停用自动安装（否则会装回旧版并反复提示更新）；请用下载页手动更新。', true);
     } else if (hasWinBridge) {
       setUpdateProgress('Windows 自动更新：点「下载更新包」由壳层 WinHTTP 拉清单并校验，' +
         '或直接点「安装并重启」让壳层自动完成下载+校验+安装。');
@@ -824,25 +894,43 @@
     } else {
       setUpdateProgress('');
     }
-    // 阶段二：Windows 安装版走安装器；macOS 走 Sparkle。
-    el.updateInstall.textContent = canSparkle ? '用 Sparkle 安装并重启' : '安装并重启';
-    el.updateInstall.hidden = !(isAdmin && (isWindows || canSparkle));
+    renderUpdateInstallControls({
+      isAdmin: isAdmin,
+      isWindows: isWindows,
+      canSparkle: canSparkle,
+      hasWinBridge: hasWinBridge,
+      versionMismatch: versionMismatch
+    });
+  }
+
+  // 阶段二：Windows 安装版走安装器；macOS 走 Sparkle。
+  function renderUpdateInstallControls(ctx) {
+    el.updateInstall.textContent = ctx.canSparkle ? '用 Sparkle 安装并重启' : '安装并重启';
+    el.updateInstall.hidden = !(ctx.isAdmin && (ctx.isWindows || ctx.canSparkle));
     // Windows bridge 壳：壳自己管理下载+校验+安装，不需要先手动点下载
-    el.updateInstall.disabled = hasWinBridge ? false : (isWindows || versionMismatch);
-    state.updateInstalling = false;
+    el.updateInstall.disabled = ctx.hasWinBridge ? false
+      : (ctx.isWindows || ctx.versionMismatch);
+    updateState.installing = false;
     // 服务端若已有「下载并校验完成」的包（同一次运行里关掉弹窗再打开），
     // 直接放开「安装并重启」，不必重新下载一遍。
-    if (isWindows && isAdmin && !versionMismatch) {
-      api('GET', '/api/update/download').then(function (data) {
-        if (!data || data.state !== 'done') return;
-        el.updateInstall.disabled = false;
-        el.updateDownloadPackage.disabled = true;
-        setUpdateProgress('更新包已就绪（已通过 SHA256 + 字节数校验）：' +
-          (data.path || ''));
-      }).catch(function () {
-        // 读不到进度就当没下载过，按钮保持原状。
-      });
-    }
+    if (!ctx.isWindows || !ctx.isAdmin || ctx.versionMismatch) return;
+    api('GET', '/api/update/download').then(function (data) {
+      if (!data || data.state !== 'done') return;
+      el.updateInstall.disabled = false;
+      el.updateDownloadPackage.disabled = true;
+      setUpdateProgress('更新包已就绪（已通过 SHA256 + 字节数校验）：' +
+        (data.path || ''));
+    }).catch(function () {
+      // 读不到进度就当没下载过，按钮保持原状。
+    });
+  }
+
+  // 打开弹窗：先算一次数据，再交给三个渲染函数，最后展示。
+  function openUpdateModal() {
+    var info = updateModalInfo();
+    renderUpdateSummary(info);
+    renderUpdateMandatory(info);
+    renderUpdateAssets(info);
     loadInstallResult();
     el.updateModal.hidden = false;
   }
@@ -859,7 +947,7 @@
     el.updateInstallResult.hidden = true;
     el.updateInstallResult.textContent = '';
     el.updateInstallResult.classList.remove('is-error');
-    if (!state.user || state.user.role !== 'admin') return;
+    if (!appState.user || appState.user.role !== 'admin') return;
     // 安装结果只属于 Windows 安装器；macOS 的安装进度在 Sparkle 自己的窗口里。
     if (!/Windows/i.test(navigator.userAgent || '')) return;
     api('GET', '/api/update/install-result').then(function (data) {
@@ -881,7 +969,7 @@
   }
 
   el.updateInstall.addEventListener('click', function () {
-    if (state.updateInstalling) return;
+    if (updateState.installing) return;
     // macOS：交给 Sparkle 完成检查、下载、安装与重启。
     if (isMacShell()) {
       if (!sendToShell('checkForUpdates')) {
@@ -905,13 +993,13 @@
       return;
     }
     // HTTP 兜底（服务端安装器）
-    state.updateInstalling = true;
+    updateState.installing = true;
     el.updateInstall.disabled = true;
     setUpdateProgress('正在启动安装程序，服务即将停止…');
     api('POST', '/api/update/install', {}).then(function () {
       setUpdateProgress('安装程序已启动：服务正在停止，装完会自动打开新版本。');
     }).catch(function (error) {
-      state.updateInstalling = false;
+      updateState.installing = false;
       el.updateInstall.disabled = false;
       setUpdateProgress('安装未启动：' + error.message, true);
     });
@@ -919,8 +1007,8 @@
 
   function closeUpdateModal(force) {
     // 强制更新到期后不允许关闭；安装完成或升级后重新打开才解除
-    if (state.updateForce && !force) return;
-    state.updateForce = false;
+    if (updateState.force && !force) return;
+    updateState.force = false;
     el.updateModal.hidden = true;
   }
 
@@ -952,11 +1040,11 @@
   el.updateLater.addEventListener('click', function () { closeUpdateModal(); });
 
   el.updateDownload.addEventListener('click', function () {
-    if (!state.updateUrl) {
+    if (!updateState.url) {
       toast('未配置下载页地址', 'error');
       return;
     }
-    openUpdateUrl(state.updateUrl);
+    openUpdateUrl(updateState.url);
     closeUpdateModal();
   });
 
@@ -983,12 +1071,12 @@
   }
 
   function startUpdateDownload(savePath) {
-    var asset = state.updateAsset;
-    state.updateDownloading = true;
+    var asset = updateState.asset;
+    updateState.downloading = true;
     el.updateDownloadPackage.disabled = true;
     setUpdateProgress('正在准备下载…');
     var payload = {
-      version: state.updateAssetVersion,
+      version: updateState.assetVersion,
       file_name: asset.name,
       url: asset.url,
       sha256: asset.sha256,
@@ -998,7 +1086,7 @@
     api('POST', '/api/update/download', payload).then(function () {
       pollUpdateDownload();
     }).catch(function (error) {
-      state.updateDownloading = false;
+      updateState.downloading = false;
       el.updateDownloadPackage.disabled = false;
       setUpdateProgress('下载未开始：' + error.message +
         '（可用下载页手动更新）', true);
@@ -1018,8 +1106,8 @@
       return;
     }
     // macOS 壳或浏览器：走 HTTP 路径
-    var asset = state.updateAsset;
-    if (!asset || !asset.sha256 || !asset.size || state.updateDownloading) return;
+    var asset = updateState.asset;
+    if (!asset || !asset.sha256 || !asset.size || updateState.downloading) return;
     var macBridge = window.webkit && window.webkit.messageHandlers &&
                     window.webkit.messageHandlers.devcard;
     if (!window.__devcardShell || !macBridge) {
@@ -1028,7 +1116,7 @@
     }
     var has_ext = /\.[A-Za-z0-9]+$/.test(asset.name || '');
     var filename = has_ext ? asset.name
-                           : 'DevCard-' + state.updateAssetVersion + '.dmg';
+                           : 'DevCard-' + updateState.assetVersion + '.dmg';
     pickUpdateSavePath(filename).then(function (path) {
       if (!path) return;
       startUpdateDownload(path);
@@ -1037,12 +1125,12 @@
 
   // 轮询本地服务拿进度；失败一律回到「只提示」，不禁用台账，也不自动替换。
   function pollUpdateDownload() {
-    if (state.updateTimer) clearTimeout(state.updateTimer);
-    state.updateTimer = setTimeout(function () {
+    if (updateState.timer) clearTimeout(updateState.timer);
+    updateState.timer = setTimeout(function () {
       api('GET', '/api/update/download').then(function (data) {
         if (data.state === 'done') {
-          state.updateDownloading = false;
-          state.updateTimer = null;
+          updateState.downloading = false;
+          updateState.timer = null;
           el.updateDownloadPackage.disabled = true;
           if (!el.updateInstall.hidden) el.updateInstall.disabled = false;
           setUpdateProgress('已下载并通过 SHA256 + 字节数校验：' + data.path);
@@ -1050,8 +1138,8 @@
           return;
         }
         if (data.state === 'failed') {
-          state.updateDownloading = false;
-          state.updateTimer = null;
+          updateState.downloading = false;
+          updateState.timer = null;
           el.updateDownloadPackage.disabled = false;
           setUpdateProgress('下载失败：' + (data.error || '未知原因') +
             '；已删除残件，可用下载页手动更新。', true);
@@ -1064,8 +1152,8 @@
             '（' + Math.floor(received * 100 / total) + '%）' : ''));
         pollUpdateDownload();
       }).catch(function (error) {
-        state.updateDownloading = false;
-        state.updateTimer = null;
+        updateState.downloading = false;
+        updateState.timer = null;
         el.updateDownloadPackage.disabled = false;
         setUpdateProgress('无法获取下载进度：' + error.message +
           '（可用下载页手动更新）', true);
@@ -1090,7 +1178,7 @@
   }
 
   function applyBootstrap(data) {
-    state.user = data.user;
+    appState.user = data.user;
     el.app.hidden = false;
     el.login.hidden = true;
     el.userChip.hidden = false;
@@ -1101,14 +1189,14 @@
     el.dedupeBtn.hidden = data.user.role !== 'admin';
     el.version.textContent = 'v' + data.version;
     el.health.textContent = '服务正常 · schema ' + data.schema_version;
-    state.version = data.version || '';
-    state.schemaVersion = data.schema_version || '';
-    state.dataDir = data.data_dir || '';
+    appState.version = data.version || '';
+    appState.schemaVersion = data.schema_version || '';
+    appState.dataDir = data.data_dir || '';
     updateStatusIdentity();
-    state.companyName = data.company_name || '';
-    state.companyNamePrint = data.company_name_print || state.companyName;
-    state.companyNameMaxWidth = data.company_name_max_width || 13;
-    el.companyName.value = state.companyName;
+    systemState.companyName = data.company_name || '';
+    systemState.companyNamePrint = data.company_name_print || systemState.companyName;
+    systemState.companyNameMaxWidth = data.company_name_max_width || 13;
+    el.companyName.value = systemState.companyName;
     el.companyLogoPreview.src = data.company_logo_url || '/company-logo';
     updateCompanyHint();
     updateLogoTime(data.company_logo_updated_at);
@@ -1145,7 +1233,7 @@
     // 避免两套更新通道并存造成用户困惑。Windows 壳层 / 浏览器网络版照常跑。
     // 顶栏「检查更新」按钮三端都显示：macOS 点击转交 Sparkle（见点击处理）。
     if (!isMacShell()) checkUpdate();
-    if (state.view === 'users') {
+    if (appState.view === 'users') {
       loadUsers();
       loadBackups();
     }
@@ -1180,7 +1268,7 @@
     if (hasNativeBridge() && sendToShell('quit', {})) return;
     api('POST', '/api/session/logout')
       .then(function () {
-        state.user = null;
+        appState.user = null;
         showLogin();
       })
       .catch(function (error) {
@@ -1191,7 +1279,7 @@
   // ---------- 强制改密 ----------
 
   function openPasswordModal(forced) {
-    state.forcedPassword = forced;
+    appState.forcedPassword = forced;
     el.passwordTitle.textContent = forced ? '首次登录必须修改密码' : '修改密码';
     el.passwordHint.textContent = forced
       ? '当前账号仍使用初始或重置密码，直接设置新密码即可进入业务页，不需要原密码。'
@@ -1214,7 +1302,7 @@
   });
 
   el.passwordCancel.addEventListener('click', function () {
-    if (state.forcedPassword) return;
+    if (appState.forcedPassword) return;
     el.passwordModal.hidden = true;
   });
 
@@ -1226,13 +1314,13 @@
       el.passwordError.hidden = false;
       return;
     }
-    api('POST', '/api/users/password', state.forcedPassword
+    api('POST', '/api/users/password', appState.forcedPassword
       ? { new_password: el.newPassword.value }
       : { old_password: el.oldPassword.value, new_password: el.newPassword.value })
       .then(function () {
-        var forced = state.forcedPassword;
-        state.forcedPassword = false;
-        state.user.must_change_password = false;
+        var forced = appState.forcedPassword;
+        appState.forcedPassword = false;
+        appState.user.must_change_password = false;
         el.passwordModal.hidden = true;
         toast('密码已更新');
         if (forced) enterApp();
@@ -1247,7 +1335,7 @@
   // ---------- 视图切换 ----------
 
   function setView(view) {
-    state.view = view;
+    appState.view = view;
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (button) {
       button.classList.toggle('is-active', button.getAttribute('data-view') === view);
     });
@@ -1279,11 +1367,11 @@
   // ---------- 设备台账 ----------
 
   function totalPages() {
-    return Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+    return Math.max(1, Math.ceil(devicesState.total / PAGE_SIZE));
   }
 
   function renderRows() {
-    var html = state.items
+    var html = devicesState.items
       .map(function (item) {
         return (
           '<tr>' +
@@ -1301,25 +1389,25 @@
       })
       .join('');
     el.rows.innerHTML = html;
-    el.empty.hidden = state.items.length > 0;
+    el.empty.hidden = devicesState.items.length > 0;
   }
 
   function renderPager() {
-    el.total.textContent = String(state.total);
-    el.pageLabel.textContent = '第 ' + (state.page + 1) + ' / ' + totalPages() + ' 页';
-    el.prev.disabled = state.page <= 0;
-    el.next.disabled = state.page + 1 >= totalPages();
+    el.total.textContent = String(devicesState.total);
+    el.pageLabel.textContent = '第 ' + (devicesState.page + 1) + ' / ' + totalPages() + ' 页';
+    el.prev.disabled = devicesState.page <= 0;
+    el.next.disabled = devicesState.page + 1 >= totalPages();
     updateStatusCount();
   }
 
   function queryString() {
     var params = new URLSearchParams();
-    var f = state.filters;
+    var f = devicesState.filters;
     if (f.keyword) params.set('keyword', f.keyword);
     if (f.field) params.set('field', f.field);
     if (f.name) params.set('name', f.name);
     if (f.location) params.set('location', f.location);
-    params.set('page', String(state.page));
+    params.set('page', String(devicesState.page));
     params.set('page_size', String(PAGE_SIZE));
     return params.toString();
   }
@@ -1327,12 +1415,12 @@
   function load() {
     return api('GET', '/api/devices?' + queryString())
       .then(function (data) {
-        state.items = data.items || [];
-        state.total = data.total || 0;
-        state.totalAll = data.total_all == null ? state.total : data.total_all;
-        state.page = data.page || 0;
-        if (state.items.length === 0 && state.page > 0 && state.total > 0) {
-          state.page = Math.max(0, totalPages() - 1);
+        devicesState.items = data.items || [];
+        devicesState.total = data.total || 0;
+        devicesState.totalAll = data.total_all == null ? devicesState.total : data.total_all;
+        devicesState.page = data.page || 0;
+        if (devicesState.items.length === 0 && devicesState.page > 0 && devicesState.total > 0) {
+          devicesState.page = Math.max(0, totalPages() - 1);
           return load();
         }
         renderRows();
@@ -1370,8 +1458,8 @@
   }
 
   function openDrawer(device) {
-    state.editingId = device ? device.id : null;
-    state.editingVersion = device ? device.version : 0;
+    devicesState.editingId = device ? device.id : null;
+    devicesState.editingVersion = device ? device.version : 0;
     el.drawerTitle.textContent = device ? '编辑设备' : '新增设备';
     el.deviceId.value = device ? String(device.id) : '';
     el.devName.value = device ? device.dev_name : '';
@@ -1390,35 +1478,35 @@
     el.drawer.classList.remove('is-open');
     el.drawer.setAttribute('aria-hidden', 'true');
     el.scrim.hidden = true;
-    state.editingId = null;
-    state.editingVersion = 0;
+    devicesState.editingId = null;
+    devicesState.editingVersion = 0;
   }
 
   function openDelete(device) {
-    state.pendingDeleteId = device.id;
-    state.pendingDeleteVersion = device.version;
+    devicesState.pendingDeleteId = device.id;
+    devicesState.pendingDeleteVersion = device.version;
     el.modalText.textContent =
       '确定删除「' + device.dev_name + '」·' + device.location + '？删除后不可恢复。';
     el.modal.hidden = false;
   }
 
   function closeDelete() {
-    state.pendingDeleteId = null;
-    state.pendingDeleteVersion = 0;
+    devicesState.pendingDeleteId = null;
+    devicesState.pendingDeleteVersion = 0;
     el.modal.hidden = true;
   }
 
   function syncFiltersFromInputs() {
-    state.filters.keyword = el.keyword.value.trim();
-    state.filters.field = el.field.value;
-    state.filters.name = el.name.value;
-    state.filters.location = el.location.value;
+    devicesState.filters.keyword = el.keyword.value.trim();
+    devicesState.filters.field = el.field.value;
+    devicesState.filters.name = el.name.value;
+    devicesState.filters.location = el.location.value;
   }
 
   el.filters.addEventListener('submit', function (event) {
     event.preventDefault();
     syncFiltersFromInputs();
-    state.page = 0;
+    devicesState.page = 0;
     load();
   });
 
@@ -1427,20 +1515,20 @@
     el.field.value = '';
     el.name.value = '';
     el.location.value = '';
-    state.filters = { keyword: '', field: '', name: '', location: '' };
-    state.page = 0;
+    devicesState.filters = { keyword: '', field: '', name: '', location: '' };
+    devicesState.page = 0;
     load();
   });
 
   el.prev.addEventListener('click', function () {
-    if (state.page <= 0) return;
-    state.page -= 1;
+    if (devicesState.page <= 0) return;
+    devicesState.page -= 1;
     load();
   });
 
   el.next.addEventListener('click', function () {
-    if (state.page + 1 >= totalPages()) return;
-    state.page += 1;
+    if (devicesState.page + 1 >= totalPages()) return;
+    devicesState.page += 1;
     load();
   });
 
@@ -1533,17 +1621,17 @@
   // 用途是「知情」而不是拦截——名字是真实的，拒绝保存只会逼用户去删字。
   function loadFontCoverage() {
     return api('GET', '/api/fonts/coverage').then(function (data) {
-      state.fontRanges = (data && data.available && data.ranges) ? data.ranges : null;
+      appState.fontRanges = (data && data.available && data.ranges) ? data.ranges : null;
       // 字体的字节数与 SHA256 由构建期从 web/fonts/ 读出、随接口下发，前端不再写死。
       printFontSpec = (data && data.fonts && data.fonts.length) ? data.fonts : null;
     }).catch(function () {
-      state.fontRanges = null;
+      appState.fontRanges = null;
       printFontSpec = null;
     });
   }
 
   function fontCovers(codepoint) {
-    var ranges = state.fontRanges;
+    var ranges = appState.fontRanges;
     if (!ranges) return true;  // 清单取不到时不误报
     var low = 0;
     var high = ranges.length;
@@ -1586,7 +1674,7 @@
     var chars = Array.from(value);
     for (var i = 0; i < chars.length; i++) {
       var w = chars[i].codePointAt(0) < 0x80 ? 0.5 : 1;
-      if (width + w > state.companyNameMaxWidth + 1e-9) break;
+      if (width + w > systemState.companyNameMaxWidth + 1e-9) break;
       width += w;
       out += chars[i];
     }
@@ -1623,21 +1711,21 @@
   function updateCompanyHint() {
     var value = el.companyName.value;
     var width = companyNameWidth(value);
-    var over = width > state.companyNameMaxWidth + 1e-9;
+    var over = width > systemState.companyNameMaxWidth + 1e-9;
     // 录入放宽到 16 个字符，卡面仍按 13 字宽打印：把截断提前展示成用户看得见的
     // 结果，而不是保存后再解释。
     el.companyPreview.textContent = value.trim()
       ? '将打印为：「' + truncateCompanyName(value) + '」' +
-        (over ? '（卡面按 ' + state.companyNameMaxWidth + ' 字宽打印，只保留前 ' +
-                state.companyNameMaxWidth + ' 字宽）' : '')
+        (over ? '（卡面按 ' + systemState.companyNameMaxWidth + ' 字宽打印，只保留前 ' +
+                systemState.companyNameMaxWidth + ' 字宽）' : '')
       : '将打印为：默认公司名「深圳市安业物业管理有限公司」';
-    el.companyHint.textContent = '已用 ' + width + ' / ' + state.companyNameMaxWidth +
+    el.companyHint.textContent = '已用 ' + width + ' / ' + systemState.companyNameMaxWidth +
       '（汉字算 1，字母数字算 0.5），最多录入 16 个字符';
     el.companyHint.classList.toggle('is-over', over);
     el.companyOver.hidden = !over;
     // 字体覆盖是另一件事：字放得下（宽度上限），但打印子集里没有这个字。
     // 只查真正会打印的那一段（截断后），否则会为永远打不出的字报警，
-    // 且与导出前 companyFontCheck(state.companyNamePrint) 的判定自相矛盾。
+    // 且与导出前 companyFontCheck(systemState.companyNamePrint) 的判定自相矛盾。
     var fontCheck = companyFontCheck(truncateCompanyName(value));
     el.companyFontWarning.hidden = fontCheck.missing.length === 0;
     if (fontCheck.missing.length) {
@@ -1660,14 +1748,14 @@
     el.saveCompany.disabled = true;
     api('PUT', '/api/system/company', { company_name: el.companyName.value.trim() })
       .then(function (data) {
-        state.companyName = data.company_name;
-        state.companyNamePrint = data.company_name_print;
-        state.companyNameMaxWidth = data.company_name_max_width || 13;
+        systemState.companyName = data.company_name;
+        systemState.companyNamePrint = data.company_name_print;
+        systemState.companyNameMaxWidth = data.company_name_max_width || 13;
         el.companyName.value = data.company_name;
         updateCompanyHint();
-        if (state.view === 'print') renderPrint();
-        toast(data.company_name_width > state.companyNameMaxWidth
-          ? '已保存；卡面只打印前 ' + state.companyNameMaxWidth + ' 字宽，实际内容见预览'
+        if (appState.view === 'print') renderPrint();
+        toast(data.company_name_width > systemState.companyNameMaxWidth
+          ? '已保存；卡面只打印前 ' + systemState.companyNameMaxWidth + ' 字宽，实际内容见预览'
           : '公司名已保存');
       })
       .catch(function (error) {
@@ -1834,7 +1922,7 @@
     var button = event.target.closest('button[data-action]');
     if (!button) return;
     var id = Number(button.getAttribute('data-id'));
-    var device = state.items.filter(function (item) { return item.id === id; })[0];
+    var device = devicesState.items.filter(function (item) { return item.id === id; })[0];
     if (!device) return;
     if (button.getAttribute('data-action') === 'edit') {
       openDrawer(device);
@@ -1851,9 +1939,9 @@
       control_range: el.devRange.value.trim(),
       phone: el.devPhone.value.trim()
     };
-    var editingId = state.editingId;
+    var editingId = devicesState.editingId;
     // 乐观锁：编辑必须带回打开抽屉时的版本号，服务端版本不一致会返回 409。
-    if (editingId) payload.version = state.editingVersion;
+    if (editingId) payload.version = devicesState.editingVersion;
     // 生僻字只提示、不拦截：设备名是真实的，拒绝保存只会让用户回去删字。
     var missing = uncoveredChars(payload.dev_name + payload.location + payload.control_range);
     var request = editingId
@@ -1869,7 +1957,7 @@
                 '，打印时会由系统字体渲染（已逐个列出，不阻断保存）', 'error');
         }
         return loadOptions().then(function () {
-          if (!editingId) state.page = 0;
+          if (!editingId) devicesState.page = 0;
           return load();
         });
       })
@@ -1881,7 +1969,7 @@
         if (error.status === 409) {
           // 只有管理员在冲突时看到强制覆盖入口；普通用户仍然只能刷新重填。
           // 覆盖会抹掉别人刚保存的内容，所以文案必须写清后果。
-          var canForce = editingId && state.user && state.user.role === 'admin';
+          var canForce = editingId && appState.user && appState.user.role === 'admin';
           if (canForce && window.confirm(
                 '数据已被他人修改。\n\n' +
                 '强制覆盖会用你刚才填写的内容覆盖别人刚保存的修改；' +
@@ -1914,8 +2002,8 @@
   el.cancelDelete.addEventListener('click', closeDelete);
 
   el.confirmDelete.addEventListener('click', function () {
-    var id = state.pendingDeleteId;
-    var version = state.pendingDeleteVersion;
+    var id = devicesState.pendingDeleteId;
+    var version = devicesState.pendingDeleteVersion;
     if (!id) return;
     el.confirmDelete.disabled = true;
     api('DELETE', '/api/devices/' + id + '?version=' + version)
@@ -1945,7 +2033,7 @@
   }
 
   function renderUsers() {
-    el.userRows.innerHTML = state.users
+    el.userRows.innerHTML = usersState.users
       .map(function (user) {
         var status = [];
         if (user.must_change_password) status.push('需改密');
@@ -1960,7 +2048,7 @@
           '<td class="col-actions">' +
           '<button class="row-btn" type="button" data-user-action="edit" data-name="' + escapeHtml(user.user_name) + '">编辑</button>' +
           '<button class="row-btn" type="button" data-user-action="reset" data-name="' + escapeHtml(user.user_name) + '">重置密码</button>' +
-          (state.user && state.user.user_name === user.user_name
+          (appState.user && appState.user.user_name === user.user_name
             ? ''
             : '<button class="row-btn danger" type="button" data-user-action="delete" data-name="' + escapeHtml(user.user_name) + '">删除</button>') +
           '</td>' +
@@ -1968,13 +2056,13 @@
         );
       })
       .join('');
-    el.userEmpty.hidden = state.users.length > 0;
+    el.userEmpty.hidden = usersState.users.length > 0;
   }
 
   function loadUsers() {
     return api('GET', '/api/users')
       .then(function (data) {
-        state.users = data.items || [];
+        usersState.users = data.items || [];
         renderUsers();
       })
       .catch(function (error) {
@@ -1984,7 +2072,7 @@
   }
 
   function openUserModal(user) {
-    state.editingUser = user;
+    usersState.editingUser = user;
     el.userModalTitle.textContent = user ? '编辑账号' : '新增账号';
     el.userName.value = user ? user.user_name : '';
     el.userName.disabled = !!user;
@@ -2005,13 +2093,13 @@
 
   el.userCancel.addEventListener('click', function () {
     el.userModal.hidden = true;
-    state.editingUser = null;
+    usersState.editingUser = null;
   });
 
   el.userForm.addEventListener('submit', function (event) {
     event.preventDefault();
     el.userError.hidden = true;
-    var editing = state.editingUser;
+    var editing = usersState.editingUser;
     var request = editing
       ? api('PUT', '/api/users', {
           user_name: editing.user_name,
@@ -2027,7 +2115,7 @@
     request
       .then(function () {
         el.userModal.hidden = true;
-        state.editingUser = null;
+        usersState.editingUser = null;
         toast(editing ? '账号已更新' : '账号已创建');
         return loadUsers();
       })
@@ -2046,12 +2134,12 @@
     if (!button) return;
     var name = button.getAttribute('data-name');
     var action = button.getAttribute('data-user-action');
-    var user = state.users.filter(function (item) { return item.user_name === name; })[0];
+    var user = usersState.users.filter(function (item) { return item.user_name === name; })[0];
     if (!user) return;
     if (action === 'edit') {
       openUserModal(user);
     } else if (action === 'reset') {
-      state.resetUser = name;
+      usersState.resetUser = name;
       el.resetHint.textContent = '为「' + name + '」设置新密码，重置后下次登录必须修改。';
       el.resetPassword.value = '';
       el.resetError.hidden = true;
@@ -2073,20 +2161,20 @@
 
   el.resetCancel.addEventListener('click', function () {
     el.resetModal.hidden = true;
-    state.resetUser = null;
+    usersState.resetUser = null;
   });
 
   el.resetForm.addEventListener('submit', function (event) {
     event.preventDefault();
     el.resetError.hidden = true;
-    if (!state.resetUser) return;
+    if (!usersState.resetUser) return;
     api('POST', '/api/users/password', {
-      user_name: state.resetUser,
+      user_name: usersState.resetUser,
       new_password: el.resetPassword.value
     })
       .then(function () {
         el.resetModal.hidden = true;
-        state.resetUser = null;
+        usersState.resetUser = null;
         toast('密码已重置');
         return loadUsers();
       })
@@ -2102,15 +2190,8 @@
 
   // ---------- 备份与恢复 ----------
 
-  function formatBytes(bytes) {
-    if (!bytes) return '0 B';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
-    return (bytes / 1024 / 1024).toFixed(2) + ' MiB';
-  }
-
   function renderBackups() {
-    el.backupRows.innerHTML = state.backups
+    el.backupRows.innerHTML = systemState.backups
       .map(function (item) {
         return (
           '<tr>' +
@@ -2124,13 +2205,13 @@
         );
       })
       .join('');
-    el.backupEmpty.hidden = state.backups.length > 0;
+    el.backupEmpty.hidden = systemState.backups.length > 0;
   }
 
   function loadBackups() {
     return api('GET', '/api/system/backups')
       .then(function (data) {
-        state.backups = data.items || [];
+        systemState.backups = data.items || [];
         renderBackups();
       })
       .catch(function (error) {
@@ -2226,9 +2307,17 @@
     var hostObjects = window.chrome.webview.hostObjects;
     if (!hostObjects || !hostObjects.updater_win) return null;
     if (winUpdaterBridgeInstance) return winUpdaterBridgeInstance;
+    winUpdaterBridgeInstance = makeWinUpdaterBridge(hostObjects.updater_win);
+    // 一次性安装 message listener：壳 updater_win 完成检查/下载/安装后
+    // 用 chrome.webview.PostWebMessageAsJson 推 event+code+status。
+    installWinUpdaterListener();
+    return winUpdaterBridgeInstance;
+  }
 
-    var updater = hostObjects.updater_win;
-    var result = {
+  // 把 hostObjects.updater_win 包成统一接口；
+  // poll 等 800ms 给 WinHTTP 拉 manifest 留一点时间。
+  function makeWinUpdaterBridge(updater) {
+    return {
       checkNow: async function () { await updater.checkNow(); },
       downloadUpdate: async function () { await updater.downloadUpdate(); },
       installUpdate: async function () { await updater.installUpdate(); },
@@ -2244,33 +2333,35 @@
             updater.statusJson().then(function (raw) {
               try { resolve(JSON.parse(raw)); } catch (_) { resolve({}); }
             });
-          }, 800);  // 给 WinHTTP 拉 manifest 留一点时间
+          }, 800);
         });
       },
     };
-    winUpdaterBridgeInstance = result;
+  }
 
-    // 一次性安装 message listener：壳 updater_win 完成检查/下载/安装后
-    // 用 chrome.webview.PostWebMessageAsJson 推 event+code+status。
-    if (!winUpdaterListenerInstalled) {
-      winUpdaterListenerInstalled = true;
-      window.chrome.webview.addEventListener('message', function (event) {
-        var msg = event && event.data;
-        if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (_) { msg = null; } }
-        if (!msg || typeof msg !== 'object' || !msg.event) return;
-        // 让 state.update / updateCheck 反映 bridge 结果
-        if (msg.event === 'checkNow') {
-          // msg.status = updater_win.statusJson()（检查后的最新状态）
-          // 用 status.manifest_version / status.manifest_build 判断有无更新
-          bridgeCheckNowResult(msg);
-        } else if (msg.event === 'downloadUpdate') {
-          bridgeDownloadResult(msg);
-        } else if (msg.event === 'installUpdate') {
-          bridgeInstallResult(msg);
-        }
-      });
+  // listener 只装一次：重复调用 winUpdaterBridge 不会重复挂事件。
+  function installWinUpdaterListener() {
+    if (winUpdaterListenerInstalled) return;
+    winUpdaterListenerInstalled = true;
+    window.chrome.webview.addEventListener('message', function (event) {
+      dispatchWinUpdaterMessage(event && event.data);
+    });
+  }
+
+  // msg = {event, code, status: {...}}；壳偶尔直接推字符串，解析失败按忽略处理。
+  function dispatchWinUpdaterMessage(msg) {
+    if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (_) { msg = null; } }
+    if (!msg || typeof msg !== 'object' || !msg.event) return;
+    // 让 updateState.info / updateState.check 反映 bridge 结果
+    if (msg.event === 'checkNow') {
+      // msg.status = updater_win.statusJson()（检查后的最新状态）
+      // 用 status.manifest_version / status.manifest_build 判断有无更新
+      bridgeCheckNowResult(msg);
+    } else if (msg.event === 'downloadUpdate') {
+      bridgeDownloadResult(msg);
+    } else if (msg.event === 'installUpdate') {
+      bridgeInstallResult(msg);
     }
-    return result;
   }
 
   // bridge 回调 → 界面状态更新。msg = {event, code, status: {...}}
@@ -2280,15 +2371,15 @@
       var version = status.manifest_version || '';
       var notes = status.notes_url || '';
       if (version) {
-        state.update = { update_available: true, latest: version, notes: notes };
+        updateState.info = { update_available: true, latest: version, notes: notes };
         setUpdatePill(version, notes);
         // 非静默检查 → 弹 modal
         if (!lastCheckSilent && typeof openUpdateModal === 'function') openUpdateModal();
       }
     } else if (msg.code === 'NO_UPDATE') {
-      state.update = { update_available: false };
+      updateState.info = { update_available: false };
       el.updatePill.hidden = true;
-      if (!lastCheckSilent) toast('已是最新版 v' + (state.version || '?'));
+      if (!lastCheckSilent) toast('已是最新版 v' + (appState.version || '?'));
     } else {
       if (!lastCheckSilent) toast('检查更新失败：' + (msg.code || ''));
     }
@@ -2355,7 +2446,7 @@
     return (
       '<article class="card">' +
       '<span class="card-logo"><img src="/company-logo" alt=""></span>' +
-      '<div class="card-company"><span>' + escapeHtml(state.companyNamePrint) + '</span></div>' +
+      '<div class="card-company"><span>' + escapeHtml(systemState.companyNamePrint) + '</span></div>' +
       '<div class="card-title">设备管理卡</div>' +
       fieldHtml(1, '设备名称：', device.dev_name) +
       fieldHtml(2, '位　　置：', device.location) +
@@ -2369,7 +2460,7 @@
 
   function printQuery() {
     var params = new URLSearchParams();
-    var f = state.filters;
+    var f = devicesState.filters;
     if (f.keyword) params.set('keyword', f.keyword);
     if (f.field) params.set('field', f.field);
     if (f.name) params.set('name', f.name);
@@ -2382,20 +2473,20 @@
   }
 
   function updatePrintControls() {
-    var empty = state.printItems.length === 0;
-    el.printExport.disabled = state.printBusy || empty;
-    el.printPrint.disabled = state.printBusy || empty;
-    el.printEmpty.hidden = !empty || state.printBusy;
+    var empty = printState.items.length === 0;
+    el.printExport.disabled = printState.busy || empty;
+    el.printPrint.disabled = printState.busy || empty;
+    el.printEmpty.hidden = !empty || printState.busy;
     var layout = printLayoutSize();
-    var pages = empty ? 0 : Math.ceil(state.printItems.length / layout);
-    el.printScope.textContent = '当前筛选结果 ' + state.printItems.length + ' 条 · 每页 ' +
+    var pages = empty ? 0 : Math.ceil(printState.items.length / layout);
+    el.printScope.textContent = '当前筛选结果 ' + printState.items.length + ' 条 · 每页 ' +
       layout + ' 张 · 共 ' + pages + ' 页' +
-      (state.printTruncated ? '（超过 10000 条，已截断）' : '');
+      (printState.truncated ? '（超过 10000 条，已截断）' : '');
   }
 
   function renderPrint() {
     var layout = printLayoutSize();
-    var items = state.printItems;
+    var items = printState.items;
     var html = '';
     for (var start = 0; start < items.length; start += layout) {
       html += '<div class="sheet-wrap"><div class="sheet" data-layout="' + layout + '">' +
@@ -2419,8 +2510,8 @@
       });
       if (where.indexOf(label) < 0) where.push(label);
     }
-    scan(state.companyNamePrint, '公司名');
-    state.printItems.forEach(function (item) {
+    scan(systemState.companyNamePrint, '公司名');
+    printState.items.forEach(function (item) {
       scan(item.dev_name, '设备名称');
       scan(item.location, '位置');
       scan(item.control_range, '控制范围');
@@ -2556,19 +2647,19 @@
   }
 
   function loadPrint() {
-    state.printBusy = true;
+    printState.busy = true;
     updatePrintControls();
     return api('GET', '/api/print/cards?' + printQuery())
       .then(function (data) {
-        state.printItems = data.items || [];
-        state.printTruncated = !!data.truncated;
-        if (data.company_name) state.companyNamePrint = data.company_name;
+        printState.items = data.items || [];
+        printState.truncated = !!data.truncated;
+        if (data.company_name) systemState.companyNamePrint = data.company_name;
         // 打印页初始化就等字体：用户点导出时字体必须已经就位，
         // 而不是在截图那一瞬间才去加载。
         return ensurePrintFonts();
       })
       .then(function (fontsOk) {
-        state.printBusy = false;
+        printState.busy = false;
         renderPrint();
         if (!fontsOk) {
           toast(printFonts.error, 'error');
@@ -2579,9 +2670,9 @@
           : '浏览器模式：两个按钮都会打开打印对话框，选「另存为 PDF」即可导出。';
       })
       .catch(function (error) {
-        state.printBusy = false;
-        state.printItems = [];
-        state.printTruncated = false;
+        printState.busy = false;
+        printState.items = [];
+        printState.truncated = false;
         renderPrint();
         if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
@@ -2595,8 +2686,8 @@
       return { error: printFonts.error || '子集字体未就绪，已中止导出' };
     }
     // 单字回退是可枚举的：公司名按真实字宽量，塞不进公司名框就不许导出。
-    // 这里查 state.companyNamePrint（打印实际用的那份），不是输入框里的原文。
-    var fontCheck = companyFontCheck(state.companyNamePrint || '');
+    // 这里查 systemState.companyNamePrint（打印实际用的那份），不是输入框里的原文。
+    var fontCheck = companyFontCheck(systemState.companyNamePrint || '');
     if (fontCheck.overflow) {
       return { error: '公司名含打印字体不支持的字（' + fontCheck.missing.join('、') +
                       '），回退渲染后超出公司名框，已中止导出' };
@@ -2635,7 +2726,7 @@
   window.addEventListener('resize', updatePrintScale);
 
   el.printExport.addEventListener('click', function () {
-    if (!state.printItems.length) return;
+    if (!printState.items.length) return;
     // 有壳层时一律交给壳：壳会向页面要布局，页面用 {error} 回应并中止，
     // 这样错误能落到系统对话框/日志里，而不是停在页面里没人知道。
     if (sendToShell('exportPdf', { filename: '设备管理卡.pdf' })) return;
@@ -2653,7 +2744,7 @@
   });
 
   el.printPrint.addEventListener('click', function () {
-    if (!state.printItems.length) return;
+    if (!printState.items.length) return;
     if (sendToShell('print')) return;
     if (!printFonts.ready) {
       toast(printFonts.error || '子集字体未就绪，已中止打印', 'error');
@@ -2671,9 +2762,9 @@
 
   window.__devcardUpdateState = function () {
     return {
-      version: state.version,
+      version: appState.version,
       pill: el.updatePill.hidden ? '' : el.updatePill.textContent,
-      check: state.updateCheck
+      check: updateState.check
     };
   };
 
@@ -2691,13 +2782,13 @@
     if (!release) {
       return JSON.stringify({ ok: false, reason: 'parse', bytes: raw.length });
     }
-    state.updateCheck = {
+    updateState.check = {
       status: 'parsed',
       endpoint: '(fixture)',
       raw: raw,
       release: release
     };
-    var current = state.version || '';
+    var current = appState.version || '';
     var fresher = compareVersion(release.version, current) > 0;
     if (fresher) setUpdatePill(release.version, release.notes || '');
     // 字节数按 UTF-8 算：JS 的 length 是 UTF-16 码元，和文件字节数不是一回事。
@@ -2725,12 +2816,12 @@
       last = 'unavailable';
     }
     return JSON.stringify({
-      user: (state.user && state.user.user_name) || '',
-      version: state.version || '',
-      manifest: state.update ? 'loaded' : 'missing',
-      check_config: (state.update && state.update.check) || null,
+      user: (appState.user && appState.user.user_name) || '',
+      version: appState.version || '',
+      manifest: updateState.info ? 'loaded' : 'missing',
+      check_config: (updateState.info && updateState.info.check) || null,
       last_check_at: last,
-      status: (state.updateCheck && state.updateCheck.status) || ''
+      status: (updateState.check && updateState.check.status) || ''
     });
   };
 
