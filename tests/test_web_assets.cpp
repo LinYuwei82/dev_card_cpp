@@ -911,10 +911,11 @@ int main() {
     std::cerr << "[失败] 内嵌前端与源文件不一致：" << error << std::endl;
     code = 1;
   } else {
-    std::cout << "内嵌前端自检通过：index.html / styles.css / app.js / logo.jpg / favicon.ico 与源文件一致"
+    std::cout << "内嵌前端自检通过：index.html / styles.css / app.js / js 模块 / logo.jpg / favicon.ico 与源文件一致"
               << "（index.html " << devcard::embedded_index_html_size() << " B, styles.css "
               << devcard::embedded_styles_css_size() << " B, app.js "
-              << devcard::embedded_app_js_size() << " B）" << std::endl;
+              << devcard::embedded_app_js_size() << " B, js 模块 "
+              << devcard::embedded_js_module_count() << " 份）" << std::endl;
   }
   if (check_fonts() != 0) {
     code = 1;

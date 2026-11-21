@@ -8,7 +8,7 @@
 //   2. 乐观锁 409 响应形状：current / current_version / fields / updated_by。
 //      前端冲突弹窗靠这些字段提示「刷新后重填」。
 //   3. /api/version 的字段集：前端更新链路（检查/下载/安装/notes_url）全读它。
-//   4. 前端 app.js 里的每个 /api/ 字面量都能对上服务端路由表：
+//   4. 前端 JS（app.js + js/*.js）里的每个 /api/ 字面量都能对上服务端路由表：
 //      「前端调了不存在的接口」这类回归只能靠比对拦住。
 //
 // 与 test_web_assets.cpp 同一套起服务方式：进程内 ServerHandle + httplib::Client。
@@ -455,13 +455,24 @@ int main() {
     }
   }
 
-  // ===== 6. 前端 app.js 的 /api/ 字面量 ⊆ 服务端路由表 =====
+  // ===== 6. 前端 JS（app.js + js/*.js）的 /api/ 字面量 ⊆ 服务端路由表 =====
   {
-    std::ifstream app_js(fs::path(DEVCARD_WEB_SOURCE_DIR) / "app.js",
-                         std::ios::binary);
-    CHECK(bool(app_js));
-    std::string source((std::istreambuf_iterator<char>(app_js)),
-                       std::istreambuf_iterator<char>());
+    std::string source;
+    auto append_js = [&source](const fs::path& path) {
+      std::ifstream in(path, std::ios::binary);
+      if (!in) return false;
+      source.append((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+      return true;
+    };
+    const fs::path web_root(DEVCARD_WEB_SOURCE_DIR);
+    CHECK(append_js(web_root / "app.js"));
+    std::error_code dir_error;
+    for (const auto& entry : fs::directory_iterator(web_root / "js", dir_error)) {
+      if (entry.is_regular_file() && entry.path().extension() == ".js") {
+        CHECK(append_js(entry.path()));
+      }
+    }
     CHECK(!source.empty());
     if (!source.empty()) {
       static const std::regex kPattern("/api/[A-Za-z0-9_\\-/]+");

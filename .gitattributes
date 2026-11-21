@@ -8,6 +8,7 @@ web/**     -text
 web/*.html text eol=lf
 web/*.css  text eol=lf
 web/*.js   text eol=lf
+web/js/*.js text eol=lf
 
 # 发布门禁：三仓库共用同一份文件，字节必须跨平台一致（哈希校验依赖 LF）
 tools/release/guard.py text eol=lf

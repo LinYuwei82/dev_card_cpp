@@ -48,6 +48,18 @@ struct StaticAsset {
 const StaticAsset* embedded_static_assets();
 std::size_t embedded_static_asset_count();
 
+// 前端 ES 模块（web/js/*.js）：路径形如 /js/core.js，随 app.js 一起内嵌。
+// 每个模块都带源文件字节数与 SHA256，运行时与 ctest 逐份核对。
+struct JsModule {
+  const char* path;
+  const char* data;
+  std::size_t size;
+  const char* sha256;
+};
+
+const JsModule* embedded_js_modules();
+std::size_t embedded_js_module_count();
+
 // 逐个核对内嵌内容与源文件是否一致；全部一致返回空串，否则返回第一条差异说明。
 std::string embedded_assets_error();
 

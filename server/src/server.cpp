@@ -2195,6 +2195,21 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     if (js.empty()) throw AppError("not_found", "前端文件不存在：app.js");
     set_asset(response, js, "application/javascript; charset=utf-8");
   });
+  // 前端 ES 模块（app.js 里 import 的那些）：整表按内嵌路径注册，开发态读磁盘。
+  for (std::size_t i = 0; i < embedded_js_module_count(); ++i) {
+    const JsModule* module = &embedded_js_modules()[i];
+    state.server.Get(
+        module->path,
+        [&state, module](const httplib::Request&, httplib::Response& response) {
+          std::string js = state.web_dir.empty()
+                               ? std::string(module->data)
+                               : read_file_bytes(state.web_dir / (module->path + 1));
+          if (js.empty()) {
+            throw AppError("not_found", "前端文件不存在：" + std::string(module->path));
+          }
+          set_asset(response, js, "application/javascript; charset=utf-8");
+        });
+  }
   // 子集字体：@font-face 从这里取，界面与打印共用同一份。
   // 只认白名单里的两个文件名，字体目录不整体开放成静态目录。
   state.server.Get(R"(/fonts/([A-Za-z0-9._-]+))",

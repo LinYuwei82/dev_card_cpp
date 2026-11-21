@@ -76,6 +76,19 @@ std::string embedded_assets_error() {
     if (!error.empty()) return error;
   }
 
+  // ES 模块：每份都按「字节数 + SHA256」核对，避免某个模块被静默截断。
+  for (std::size_t i = 0; i < embedded_js_module_count(); ++i) {
+    const JsModule& module = embedded_js_modules()[i];
+    const std::string_view data(module.data);
+    if (data.size() != module.size) {
+      return std::string(module.path) + "：内嵌 " + std::to_string(data.size()) +
+             " 字节，源文件 " + std::to_string(module.size) + " 字节";
+    }
+    if (sha256_hex(data) != module.sha256) {
+      return std::string(module.path) + "：内嵌内容 SHA256 与源文件不一致";
+    }
+  }
+
   std::string error =
       check_hex_asset("logo.jpg", embedded_logo_jpg_hex(),
                       EmbeddedAsset::kLogoJpg);

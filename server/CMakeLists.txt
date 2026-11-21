@@ -2,6 +2,7 @@ set(WEB_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/web_assets.cpp")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 set(WEB_DIR "${CMAKE_SOURCE_DIR}/web")
+file(GLOB WEB_JS_FILES "${WEB_DIR}/js/*.js")
 add_custom_command(
     OUTPUT "${WEB_ASSETS_CPP}"
     COMMAND ${CMAKE_COMMAND}
@@ -11,6 +12,7 @@ add_custom_command(
     DEPENDS "${WEB_DIR}/index.html"
             "${WEB_DIR}/styles.css"
             "${WEB_DIR}/app.js"
+            ${WEB_JS_FILES}
             "${WEB_DIR}/logo.jpg"
             "${WEB_DIR}/favicon.ico"
             "${WEB_DIR}/favicon-16x16.png"

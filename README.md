@@ -149,7 +149,7 @@ dev_card_cpp/
 ├── core/                     # 业务 / DAO / 迁移 / xlsx / 设置 / 图片元数据
 ├── server/                   # HTTP 路由与入口 devcard-server
 ├── shell/                    # macOS 壳（WKWebView + 打印桥）/ Windows 壳（WebView2）
-├── web/                      # 原生 JS/CSS 前端（构建期内嵌进二进制）；web/fonts/ 放子集 TTF
+├── web/                      # 原生 JS/CSS 前端（构建期内嵌进二进制；ES Module 按域拆在 web/js/）；web/fonts/ 放子集 TTF
 ├── cmake/                    # embed_web / font_manifest / devcard_version / version.rc.in
 ├── tools/
 │   ├── fonts/                # make_subset.sh（变量字体定字重 + pyftsubset）

@@ -156,6 +156,28 @@ endfunction()
 emit_text_literal(index_html "${INPUT_DIR}/index.html")
 emit_text_literal(styles_css "${INPUT_DIR}/styles.css")
 emit_text_literal(app_js "${INPUT_DIR}/app.js")
+
+# 前端 ES 模块：app.js 只做入口，其余逻辑在 web/js/ 下按域拆分。
+# 目录不存在（例如 test_embed_web 的最小输入）时生成空表，调用方按 count=0 处理。
+file(GLOB js_module_paths "${INPUT_DIR}/js/*.js")
+list(SORT js_module_paths)
+set(js_decls "")
+set(js_rows "")
+set(js_count 0)
+foreach(js_path IN LISTS js_module_paths)
+  get_filename_component(js_name "${js_path}" NAME)
+  emit_text_literal(js_text "${js_path}")
+  file(SHA256 "${js_path}" js_hash)
+  file(SIZE "${js_path}" js_size)
+  string(APPEND js_decls "const char kJsModule${js_count}[] =\n${js_text};\n")
+  string(APPEND js_rows
+         "  {\"/js/${js_name}\", kJsModule${js_count}, ${js_size}, \"${js_hash}\"},\n")
+  math(EXPR js_count "${js_count} + 1")
+endforeach()
+if(js_count EQUAL 0)
+  # C++ 空数组不合法，留一个占位行；对外 count=0，不会有人读到它。
+  set(js_rows "  {nullptr, nullptr, 0, nullptr},\n")
+endif()
 # 打印卡片的 logo 以十六进制内嵌，运行时由壳/服务端转回二进制提供 /logo.jpg，
 # 打包时不必在可执行文件旁另放资源目录。
 emit_hex_literal(logo_hex "${INPUT_DIR}/logo.jpg")
@@ -248,6 +270,21 @@ file(WRITE "${OUTPUT}"
 "  }\n"
 "  return \"\";\n"
 "}\n"
+"\n"
+"}  // namespace devcard\n")
+
+file(APPEND "${OUTPUT}"
+"namespace devcard {\n"
+"namespace {\n"
+"${js_decls}"
+"}  // namespace\n"
+"\n"
+"const JsModule kJsModules[] = {\n"
+"${js_rows}"
+"};\n"
+"\n"
+"const JsModule* embedded_js_modules() { return kJsModules; }\n"
+"std::size_t embedded_js_module_count() { return ${js_count}; }\n"
 "\n"
 "}  // namespace devcard\n")
 
