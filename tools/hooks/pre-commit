@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# pre-commit hook — 多门禁（UTF-8 BOM + Ed25519 公钥一致性）
+# pre-commit hook — 多门禁（UTF-8 BOM + 清单公钥 hex + Sparkle 公钥）
 #
 # 门禁 1：PowerShell 5 .ps1 必须 UTF-8 + BOM
 #         Windows PowerShell 5 只正确识别带 BOM 的 .ps1；
 #         无 BOM 会被按 GBK 读，中文字面量断裂 → 脚本崩溃。
 #
-# 门禁 2：Sparkle EdDSA 公钥硬编码一致性
+# 门禁 2：清单 v2 的 Ed25519 公钥（hex）一致性
+#         Windows 更新桥 DEVCARD_UPDATER_PUBKEY_HEX（shell/win/CMakeLists.txt）
+#         与 /api/version 的 kUpdateSignPubkeyHex（server/src/server.cpp）必须同值；
+#         有 ~/.config/devcard/manifest-keys/ed25519_seed.b64 时还会从种子推导公钥
+#         核对，防止两处一起写错。混用 Sparkle 公钥会导致 SIGNATURE_INVALID。
+#
+# 门禁 3：Sparkle EdDSA 公钥硬编码一致性
 #         Sparkle 验签公钥在 shell/CMakeLists.txt 硬编码一处，且会全仓扫描
 #         已跟踪的代码/脚本里的所有 32 字节 base64 公钥；任一处被误改都会导致
 #         客户端更新验签静默失败。这个 hook 从
@@ -28,7 +34,7 @@ fail_count=0; checked=0
 ps1_list=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.ps1$' || true)
 
 if [ -n "$ps1_list" ]; then
-    echo -e "${YELLOW}[hook] 门禁 1/2：.ps1 UTF-8 + BOM${NC}"
+    echo -e "${YELLOW}[hook] 门禁 1/3：.ps1 UTF-8 + BOM${NC}"
     while IFS= read -r f; do
         [ -z "$f" ] && continue
         bom=$(git show ":$f" 2>/dev/null | head -c 3 | od -An -tx1 | tr -d ' \n')
@@ -46,13 +52,77 @@ if [ -n "$ps1_list" ]; then
     fi
     echo -e "  ${GREEN}✓ 通过：${checked} 个 .ps1${NC}\n"
 else
-    echo -e "${GREEN}[hook] 门禁 1/2 跳过（无 .ps1 变更）${NC}"
+    echo -e "${GREEN}[hook] 门禁 1/3 跳过（无 .ps1 变更）${NC}"
 fi
 
 # ============================================================
-# 门禁 2：Sparkle Ed25519 公钥一致性
+# 门禁 2：清单 v2 Ed25519 公钥（hex）一致性
 # ============================================================
-echo -e "${YELLOW}[hook] 门禁 2/2：Sparkle Ed25519 公钥一致性${NC}"
+echo -e "${YELLOW}[hook] 门禁 2/3：清单 Ed25519 公钥（hex）一致性${NC}"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# 取某个标记后 3 行内的 64 位十六进制串（server 的常量值与名字分两行）
+hex_after_marker() {
+    grep -A3 -F "$2" "$1" 2>/dev/null \
+        | grep -oE '"[0-9a-fA-F]{64}"' | head -1 | tr -d '"' | tr 'A-F' 'a-f'
+}
+
+SERVER_KEY_FILE="$REPO_ROOT/server/src/server.cpp"
+SHELL_KEY_FILE="$REPO_ROOT/shell/win/CMakeLists.txt"
+SERVER_HEX=$(hex_after_marker "$SERVER_KEY_FILE" "kUpdateSignPubkeyHex")
+SHELL_HEX=$(hex_after_marker "$SHELL_KEY_FILE" "DEVCARD_UPDATER_PUBKEY_HEX")
+
+hex_fail=0
+if [ -z "$SERVER_HEX" ]; then
+    echo -e "  ${RED}✗${NC} server/src/server.cpp 里找不到 kUpdateSignPubkeyHex 的 64 位 hex 公钥"
+    hex_fail=$((hex_fail + 1))
+fi
+if [ -z "$SHELL_HEX" ]; then
+    echo -e "  ${RED}✗${NC} shell/win/CMakeLists.txt 里找不到 DEVCARD_UPDATER_PUBKEY_HEX 的 64 位 hex 公钥"
+    hex_fail=$((hex_fail + 1))
+fi
+if [ -n "$SERVER_HEX" ] && [ -n "$SHELL_HEX" ] && [ "$SERVER_HEX" != "$SHELL_HEX" ]; then
+    echo -e "  ${RED}✗${NC} 两处清单公钥不一致："
+    echo -e "     server/src/server.cpp        ：$SERVER_HEX"
+    echo -e "     shell/win/CMakeLists.txt     ：$SHELL_HEX"
+    hex_fail=$((hex_fail + 1))
+fi
+
+# 有签名种子时再从种子推导公钥核对（两处一起写错也能拦住）
+SEED_FILE="$HOME/.config/devcard/manifest-keys/ed25519_seed.b64"
+if [ -f "$SEED_FILE" ] && command -v openssl >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1; then
+    seed_hex=$(openssl base64 -d -A -in "$SEED_FILE" 2>/dev/null | xxd -p -c 64 | tr -d '\n')
+    if [ "${#seed_hex}" -eq 64 ]; then
+        # 32 字节种子包成 Ed25519 PKCS#8（302e020100300506032b657004220420），再取公钥末 32 字节
+        derived_hex=$(printf '302e020100300506032b657004220420%s' "$seed_hex" \
+            | xxd -r -p | openssl pkey -inform DER -pubout -outform DER 2>/dev/null \
+            | tail -c 32 | xxd -p -c 64 | tr -d '\n')
+        if [ -n "$derived_hex" ] && [ -n "$SERVER_HEX" ] && [ "$derived_hex" != "$SERVER_HEX" ]; then
+            echo -e "  ${RED}✗${NC} 清单公钥与签名种子推导值不一致："
+            echo -e "     种子推导：$derived_hex"
+            echo -e "     代码硬编码：$SERVER_HEX"
+            hex_fail=$((hex_fail + 1))
+        fi
+    fi
+else
+    echo -e "  ${YELLOW}⚠${NC} 跳过种子推导核对（缺 $SEED_FILE 或 openssl/xxd）"
+fi
+
+if [ $hex_fail -eq 0 ]; then
+    echo -e "  ${GREEN}✓ 通过：清单公钥 hex 一致${NC}\n"
+else
+    echo ""
+    echo -e "${RED}[hook] 阻断：清单公钥 hex 校验失败（$hex_fail 处）${NC}"
+    echo -e "       写错会让 Windows「检查更新」恒定 SIGNATURE_INVALID。"
+    echo -e "       绕过：$RERUN"
+    exit 1
+fi
+
+# ============================================================
+# 门禁 3：Sparkle Ed25519 公钥一致性
+# ============================================================
+echo -e "${YELLOW}[hook] 门禁 3/3：Sparkle Ed25519 公钥一致性${NC}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 # DevCard Sparkle 用 .pem
@@ -158,5 +228,5 @@ if [ $((target_fail + scan_fail)) -gt 0 ]; then
 fi
 
 echo ""
-echo -e "${GREEN}[hook] 通过：门禁 1/2 + 门禁 2/2${NC}"
+echo -e "${GREEN}[hook] 通过：门禁 1/3 + 门禁 2/3 + 门禁 3/3${NC}"
 exit 0
