@@ -253,11 +253,23 @@ else: print("ERR: no 64-hex match", file=sys.stderr); sys.exit(1)
     }
 
     $python = $null
-    foreach ($candidate in @("python3", "python")) {
+    # 先找 python 再找 python3：Windows 上 python3 常是 WindowsApps 的商店占位程序，
+    # 调用即返回 9009（命令不存在），会让上传步骤在一键发布里直接中断。
+    foreach ($candidate in @("python", "python3")) {
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($cmd) { $python = $cmd.Source; break }
+        if ($cmd -and $cmd.Source -notmatch "WindowsApps") { $python = $cmd.Source; break }
     }
-    if (-not $python) { Fail "找不到 python3 / python（上传脚本需要）" }
+    if (-not $python) {
+        # 兜底：扫常见安装路径（与 guard 那段保持同一口径）
+        foreach ($p in @(
+            "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+            "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+            "$env:ProgramFiles\Python311\python.exe",
+            "$env:ProgramFiles\Python312\python.exe"
+        )) { if (Test-Path -LiteralPath $p) { $python = $p; break } }
+    }
+    if (-not $python) { Fail "找不到真实 python（上传脚本需要；Windows Store 的 python3 别名已排除）" }
 
     $envFile = Join-Path $env:USERPROFILE ".config\devcard\release.env"
     if (Test-Path -LiteralPath $envFile) {
