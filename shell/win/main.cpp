@@ -1008,6 +1008,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   // 纯 GUI 启动（无控制台）时本调用是空操作。
   win_encoding::init_console();
 
+  // 单实例：第二个进程不重复起服务/WebView，只把已有窗口叫到前台。
+  // 用 Local\ 命名空间（同一登录会话内唯一），句柄保持到进程退出。
+  HANDLE instance_mutex =
+      CreateMutexW(nullptr, TRUE, L"Local\\DevCard-SingleInstance");
+  if (instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    // 首实例可能还在建窗口，最多等 3 秒再放弃。
+    for (int i = 0; i < 30; ++i) {
+      HWND existing = FindWindowW(kWindowClass, nullptr);
+      if (existing) {
+        ShowWindow(existing, SW_RESTORE);
+        SetForegroundWindow(existing);
+        return 0;
+      }
+      Sleep(100);
+    }
+    return 0;
+  }
+
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
     Fatal(L"COM 初始化失败（需要 STA 线程）。");
     return 1;

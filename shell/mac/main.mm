@@ -7,12 +7,45 @@
 #import "update_selftest.h"
 
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
+#include "devcard/paths.h"
 #include "devcard/server.h"
 
 namespace {
+
+// 单实例：锁文件放在数据目录，第二个进程拿不到锁就激活已有窗口后退出。
+// 用独立的 shell.lock，避免和服务端自己的实例锁互相影响。
+int acquire_single_instance_lock(const std::string& data_dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(data_dir, ec);
+  const std::string lock_path = data_dir + "/shell.lock";
+  const int fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
+  if (fd < 0) return -1;
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    ::close(fd);
+    return -2;
+  }
+  return fd;  // 进程存活期间一直持有，退出时由内核释放
+}
+
+void activate_existing_instance() {
+  NSArray<NSRunningApplication*>* apps = [NSRunningApplication
+      runningApplicationsWithBundleIdentifier:@"com.anye.devcard.new"];
+  const pid_t self = NSProcessInfo.processInfo.processIdentifier;
+  for (NSRunningApplication* app in apps) {
+    if (app.processIdentifier == self) continue;
+    [app activateWithOptions:NSApplicationActivateAllWindows];
+    break;
+  }
+}
 
 void show_error(const std::string& message) {
   NSAlert* alert = [[NSAlert alloc] init];
@@ -611,10 +644,18 @@ int main(int argc, const char* argv[]) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     std::unique_ptr<devcard::ServerHandle> server;
+    devcard::ServerOptions options;
+    options.data_dir = devcard::default_data_dir();
+    options.port = 18080;
+
+    const int instance_lock = acquire_single_instance_lock(options.data_dir);
+    if (instance_lock == -2) {
+      // 已有实例：把它叫到前台，本进程直接退出，不弹错误框。
+      activate_existing_instance();
+      return 0;
+    }
+
     try {
-      devcard::ServerOptions options;
-      options.data_dir = devcard::default_data_dir();
-      options.port = 18080;
       server = devcard::start_server(options);
     } catch (const std::exception& error) {
       show_error(error.what());
