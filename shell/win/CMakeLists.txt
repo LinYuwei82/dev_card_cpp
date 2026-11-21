@@ -30,8 +30,10 @@ target_include_directories(DevCard PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_compile_definitions(DevCard PRIVATE UNICODE _UNICODE
     # Windows updater_win bridge 用这个 hex 编码的 Ed25519 公钥验签 manifest.json。
-    # 与 Sparkle macOS 用的是同一密钥对（base64: qYiCyNabGf5xZYo8rWFXRoRXkZA6sgfwcyGZ0JNGaXA=）。
-    DEVCARD_UPDATER_PUBKEY_HEX="a98882c8d69b19fe71658a3cad615746845791903ab207f0732199d093466970"
+    # 必须是清单 v2 的签名公钥（key_id 2026-11），与 server/src/server.cpp 的
+    # kUpdateSignPubkeyHex 同值；Sparkle 的 EdDSA 公钥只用于 macOS appcast，
+    # 拿来验 manifest.json 会一律 SIGNATURE_INVALID。
+    DEVCARD_UPDATER_PUBKEY_HEX="3f4d9fabc122113e426b98a8f8b2312cb194e406f770de61285e41c607d22403"
 )
 target_include_directories(DevCard PRIVATE
     "${DEVCARD_WEBVIEW2_INCLUDE}"
