@@ -1563,7 +1563,10 @@
     el.importFile.click();
   });
 
-  el.importFile.addEventListener('change', function () {
+  el.importFile.addEventListener('change', handleImportFile);
+
+  // 导入：直接把文件字节 POST 给服务端解析，前端只负责展示统计结果。
+  function handleImportFile() {
     var file = el.importFile.files && el.importFile.files[0];
     if (!file) return;
     el.importBtn.disabled = true;
@@ -1612,7 +1615,7 @@
       .then(function () {
         el.importBtn.disabled = false;
       });
-  });
+  }
 
   // ---------- 打印设置：公司名与图标 ----------
 
@@ -1931,7 +1934,10 @@
     }
   });
 
-  el.form.addEventListener('submit', function (event) {
+  el.form.addEventListener('submit', submitDeviceForm);
+
+  // 新增/编辑共用一个表单；409 冲突时仅管理员可强制覆盖，覆盖会写审计。
+  function submitDeviceForm(event) {
     event.preventDefault();
     var payload = {
       dev_name: el.devName.value.trim(),
@@ -1967,37 +1973,40 @@
           return;
         }
         if (error.status === 409) {
-          // 只有管理员在冲突时看到强制覆盖入口；普通用户仍然只能刷新重填。
-          // 覆盖会抹掉别人刚保存的内容，所以文案必须写清后果。
-          var canForce = editingId && appState.user && appState.user.role === 'admin';
-          if (canForce && window.confirm(
-                '数据已被他人修改。\n\n' +
-                '强制覆盖会用你刚才填写的内容覆盖别人刚保存的修改；' +
-                '被覆盖的版本、修改人和时间会写入审计记录。\n\n' +
-                '确定强制覆盖吗？')) {
-            return api('POST', '/api/devices/' + editingId + '/force', payload)
-              .then(function () {
-                closeDrawer();
-                toast('已强制覆盖（已写入审计）');
-                return loadOptions().then(load);
-              })
-              .catch(function (forceError) {
-                if (handleAuthFailure(forceError)) {
-                  closeDrawer();
-                  return;
-                }
-                el.formError.textContent = forceError.message;
-                el.formError.hidden = false;
-              });
-          }
-          closeDrawer();
-          toast('数据已被他人修改，请刷新后重试', 'error');
-          return loadOptions().then(load);
+          return handleDeviceConflict(editingId, payload);
         }
         el.formError.textContent = error.message;
         el.formError.hidden = false;
       });
-  });
+  }
+
+  // 409：只有管理员能强制覆盖；覆盖会抹掉别人刚保存的内容，所以文案要写清后果并写审计。
+  function handleDeviceConflict(editingId, payload) {
+    var canForce = editingId && appState.user && appState.user.role === 'admin';
+    if (canForce && window.confirm(
+          '数据已被他人修改。\n\n' +
+          '强制覆盖会用你刚才填写的内容覆盖别人刚保存的修改；' +
+          '被覆盖的版本、修改人和时间会写入审计记录。\n\n' +
+          '确定强制覆盖吗？')) {
+      return api('POST', '/api/devices/' + editingId + '/force', payload)
+        .then(function () {
+          closeDrawer();
+          toast('已强制覆盖（已写入审计）');
+          return loadOptions().then(load);
+        })
+        .catch(function (forceError) {
+          if (handleAuthFailure(forceError)) {
+            closeDrawer();
+            return;
+          }
+          el.formError.textContent = forceError.message;
+          el.formError.hidden = false;
+        });
+    }
+    closeDrawer();
+    toast('数据已被他人修改，请刷新后重试', 'error');
+    return loadOptions().then(load);
+  }
 
   el.cancelDelete.addEventListener('click', closeDelete);
 
