@@ -188,6 +188,8 @@ td { font-size: 13.5px; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: #FCFBF8; }
 .col-id { width: 74px; color: var(--text-3); }
+.col-select { width: 34px; text-align: center; }
+.col-select input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 .col-actions { width: 132px; text-align: right; }
 td.col-actions { text-align: right; white-space: nowrap; }
 .row-btn {

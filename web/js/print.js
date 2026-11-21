@@ -42,6 +42,8 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
     if (f.field) params.set('field', f.field);
     if (f.name) params.set('name', f.name);
     if (f.location) params.set('location', f.location);
+    // 台账「打印选中」传进来的是 id 快照；服务端按它再过滤一次。
+    if (printState.ids.length > 0) params.set('ids', printState.ids.join(','));
     return params.toString();
   }
 
@@ -51,12 +53,15 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
 
   function updatePrintControls() {
     var empty = printState.items.length === 0;
+    var selected = printState.ids.length;
     el.printExport.disabled = printState.busy || empty;
     el.printPrint.disabled = printState.busy || empty;
     el.printEmpty.hidden = !empty || printState.busy;
+    el.printClearSelection.hidden = selected === 0;
     var layout = printLayoutSize();
     var pages = empty ? 0 : Math.ceil(printState.items.length / layout);
-    el.printScope.textContent = '当前筛选结果 ' + printState.items.length + ' 条 · 每页 ' +
+    el.printScope.textContent = (selected > 0 ? '已选 ' + selected + ' 台 · ' : '当前筛选结果 ') +
+      printState.items.length + ' 条 · 每页 ' +
       layout + ' 张 · 共 ' + pages + ' 页' +
       (printState.truncated ? '（超过 10000 条，已截断）' : '');
   }

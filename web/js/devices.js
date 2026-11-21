@@ -1,16 +1,46 @@
-import { PAGE_SIZE, api, appState, devicesState, el, escapeHtml, handleAuthFailure, toast, updateStatusCount } from './core.js';
+import { PAGE_SIZE, api, appState, devicesState, el, escapeHtml, handleAuthFailure, printState, toast, updateStatusCount } from './core.js';
 import { uncoveredChars } from './fonts.js';
+import { setView } from './session.js';
 
   // ---------- 设备台账 ----------
   function totalPages() {
     return Math.max(1, Math.ceil(devicesState.total / PAGE_SIZE));
   }
 
+  function selectionCount() {
+    return devicesState.selectedIds.length;
+  }
+
+  function updateSelectionControls() {
+    var items = devicesState.items;
+    var chosen = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (devicesState.selectedIds.indexOf(items[i].id) !== -1) chosen++;
+    }
+    el.selectAll.checked = items.length > 0 && chosen === items.length;
+    el.selectAll.indeterminate = chosen > 0 && chosen < items.length;
+    el.printSelected.disabled = selectionCount() === 0;
+    el.printSelected.textContent = selectionCount() > 0
+      ? '打印选中（' + selectionCount() + '）'
+      : '打印选中';
+  }
+
+  function toggleSelection(id, checked) {
+    var index = devicesState.selectedIds.indexOf(id);
+    if (checked && index === -1) devicesState.selectedIds.push(id);
+    if (!checked && index !== -1) devicesState.selectedIds.splice(index, 1);
+    updateSelectionControls();
+  }
+
   function renderRows() {
     var html = devicesState.items
       .map(function (item) {
+        var checked = devicesState.selectedIds.indexOf(item.id) !== -1;
         return (
           '<tr>' +
+          '<td class="col-select"><input type="checkbox" class="row-check" ' +
+          'aria-label="选择设备 ' + item.id + '" data-id="' + item.id + '"' +
+          (checked ? ' checked' : '') + ' /></td>' +
           '<td class="col-id">' + item.id + '</td>' +
           '<td>' + escapeHtml(item.dev_name) + '</td>' +
           '<td>' + escapeHtml(item.location) + '</td>' +
@@ -26,6 +56,7 @@ import { uncoveredChars } from './fonts.js';
       .join('');
     el.rows.innerHTML = html;
     el.empty.hidden = devicesState.items.length > 0;
+    updateSelectionControls();
   }
 
   function renderPager() {
@@ -367,6 +398,26 @@ import { uncoveredChars } from './fonts.js';
     } else {
       openDelete(device);
     }
+  });
+
+  el.rows.addEventListener('change', function (event) {
+    var check = event.target;
+    if (!check.classList || !check.classList.contains('row-check')) return;
+    toggleSelection(Number(check.getAttribute('data-id')), check.checked);
+  });
+
+  el.selectAll.addEventListener('change', function () {
+    var checked = el.selectAll.checked;
+    devicesState.items.forEach(function (item) {
+      toggleSelection(item.id, checked);
+    });
+  });
+
+  el.printSelected.addEventListener('click', function () {
+    if (selectionCount() === 0) return;
+    // 快照一份再进打印页：返回台账继续勾选不会影响已经生成的打印任务。
+    printState.ids = devicesState.selectedIds.slice();
+    setView('print', true);
   });
 
   el.form.addEventListener('submit', submitDeviceForm);

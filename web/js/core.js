@@ -30,7 +30,9 @@
     // 编辑/删除时带回的乐观锁版本号：服务端用它判断页面是不是过期了。
     editingVersion: 0,
     pendingDeleteId: null,
-    pendingDeleteVersion: 0
+    pendingDeleteVersion: 0,
+    // 跨页保留的勾选集合：进入打印页时快照给 printState.ids。
+    selectedIds: []
   };
 
   var usersState = {
@@ -51,7 +53,9 @@
   var printState = {
     items: [],
     truncated: false,
-    busy: false
+    busy: false,
+    // 非空时 /api/print/cards 带 ids，只打印台账里勾选的那几台。
+    ids: []
   };
 
   // 自更新：远端检查结论、下载/安装进度与一次性定时器。
@@ -176,6 +180,8 @@
     openDataDir: document.getElementById('open-data-dir'),
 
     gotoPrint: document.getElementById('goto-print'),
+    printSelected: document.getElementById('print-selected'),
+    selectAll: document.getElementById('select-all'),
     saveCompany: document.getElementById('save-company'),
     companyName: document.getElementById('company-name'),
     companyPreview: document.getElementById('company-preview'),
@@ -193,6 +199,7 @@
     printHint: document.getElementById('print-hint'),
     printLayout: document.getElementById('print-layout'),
     printBack: document.getElementById('print-back'),
+    printClearSelection: document.getElementById('print-clear-selection'),
     printExport: document.getElementById('print-export'),
     printPrint: document.getElementById('print-print'),
     printStage: document.getElementById('print-stage'),

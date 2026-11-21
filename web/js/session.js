@@ -1,4 +1,4 @@
-import { api, appState, el, handleAuthFailure, hasNativeBridge, setAuthHooks, setStatusError, systemState, toast, updateStatusIdentity } from './core.js';
+import { api, appState, el, handleAuthFailure, hasNativeBridge, printState, setAuthHooks, setStatusError, systemState, toast, updateStatusIdentity } from './core.js';
 import { isMacShell, sendToShell } from './shell.js';
 import { loadFontCoverage } from './fonts.js';
 import { closeDelete, closeDrawer, load, loadOptions } from './devices.js';
@@ -203,8 +203,10 @@ import { loadPrint } from './print.js';
   }
 
   // ---------- 视图切换 ----------
-  function setView(view) {
+  function setView(view, preservePrintSelection) {
     appState.view = view;
+    // 从导航/「打印」按钮进打印页时按当前筛选全打；只有台账「打印选中」会保留 ids。
+    if (view === 'print' && !preservePrintSelection) printState.ids = [];
     Array.prototype.forEach.call(document.querySelectorAll('.nav-item[data-view]'), function (button) {
       button.classList.toggle('is-active', button.getAttribute('data-view') === view);
     });
@@ -248,6 +250,11 @@ import { loadPrint } from './print.js';
 
   el.printBack.addEventListener('click', function () {
     setView('devices');
+  });
+
+  el.printClearSelection.addEventListener('click', function () {
+    printState.ids = [];
+    loadPrint();
   });
 
 export { applyBootstrap, enterApp, loadBootstrap, openPasswordModal, setView, showLogin, submitPasswordForm, tryLocalSession };
