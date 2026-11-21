@@ -173,9 +173,13 @@ if [ "$MANDATORY_ON" = "1" ]; then
 else
   echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 非强制"
 fi
-# 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
-if [ ! -s "$MANIFEST" ]; then
-  curl -fsSL "$BASE_URL/updates/$CHANNEL/manifest.json" -o "$MANIFEST" 2>/dev/null || rm -f "$MANIFEST"
+# 另一平台段在线上：每次都先拉线上清单覆盖本地，再用 --prev 合并后整体重签。
+# 直接拿持久化的本地 dist/manifest.json 当 --prev 会把旧平台段写回线上。
+if curl -fsSL "$BASE_URL/updates/$CHANNEL/manifest.json" -o "$MANIFEST.tmp" 2>/dev/null && [ -s "$MANIFEST.tmp" ]; then
+  mv "$MANIFEST.tmp" "$MANIFEST"
+else
+  rm -f "$MANIFEST.tmp"
+  echo "  警告：未能从线上获取 manifest.json，回退使用本地副本（可能含旧平台段）" >&2
 fi
 MANIFEST_ARGS=(
     generate

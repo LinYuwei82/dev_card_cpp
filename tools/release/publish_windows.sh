@@ -172,8 +172,13 @@ fi
 echo "清单地址：  $MANIFEST_URL"
 
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
-if [ ! -s "$MANIFEST_LOCAL" ]; then
-  curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
+# 另一平台段在线上：每次都先拉线上清单覆盖本地，再用 --prev 合并后整体重签。
+# 直接拿持久化的本地 dist/manifest.json 当 --prev 会把旧平台段写回线上。
+if curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_LOCAL.tmp" 2>/dev/null && [ -s "$MANIFEST_LOCAL.tmp" ]; then
+  mv "$MANIFEST_LOCAL.tmp" "$MANIFEST_LOCAL"
+else
+  rm -f "$MANIFEST_LOCAL.tmp"
+  echo "  警告：未能从线上获取 manifest.json，回退使用本地副本（可能含旧平台段）" >&2
 fi
 
 echo ""

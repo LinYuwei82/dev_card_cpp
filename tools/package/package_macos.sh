@@ -169,8 +169,8 @@ PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/d
 # 这里只校验产物，不在这里回写——脚本写入再自己检查等于把门禁变成同义反复。
 [ "$PLIST_SHORT" = "$VERSION" ] || \
   fail "Info.plist CFBundleShortVersionString（${PLIST_SHORT:-空}）与 VERSION.txt（${VERSION}）不一致"
-[ "$PLIST_BUILD" = "$VERSION" ] || \
-  fail "Info.plist CFBundleVersion（${PLIST_BUILD:-空}）与 VERSION.txt（${VERSION}）不一致"
+[ "$PLIST_BUILD" = "$BUILD_NUMBER" ] || \
+  fail "Info.plist CFBundleVersion（${PLIST_BUILD:-空}）与构建号（${BUILD_NUMBER}）不一致（CFBundleVersion 应等于 tag 序号，不是版本号）"
 if find "$APP" -type f \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) | grep -q .; then
   fail "应用包里混入了数据库文件"
 fi
