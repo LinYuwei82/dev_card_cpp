@@ -188,10 +188,10 @@ dev_card_cpp/
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版自 2026-11-17 起用 Developer ID Application 签名并经 Apple 公证 + staple，首次打开无需手动放行。
 - macOS 图标 `shell/mac/DevCard.icns`、Windows `shell/win/DevCard.ico`、web favicon / Apple Touch / PWA / 分享预览图**全部由 `tools/package/make_icons.sh` 从同一份母版统一生成**。
-- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；检测到缺少 WebView2 Runtime 时显示可选的「运行环境」安装任务（勾选后下载官方 Evergreen Bootstrapper 并静默安装）。向导页未逐页点，SmartScreen 与「干净机缺 Runtime」分支仍待验。
+- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；检测到缺少 WebView2 Runtime 时显示可选的「运行环境」安装任务（勾选后下载官方 Evergreen Bootstrapper 并静默安装）。向导页未逐页点，SmartScreen 与真实干净机上的 Runtime 安装仍待验（下载成功/失败两条路径已用假 Bootstrapper 验证）。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- Windows 自更新协助器（`devcard-server.exe --apply-update`）以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 静默替换，完成后写 `install-result.json` 并拉起新版本；1.2.0 → 1.2.1 已实测闭环。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、干净机 WebView2 Runtime 缺失场景（安装器任务已就位，只差实机走一遍）、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
+- Windows 自更新协助器（`devcard-server.exe --apply-update`）以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 静默替换，完成后写 `install-result.json` 并拉起新版本；1.2.0 → 1.2.1 已实测闭环。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、真实干净机的 WebView2 Runtime 安装（任务与模拟路径已验证，只差实机走一遍）、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **更新信任锚**：清单统一走 Ed25519 验签（公钥随客户端编译）；Windows 暂不购买 Authenticode 代码签名证书（2026-11-17 决定，发布页有 SmartScreen 提示）；macOS 另有 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。
 - macOS 自更新由 Sparkle 承担；appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
