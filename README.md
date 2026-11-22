@@ -65,7 +65,7 @@ Ninja 是单配置生成器，**产物没有 `Release/` 子目录**：
 - **版本检查**：`GET /api/version` 读取数据目录下的 `manifest.json`（Schema v2 统一清单，两平台同一份、Ed25519 签名，服务端用编译期内嵌公钥验签后只取 `platforms.<本平台>`），返回本平台 `latest`、`build` 与产物资产。清单缺失、验签失败或非法时不显示提示，不影响台账。远端检查由页面 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（默认 `https://dl.xiaotu.online/devcard/updates/stable/manifest.json`、24 小时）。macOS 壳的「检查更新」经原生桥转交 Sparkle；Windows 壳与浏览器走清单通道。
 - **构建号**：`cmake -DDEVCARD_BUILD=<seq>` 经 `cmake/devcard_version.cmake` 的 `devcard_add_build_stamp()` 注入所有生产 target 的编译期宏 `DEVCARD_BUILD`（整数）与 `DEVCARD_BUILD_STR`（字符串）；客户端 `compiled_build_number()` 读取，同版本重发时清单 `build > 本机构建号` 才提示更新。未注入时返回 0，回退到只比 version。`seq` 来自发布 tag（见 §2.3）。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（按 `must_change_password` 判定），自助改密仍验旧密码。
-- **接口契约测试**：`tests/test_api_contract.cpp` 随 `ctest` 运行——进程内起真实服务，锁死认证闸门顺序、乐观锁 409 响应形状、`/api/version` 字段集，并把前端 `app.js` 的全部 `/api/` 字面量与服务端路由契约表比对。
+- **接口契约测试**：`tests/test_api_contract.cpp` 随 `ctest` 运行——进程内起真实服务，锁死认证闸门顺序、乐观锁 409 响应形状、`/api/version` 字段集，并把前端 `app.js` 与 `js/*.js` 里的全部 `/api/` 字面量与服务端路由契约表比对。
 - **会话持久化**：登录会话落盘 `data_dir/sessions.json`（TTL 12 小时），进程重启后旧 cookie 仍有效；滑动 TTL 只改内存，`last_seen` 落盘值有滞后。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt。
@@ -188,10 +188,10 @@ dev_card_cpp/
 
 - macOS（Apple Silicon，macOS 15+）与 Windows 可运行；macOS 版自 2026-11-17 起用 Developer ID Application 签名并经 Apple 公证 + staple，首次打开无需手动放行。
 - macOS 图标 `shell/mac/DevCard.icns`、Windows `shell/win/DevCard.ico`、web favicon / Apple Touch / PWA / 分享预览图**全部由 `tools/package/make_icons.sh` 从同一份母版统一生成**。
-- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；向导页未逐页点，SmartScreen 与 WebView2 Runtime 缺失场景仍待验。
+- Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；检测到缺少 WebView2 Runtime 时显示可选的「运行环境」安装任务（勾选后下载官方 Evergreen Bootstrapper 并静默安装）。向导页未逐页点，SmartScreen 与「干净机缺 Runtime」分支仍待验。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- Windows 自更新协助器（`devcard-server.exe --apply-update`）以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 静默替换，完成后写 `install-result.json` 并拉起新版本；1.2.0 → 1.2.1 已实测闭环。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、WebView2 Runtime 缺失场景、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
+- Windows 自更新协助器（`devcard-server.exe --apply-update`）以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 静默替换，完成后写 `install-result.json` 并拉起新版本；1.2.0 → 1.2.1 已实测闭环。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、干净机 WebView2 Runtime 缺失场景（安装器任务已就位，只差实机走一遍）、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **更新信任锚**：清单统一走 Ed25519 验签（公钥随客户端编译）；Windows 暂不购买 Authenticode 代码签名证书（2026-11-17 决定，发布页有 SmartScreen 提示）；macOS 另有 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。
 - macOS 自更新由 Sparkle 承担；appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。
