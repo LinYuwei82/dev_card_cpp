@@ -23,6 +23,8 @@
 #   - Inno Setup 6（ISCC.exe），找不到会用 choco 安装
 #   - OSS 凭据在 %USERPROFILE%\.config\devcard\release.env
 #   - python3 / python（manifest_v2.py / guard.py 纯标准库；上传用 tools\release\upload_oss.py）
+#   - 出包后建议在无 WebView2 的干净 VM 上跑一次安装验证（可选）：
+#     powershell -ExecutionPolicy Bypass -File packaging\windows\test_webview2_clean_vm.ps1 -InstallerPath <setup.exe>
 #
 # 版本只认仓库根目录 VERSION.txt。
 
