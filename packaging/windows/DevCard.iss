@@ -153,7 +153,9 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    MsgBox('程序已卸载，台账数据仍保留在：' + #13#10 +
+    // 用 SuppressibleMsgBox：静默卸载（/SUPPRESSMSGBOXES）直接取默认值，
+    // 避免普通 MsgBox 阻塞导致卸载器残留 _unins.tmp。
+    SuppressibleMsgBox('程序已卸载，台账数据仍保留在：' + #13#10 +
            ExpandConstant('{localappdata}\DevCard\data'),
-           mbInformation, MB_OK);
+           mbInformation, MB_OK, IDOK);
 end;
