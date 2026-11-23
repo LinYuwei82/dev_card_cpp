@@ -7,8 +7,9 @@
 //        做更新判定、强制升级与 Ed25519 验签；清单只取 platforms.windows
 //     3. 下载 artifacts.setup 安装包 → SHA256 校验 → 调用 ISCC 静默覆盖重启
 //
-//   shell/win/main.cpp 通过 ICoreWebView2::AddHostObjectToScript 把 UpdaterWin 暴露给前端，
-//   前端 JS 用 window.chrome.webview.hostObjects.updater_win.checkNow() 等调用。
+//   shell/win/main.cpp 在页面注入 window.__devcardUpdater shim（postMessage 通道），
+//   前端 JS 调 checkNow()/downloadUpdate()/installUpdate() 等，壳完成后把
+//   {event,code,detail,status} 用 PostWebMessageAsJson 推回；不再用 AddHostObjectToScript。
 //
 // 依赖（全是系统自带或仓库已有，零新增第三方）：
 //   - WinHTTP (winhttp.lib) —— HTTP GET

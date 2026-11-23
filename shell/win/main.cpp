@@ -105,6 +105,24 @@ static void post_web_message_json(const std::string& json) {
   g_webview_for_post->PostWebMessageAsJson(utf8_to_wide(json).c_str());
 }
 
+// updater_win 的下载/安装在后台线程跑，完成回调也来自后台线程；
+// WebView2 的 PostWebMessageAsJson 必须在 UI 线程调用，否则静默失败，
+// 前端永远收不到 downloadUpdate/installUpdate 完成事件。
+constexpr UINT kBridgePostMessage = WM_APP + 0x51;
+DWORD g_ui_thread_id = 0;
+
+static void post_web_message_json_any(const std::string& json) {
+  if (g.hwnd && g_ui_thread_id && GetCurrentThreadId() != g_ui_thread_id) {
+    auto* payload = new std::string(json);
+    if (!PostMessageW(g.hwnd, kBridgePostMessage, 0,
+                      reinterpret_cast<LPARAM>(payload))) {
+      delete payload;
+    }
+    return;
+  }
+  post_web_message_json(json);
+}
+
 // 把 updater_win 的 Completion 回调接 PostWebMessage 推前端。
 static devcard::updater::Completion BindCompletion(const std::string& event) {
   return [event](const std::string& code, const std::string& detail) {
@@ -118,89 +136,15 @@ static devcard::updater::Completion BindCompletion(const std::string& event) {
     } catch (const nlohmann::json::exception&) {
       j["status"] = nlohmann::json::object();
     }
-    post_web_message_json(j.dump());
+    post_web_message_json_any(j.dump());
   };
 }
 
-// UpdaterHost — 最小 IDispatch 实现，暴露给前端做 WebView2 HostObject。
-class UpdaterHost : public IDispatch {
- public:
-  UpdaterHost() : ref_(1) {}
-  ~UpdaterHost() = default;
-
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
-    if (!ppv) return E_POINTER;
-    if (riid == IID_IUnknown || riid == IID_IDispatch) {
-      *ppv = static_cast<IDispatch*>(this);
-      AddRef();
-      return S_OK;
-    }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
-  }
-  ULONG STDMETHODCALLTYPE AddRef() override {
-    return static_cast<ULONG>(InterlockedIncrement(&ref_));
-  }
-  ULONG STDMETHODCALLTYPE Release() override {
-    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
-    if (c == 0) delete this;
-    return c;
-  }
-  HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* ctinfo) override {
-    if (!ctinfo) return E_POINTER;
-    *ctinfo = 0;
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR* names, UINT count, LCID, DISPID* ids) override {
-    static const wchar_t* kNames[] = {
-        L"checkNow", L"downloadUpdate", L"installUpdate",
-        L"cancelPrefetch", L"setOptions", L"statusJson",
-        L"checkMinSupportedVersion",
-    };
-    for (UINT i = 0; i < count; ++i) {
-      ids[i] = DISPID_UNKNOWN;
-      for (UINT j = 0; j < 7; ++j) {
-        if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
-      }
-      if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
-    }
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE Invoke(DISPID dispid, REFIID, LCID, WORD flags,
-                                   DISPPARAMS* params, VARIANT* result,
-                                   EXCEPINFO*, UINT*) override {
-    (void)flags;
-    auto& upd = devcard::updater::UpdaterWin::instance();
-    auto set_str = [&](const std::string& s) -> HRESULT {
-      if (!result) return S_OK;
-      result->vt = VT_BSTR;
-      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
-      return result->bstrVal ? S_OK : E_OUTOFMEMORY;
-    };
-    switch (dispid) {
-      case 1: upd.checkNow(BindCompletion("checkNow")); return set_str("");
-      case 2: upd.downloadUpdate(BindCompletion("downloadUpdate")); return set_str("");
-      case 3: upd.installUpdate(BindCompletion("installUpdate")); return set_str("");
-      case 4: upd.cancelPrefetch(BindCompletion("cancelPrefetch")); return set_str("");
-      case 5: {
-        if (!params || params->cArgs < 2) return E_INVALIDARG;
-        bool ac = (params->rgvarg[params->cArgs - 2].vt == VT_BOOL) &&
-                  (params->rgvarg[params->cArgs - 2].boolVal != VARIANT_FALSE);
-        bool pf = (params->rgvarg[params->cArgs - 1].vt == VT_BOOL) &&
-                  (params->rgvarg[params->cArgs - 1].boolVal != VARIANT_FALSE);
-        upd.setOptions(ac, pf, BindCompletion("setOptions"));
-        return set_str("");
-      }
-      case 6: return set_str(upd.statusJson());
-      case 7: upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion")); return set_str("");
-      default: return DISP_E_MEMBERNOTFOUND;
-    }
-  }
-
- private:
-  LONG ref_ = 1;
-};
+// updater_win 桥：不用 WebView2 HostObject（自实现的 IDispatch 没有类型信息，
+// JS 侧取成员会走 DISPATCH_PROPERTYGET 拿到字符串，再调用即报
+// "Unable to call method on non-function"）。改为在页面注入 updater_win 形状的
+// shim（见 InjectShim），动作经 postMessage 到达 HandleBridgeMessage，
+// 结果仍走 post_web_message_json 推回前端。
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return std::wstring();
@@ -714,7 +658,21 @@ void HandleBridgeMessage(const std::wstring& json_text) {
     const nlohmann::json message = nlohmann::json::parse(Narrow(json_text));
     if (!message.is_object()) return;
     const std::string action = message.value("action", std::string());
-    if (action == "exportPdf") {
+    if (message.value("bridge", std::string()) == "updater_win") {
+      // 页面注入的 updater_win shim 转发到这里；完成后由 BindCompletion 推回前端。
+      auto& upd = devcard::updater::UpdaterWin::instance();
+      if (action == "checkNow") {
+        upd.checkNow(BindCompletion("checkNow"));
+      } else if (action == "downloadUpdate") {
+        upd.downloadUpdate(BindCompletion("downloadUpdate"));
+      } else if (action == "installUpdate") {
+        upd.installUpdate(BindCompletion("installUpdate"));
+      } else if (action == "cancelPrefetch") {
+        upd.cancelPrefetch(BindCompletion("cancelPrefetch"));
+      } else if (action == "checkMinSupportedVersion") {
+        upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion"));
+      }
+    } else if (action == "exportPdf") {
       ExportPdf(message.value("filename", std::string("设备管理卡.pdf")));
     } else if (action == "print") {
       ShowPrintDialog();
@@ -847,6 +805,11 @@ void ApplySettings() {
 void InjectShim() {
   // 页面按 window.webkit.messageHandlers.devcard 判断是否在壳内；
   // 这里把 WebView2 的 chrome.webview 桥映射成同一形状，页面代码不用改。
+  //
+  // updater_win：不再用 AddHostObjectToScript 的 COM 宿主对象（没有类型信息，
+  // 调用一律失败），改为在页面里注入同形状的 shim：方法把 action 发给壳，
+  // 壳完成后用 PostWebMessageAsJson 推 {event,code,detail,status} 回来；
+  // statusJson 返回最近一次推回的状态快照。
   const wchar_t* script =
       L"window.__devcardShell = true;"
       L"if (window.chrome && window.chrome.webview) {"
@@ -857,6 +820,32 @@ void InjectShim() {
       L"      postMessage: function (message) {"
       L"        window.chrome.webview.postMessage(message);"
       L"      }"
+      L"    };"
+      L"  }"
+      L"  if (!window.__devcardUpdater) {"
+      L"    window.__devcardUpdaterStatus = window.__devcardUpdaterStatus || {};"
+      L"    var send = function (action) {"
+      L"      window.chrome.webview.postMessage("
+      L"          { bridge: 'updater_win', action: action });"
+      L"      return Promise.resolve('');"
+      L"    };"
+      L"    window.chrome.webview.addEventListener('message', function (e) {"
+      L"      var m = e && e.data;"
+      L"      if (typeof m === 'string') {"
+      L"        try { m = JSON.parse(m); } catch (_) { return; }"
+      L"      }"
+      L"      if (m && m.status) { window.__devcardUpdaterStatus = m.status; }"
+      L"    });"
+      L"    window.__devcardUpdater = {"
+      L"      checkNow: function () { return send('checkNow'); },"
+      L"      downloadUpdate: function () { return send('downloadUpdate'); },"
+      L"      installUpdate: function () { return send('installUpdate'); },"
+      L"      cancelPrefetch: function () { return send('cancelPrefetch'); },"
+      L"      checkMinSupportedVersion: function () {"
+      L"        return send('checkMinSupportedVersion'); },"
+      L"      statusJson: function () {"
+      L"        return Promise.resolve("
+      L"            JSON.stringify(window.__devcardUpdaterStatus || {})); }"
       L"    };"
       L"  }"
       L"}";
@@ -904,6 +893,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
                       MB_OK | MB_ICONINFORMATION);
           break;
         }
+      }
+      return 0;
+    }
+    case kBridgePostMessage: {
+      // 后台线程转投的 updater 事件：回到 UI 线程再推给页面。
+      auto* payload = reinterpret_cast<std::string*>(lparam);
+      if (payload) {
+        post_web_message_json(*payload);
+        delete payload;
       }
       return 0;
     }
@@ -969,17 +967,7 @@ bool CreateWebView() {
                     g_webview_for_post->AddRef();
                   }
                   // 注册 HostObject：前端 window.chrome.webview.hostObjects.updater_win.*
-                  {
-                    VARIANT v;
-                    v.vt = VT_DISPATCH;
-                    v.pdispVal = new UpdaterHost();
-                    HRESULT hr = g.webview->AddHostObjectToScript(L"updater_win", &v);
-                    if (FAILED(hr)) {
-                      fprintf(stderr, "[updater] AddHostObjectToScript updater_win 失败: 0x%08X\n", hr);
-                      g_webview_for_post->Release();
-                      g_webview_for_post = nullptr;
-                    }
-                  }
+                  // 已废弃：COM 宿主对象调用不可用，改由 InjectShim 注入同形状 shim。
 
                   const std::wstring url = g.origin + L"/";
                   g.webview->Navigate(url.c_str());
@@ -1007,6 +995,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   // 从 cmd 启动或重定向时，stderr 里的中文按 UTF-8 写出，需要把控制台代码页切到 UTF-8；
   // 纯 GUI 启动（无控制台）时本调用是空操作。
   win_encoding::init_console();
+  g_ui_thread_id = GetCurrentThreadId();
 
   // 单实例：第二个进程不重复起服务/WebView，只把已有窗口叫到前台。
   // 用 Local\ 命名空间（同一登录会话内唯一），句柄保持到进程退出。

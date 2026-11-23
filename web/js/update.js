@@ -820,10 +820,16 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
 
   function winUpdaterBridge() {
     if (!isWinWebview()) return null;
-    var hostObjects = window.chrome.webview.hostObjects;
-    if (!hostObjects || !hostObjects.updater_win) return null;
+    // Windows 壳在页面里注入 window.__devcardUpdater（postMessage 通道）；
+    // 兼容旧壳：仍支持 chrome.webview.hostObjects.updater_win。
+    var updater = window.__devcardUpdater;
+    if (!updater) {
+      var hostObjects = window.chrome.webview.hostObjects;
+      updater = hostObjects && hostObjects.updater_win;
+    }
+    if (!updater) return null;
     if (winUpdaterBridgeInstance) return winUpdaterBridgeInstance;
-    winUpdaterBridgeInstance = makeWinUpdaterBridge(hostObjects.updater_win);
+    winUpdaterBridgeInstance = makeWinUpdaterBridge(updater);
     // 一次性安装 message listener：壳 updater_win 完成检查/下载/安装后
     // 用 chrome.webview.PostWebMessageAsJson 推 event+code+status。
     installWinUpdaterListener();
@@ -903,12 +909,13 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
   }
 
   function bridgeDownloadResult(msg) {
-    if (msg.code === 'DONE') {
+    // 壳成功码是 DOWNLOADED；DONE 为兼容旧壳保留。
+    if (msg.code === 'DONE' || msg.code === 'DOWNLOADED') {
       el.updateDownloadPackage.disabled = true;
       el.updateInstall.disabled = false;
       setUpdateProgress('更新包已下载并通过 SHA256 校验，可以点「安装并重启」');
     } else {
-      setUpdateProgress('下载失败：' + (msg.code || ''), true);
+      setUpdateProgress('下载失败：' + (msg.detail || msg.code || ''), true);
     }
   }
 
