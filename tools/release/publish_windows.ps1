@@ -189,12 +189,21 @@ try {
         if ($MandatoryDeadline) { $manifestArgs += @("--mandatory-deadline", $MandatoryDeadline) }
     }
     if ($notesUrl) { $manifestArgs += @("--notes-url", $notesUrl) }
-    if (-not (Test-Path -LiteralPath $manifest)) {
-        try { Invoke-WebRequest -Uri "$baseUrl/updates/$channel/manifest.json" -OutFile $manifest -UseBasicParsing } catch {
-            Remove-Item -LiteralPath $manifest -ErrorAction SilentlyContinue
-        }
+    # 另一平台段以线上清单为准：每次都下载远端做 --prev。直接用 dist\manifest.json
+    # 会把上一次发布残留的旧平台段（比如 macOS 版本号）合并回新清单；远端取不到时
+    # 才退回本地副本。
+    $prevManifest = Join-Path $dist "manifest.prev.json"
+    Remove-Item -LiteralPath $prevManifest -ErrorAction SilentlyContinue
+    try {
+        Invoke-WebRequest -Uri "$baseUrl/updates/$channel/manifest.json" -OutFile $prevManifest -UseBasicParsing
+    } catch {
+        Remove-Item -LiteralPath $prevManifest -ErrorAction SilentlyContinue
     }
-    if (Test-Path -LiteralPath $manifest) { $manifestArgs += @("--prev", $manifest) }
+    if (Test-Path -LiteralPath $prevManifest) {
+        $manifestArgs += @("--prev", $prevManifest)
+    } elseif (Test-Path -LiteralPath $manifest) {
+        $manifestArgs += @("--prev", $manifest)
+    }
     & python (Join-Path $repoRoot "tools\release\manifest_v2.py") @manifestArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path -LiteralPath $manifest)) { Fail "没有找到清单：$manifest" }
