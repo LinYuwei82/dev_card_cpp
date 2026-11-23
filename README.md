@@ -3,7 +3,7 @@
 物业设备台账与设备管理卡打印工具：维护设备名称 / 位置 / 控制范围 / 维护电话，按条件筛选后把结果排成 A4 版面（每页 3 列 × 4 行，共 12 张卡片）导出 PDF 打印。
 
 > **当前状态**
-> 仓库只保留新架构线（C++20 + SQLite + 系统 WebView），旧 Qt 线已从仓库历史删除（不是仅工作区删除），旧 commit hash 与 `v1.1.3` tag 一律不可引用。**当前版本 `1.3.3`**（唯一来源：仓库根 `VERSION.txt`），发布号为 annotated tag `v<semver>+<seq>`（已发布 `v1.3.0`、`v1.3.1+1`、`v1.3.1+2`、`v1.3.2+3`），**构建号 = tag 序号 `seq`**（从 1 起，无固定基数）。
+> 仓库只保留新架构线（C++20 + SQLite + 系统 WebView），旧 Qt 线已从仓库历史删除（不是仅工作区删除），旧 commit hash 与 `v1.1.3` tag 一律不可引用。**当前版本 `1.3.5`**（唯一来源：仓库根 `VERSION.txt`），发布号为 annotated tag `v<semver>+<seq>`（已发布 `v1.3.0`、`v1.3.1+1`、`v1.3.1+2`、`v1.3.2+3`、`v1.3.3+4`、`v1.3.4+5`），**构建号 = tag 序号 `seq`**（从 1 起，无固定基数）。
 >
 > 功能线：M0–M4.2 已落地（M4 的 G2 实物叠图与打印面板仍待验）；M5 版本检查、「有新版本」提示与 macOS 一条命令出 DMG 已落地；M6 检查 + 告知已交付；自更新三端可用——Windows 走「下载 + 校验 + 替换 + 重启」，macOS 走 Sparkle 2.10.1（检查 → 下载 → EdDSA 验签 → 替换 → 重启），均已端到端实测。Windows 安装包 `/VERYSILENT` 安装 + 卸载实测通过；向导页、SmartScreen、WebView2 Runtime 缺失场景与实物打印仍待补（见 [改造技术方案 §10.9](docs/改造技术方案.md)）。
 >
@@ -128,7 +128,7 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\test_webview2_clean_v
 ### 2.3 发布号、门禁与 CI
 
 - **版本号**：只改 `VERSION.txt`（`x.y.z`）。
-- **发布号**：annotated tag `v<semver>+<seq>`，例如 `v1.3.3+4`；`semver` 必须等于 `VERSION.txt`，`seq` 从 1 起、只增不减，**构建号 `build = seq`**（无固定基数，旧的时间戳/大数构建号方案已废弃）。
+- **发布号**：annotated tag `v<semver>+<seq>`，例如 `v1.3.5+6`；`semver` 必须等于 `VERSION.txt`，`seq` 从 1 起、只增不减，**构建号 `build = seq`**（无固定基数，旧的时间戳/大数构建号方案已废弃）。
 - **分配并推送 tag**：`python3 tools/release/release_tag.py create --push`（默认取「已有最大序号 + 1」，也可 `--seq` 显式指定；tag 不可删除重打）。
 - **CI 解析**：`release-windows.yml` 在 tag 触发时执行 `release_tag.py parse --ensure-latest`，把 `BUILD` 写入 `DEVCARD_BUILD`；`workflow_dispatch` 手动触发**必须填 `build`**。
 - **发版前门禁**：`tools/release/check_version_bump.py --build <seq> --manifest-url https://dl.xiaotu.online/devcard/updates/stable/manifest.json`——版本不得回退，同版本重发时 build 必须严格大于线上所有平台的最大 build。

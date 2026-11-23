@@ -1,0 +1,41 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}</style></head><body><h2 id="devcard-1.3.5">DevCard 1.3.5</h2>
+<h3 id="本次更新">本次更新</h3>
+<ul>
+<li><strong>修复 Windows 端「检查更新」后无法下载/安装新版本</strong>：1.3.3 与 1.3.4 的 Windows 壳用自实现的 COM 宿主对象向页面暴露更新接口，缺少类型信息，页面取成员后被当成普通值调用，报 <code>unable to call method on non-function</code>。表现为：能提示"发现新版本"，点「下载更新包」必定失败，也无法安装。</li>
+<li>更新接口改为页面注入的 <code>window.__devcardUpdater</code> 通道（<code>postMessage</code> + 完成事件），下载/安装在后台线程完成后的结果会正确回到界面。</li>
+<li>下载完成码与前端的判定对齐（<code>DOWNLOADED</code>），下载成功后「安装并重启」可正常使用。</li>
+</ul>
+<h3 id="升级说明重要">升级说明（重要）</h3>
+<p><strong>1.3.3 / 1.3.4 的 Windows 客户端无法自动升级到 1.3.5</strong>——自动更新链路本身就是这两版坏掉的部分。请手动下载 1.3.5 安装包覆盖安装一次；装好之后，后续版本的自动更新恢复正常。</p>
+<h3 id="构建与分发">构建与分发</h3>
+<ul>
+<li>本次仅 Windows：构建号 <code>6</code>。</li>
+<li>macOS 保持 1.3.4（构建号 <code>5</code>），无变化。</li>
+</ul>
+<h3 id="下载">下载</h3>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td><code>devcard-1.3.5-win64-setup.exe</code></td>
+<td>安装版</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>devcard-1.3.5-win64-portable.zip</code></td>
+<td>免安装绿色版</td>
+</tr>
+</tbody>
+</table>
+<h3 id="校验">校验</h3>
+<p>随附 <code>SHA256SUMS.txt</code>，下载后可自行校验：</p>
+<pre><code># Windows
+certutil -hashfile devcard-1.3.5-win64-setup.exe SHA256</code></pre>
+</body></html>
