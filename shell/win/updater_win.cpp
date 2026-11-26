@@ -323,9 +323,15 @@ bool parse_v2_windows(const nlohmann::json& manifest, V2Windows& out, std::strin
     return false;
   }
   // 可选键：rollout_percent 缺省全量，mandatory 缺省 false。
+  // 出现但不在 1–100（含 0）视为清单非法直接拒绝——与发布端 manifest_v2.py
+  // 的 1–100 校验同口径；绝不把「0」当「未设置」放行成全量，
+  // 否则清单想用 0 紧急停发时会反向变成全量下发（fail-open）。
   std::int64_t rollout = 100;
-  if (v2_read_int(*windows, "rollout_percent", rollout) &&
-      rollout >= 1 && rollout <= 100) {
+  if (v2_read_int(*windows, "rollout_percent", rollout)) {
+    if (rollout < 1 || rollout > 100) {
+      err_code = "ROLLOUT_INVALID";
+      return false;
+    }
     out.rollout_percent = static_cast<int>(rollout);
   }
   v2_read_bool(*windows, "mandatory", out.mandatory);

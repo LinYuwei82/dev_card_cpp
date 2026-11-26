@@ -496,6 +496,36 @@ constexpr const char* kV2ManifestVector = R"json({
 constexpr const char* kV2VectorPubkey =
     "c877ab759c694dcb2da43b6053be35c9bf20cabc10ad97cb68357a3c1ea74cb5";
 
+// 灰度判定必须 fail-closed：rollout_percent=0 表示「停止放量」，
+// 不能当「未设置」回落成全量下发。
+void run_rollout_decision_case() {
+  using namespace devcard;
+  ManifestPlatform platform;
+  platform.version = "9.9.9";
+  platform.build = 100;
+  UpdateQuery query;
+  query.version = "1.0.0";
+  query.build = 1;
+  query.install_id = "11111111-1111-1111-1111-111111111111";
+
+  platform.rollout_percent = 0;
+  CHECK(evaluate_manifest(platform, query).code == "NOT_IN_ROLLOUT");
+  // 缺 InstallId 也不能把 0% 放行。
+  UpdateQuery no_id = query;
+  no_id.install_id.clear();
+  CHECK(evaluate_manifest(platform, no_id).code == "NOT_IN_ROLLOUT");
+  // 越界值钳制：负数按 0% 拒绝，超过 100 按全量。
+  platform.rollout_percent = -5;
+  CHECK(evaluate_manifest(platform, query).code == "NOT_IN_ROLLOUT");
+  platform.rollout_percent = 100;
+  CHECK(evaluate_manifest(platform, query).code == "UPDATE_AVAILABLE");
+  // 字段缺省（结构体默认 100）→ 全量。
+  ManifestPlatform defaulted;
+  defaulted.version = "9.9.9";
+  defaulted.build = 100;
+  CHECK(evaluate_manifest(defaulted, query).code == "UPDATE_AVAILABLE");
+}
+
 void run_update_manifest_case() {
   using namespace devcard;
   using nlohmann::json;
@@ -1546,6 +1576,8 @@ int run_all_tests() {
   {
     // 更新清单 v2：Ed25519 验签与本平台解析。
     run_update_manifest_case();
+    // 灰度判定 fail-closed（0% 不放行）。
+    run_rollout_decision_case();
   }
 
   {

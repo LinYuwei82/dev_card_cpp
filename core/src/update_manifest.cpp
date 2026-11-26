@@ -397,8 +397,11 @@ UpdateDecision evaluate_manifest(const ManifestPlatform& platform, const UpdateQ
     return decision;
   }
   // 灰度：percent < 100 且用户不在分桶里 → NOT_IN_ROLLOUT。
-  const int percent = platform.rollout_percent > 0 ? static_cast<int>(platform.rollout_percent) : 100;
-  if (percent < 100 && !query.install_id.empty()) {
+  // rollout_percent=0 是「停止放量」，必须按 0% 判定为不在灰度内；
+  // 不能把 0 当「未设置」回落成全量（fail-open）。缺省值 100 由结构体给出。
+  const int percent = static_cast<int>(
+      std::clamp<std::int64_t>(platform.rollout_percent, 0, 100));
+  if (percent == 0 || (percent < 100 && !query.install_id.empty())) {
     const int bucket = rollout_bucket(query.install_id, platform.build);
     if (!rollout_allows(percent, bucket)) {
       decision.code = "NOT_IN_ROLLOUT";
