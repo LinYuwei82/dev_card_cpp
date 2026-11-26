@@ -47,6 +47,7 @@
 #include "config.h"
 #include "heartbeat.h"
 #include "instance_lock.h"
+#include "update_service.h"
 #include "web_assets.h"
 #include "font_coverage.h"
 
@@ -132,6 +133,10 @@ struct ServerState {
     std::string error;
   };
   std::shared_ptr<UpdateDownload> update = std::make_shared<UpdateDownload>();
+
+  // 编排层唯一状态机（定时检查/退避/跳过/判定快照）。
+  // 检测判据全部来自 core evaluate_update，这里只编排「何时查、查完存什么」。
+  std::unique_ptr<UpdateService> update_service;
 
   // 自更新阶段二：安装接口回完 202 后置位，main 轮询到就退出，交由安装器接管。
   // 用 shared_ptr 是因为置位发生在 detached 线程里，不能碰已析构的 ServerState。
@@ -312,6 +317,9 @@ struct UpdateManifest {
   // 验签通过后本平台（Windows / macOS）的版本与构建号；验签失败时保持为空。
   std::string latest;
   std::uint64_t latest_build = 0;  // Windows 构建号；macOS 恒 0
+  // 验签通过的完整解析结果：/api/version 走 core evaluate_update 判定时用，
+  // 不再内联第二份双键比较（分层重构的收口点之一）。
+  SignedManifest parsed;
   // v2 清单没有 download_url/notes 字段；保留输出结构，前端有 download_page 兜底。
   std::string download_url;
   std::string notes;
@@ -344,6 +352,7 @@ UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
     result.check_enabled = false;
     return result;
   }
+  result.parsed = parsed;
   result.latest = parsed.platform.version;
   result.latest_build = parsed.platform.build;
   for (const ManifestArtifact& artifact : parsed.platform.artifacts) {
@@ -894,6 +903,8 @@ struct ServerHandle::Impl : ServerState {};
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
 ServerHandle::~ServerHandle() {
   if (!impl_) return;
+  // 更新服务线程先停：它的 run_check 会写数据目录，必须早于其余资源释放。
+  if (impl_->update_service) impl_->update_service->stop();
   impl_->heartbeat_stop = true;
   if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
   if (impl_->server.is_running()) impl_->server.stop();
@@ -947,6 +958,19 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
+
+  // 编排层唯一状态机：地址与公钥用编译期内嵌值，通道固定 stable。
+  // 状态落数据目录 update-state.json；prefetch/auto_check 开关先随状态持久化，
+  // 自动预下载动作尚未接线（旧 updater_win 也只存标志不自动下）。
+  {
+    UpdateServiceConfig update_config;
+    update_config.endpoint = std::string(kDefaultUpdateEndpoint);
+    update_config.pubkey_hex = std::string(kUpdateSignPubkeyHex);
+    update_config.channel = "stable";
+    update_config.data_dir = options.data_dir;
+    state.update_service =
+        std::make_unique<UpdateService>(std::move(update_config));
+  }
 
   // 恢复上次持久化的会话：进程重启后 WebView2 cookie 还在，server 进程内存空了。
   load_sessions(state);
@@ -1056,24 +1080,48 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   });
 
   // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。
+  // 判定统一走 core evaluate_update（全仓唯一判据源，分层重构收口点）：
+  //   1) 本地清单（数据目录有运维投放的 manifest.json）命中时以本地为准——
+  //      运维覆盖能力保留，但同受灰度/跳过约束（浏览器/mac 路径首次生效）；
+  //   2) 本地没命中时回落到编排层 UpdateService 的远端判定快照。
+  // 旧版在这里内联过第三份 version/build 双键比较，已删——判据只许 core 一份。
   state.server.Get("/api/version", [&state, schema, version](
                                        const httplib::Request&,
                                        httplib::Response& response) {
     const UpdateManifest manifest = read_update_manifest(state.data_dir);
-    // 本平台的最新版本与构建号来自验签通过的清单；build 只在同版本时参与
-    // 判定（见下方 available）。
-    const std::string latest = manifest.latest;
-    // 本机构建号：CMake 注入 DEVCARD_BUILD 时有值，未注入时返回 0。
-    // 同版本只有当远端 build 严格大于本地（且双方都 > 0）才提示更新；
-    // 任一为 0 时回退到只比 version——旧客户端未注入构建号时不被同版本重发包
-    // 反复打扰，旧清单 build 缺失时也不会突然多触发更新。
     const std::uint64_t local_build = devcard::compiled_build_number();
-    const bool available = !latest.empty() && (
-        compare_version(latest, version) > 0 ||
-        (compare_version(latest, version) == 0 &&
-         manifest.latest_build > 0 &&
-         local_build > 0 &&
-         manifest.latest_build > local_build));
+    std::string latest = manifest.latest;
+    json assets = manifest.assets;
+    bool available = false;
+
+    LocalUpdateState local;
+    local.version = version;
+    local.build = local_build;
+    local.channel = "stable";
+    local.install_id =
+        state.update_service ? state.update_service->install_id() : std::string();
+    local.now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+
+    if (manifest.found && !latest.empty() && manifest.error.empty()) {
+      available = evaluate_update(manifest.parsed, local).verdict ==
+                  UpdateDecision::Verdict::Available;
+    }
+    if (!available && state.update_service && state.update_service->has_decision()) {
+      const UpdateDecision d = state.update_service->decision();
+      if (d.verdict == UpdateDecision::Verdict::Available) {
+        available = true;
+        latest = d.version;
+        if (d.has_artifact) {
+          assets = json::array({json{{"name", d.artifact.name},
+                                     {"browser_download_url", d.artifact.url},
+                                     {"digest", "sha256:" + d.artifact.sha256},
+                                     {"size", d.artifact.size},
+                                     {"version", d.version}}});
+        }
+      }
+    }
     set_json(response,
              json{{"version", version},
                   {"local_build", local_build},
@@ -1083,7 +1131,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                   {"download_url", manifest.download_url},
                   {"download_page", download_page()},
                   {"notes", manifest.notes},
-                  {"assets", manifest.assets},
+                  {"assets", assets},
                   // M6：远端检查的开关来自同一份 manifest.json（地址内嵌，
                   // 间隔用默认配置），前端不写死地址。
                   {"check", json{{"enabled", manifest.check_enabled},
@@ -1132,6 +1180,58 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                               {"version", parsed.platform.version},
                                               {"build", parsed.platform.build},
                                               {"assets", assets}});
+                    });
+
+  // —— 编排层统一状态接口（唯一状态机 UpdateService，见 update_service.h）——
+  // 前端只读这份状态、只调这几个动作；检测判据在 core，编排在这里，
+  // 壳不再各写一份状态机（双胞胎 bug 的根治点）。
+  state.server.Get("/api/update/state",
+                   [&state](const httplib::Request& request,
+                            httplib::Response& response) {
+                     require_admin(state, request);
+                     if (!state.update_service) {
+                       set_json(response, json{{"enabled", false}});
+                       return;
+                     }
+                     set_json(response, state.update_service->state_json());
+                   });
+
+  state.server.Post("/api/update/check",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+                      if (!state.update_service) {
+                        throw AppError("update_disabled", "更新服务未启用");
+                      }
+                      set_json(response, state.update_service->check_now());
+                    });
+
+  state.server.Post("/api/update/skip",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+                      if (!state.update_service) {
+                        throw AppError("update_disabled", "更新服务未启用");
+                      }
+                      const json body = parse_body(request.body);
+                      state.update_service->skip_version(
+                          body.value("version", std::string{}),
+                          body.value("hours", static_cast<std::int64_t>(24)));
+                      set_json(response, state.update_service->state_json());
+                    });
+
+  state.server.Post("/api/update/options",
+                    [&state](const httplib::Request& request,
+                             httplib::Response& response) {
+                      require_admin(state, request);
+                      if (!state.update_service) {
+                        throw AppError("update_disabled", "更新服务未启用");
+                      }
+                      const json body = parse_body(request.body);
+                      state.update_service->set_options(
+                          body.value("auto_check", true),
+                          body.value("prefetch", false));
+                      set_json(response, state.update_service->state_json());
                     });
 
   state.server.Post("/api/session/local",
@@ -1232,6 +1332,28 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       spec.sha256 = body.value("sha256", "");
                       spec.size =
                           body.value("size", static_cast<std::uint64_t>(0));
+                      // 不再带 spec 的调用视为「用编排层判定快照的产物」：
+                      // 服务端验签 + evaluate_update 判定过的 artifact，
+                      // 客户端再也拿不出「来路不明的 spec」让服务端落盘。
+                      const bool legacy_spec =
+                          !spec.url.empty() || !spec.sha256.empty();
+                      if (!legacy_spec) {
+                        if (!state.update_service) {
+                          throw AppError("update_disabled",
+                                         "更新服务未启用，不提供下载");
+                        }
+                        const UpdateDecision d =
+                            state.update_service->decision();
+                        if (d.verdict != UpdateDecision::Verdict::Available ||
+                            !d.has_artifact) {
+                          throw AppError("no_update", "没有可用的新版本");
+                        }
+                        spec.version = d.version;
+                        spec.file_name = d.artifact.name;
+                        spec.url = d.artifact.url;
+                        spec.sha256 = d.artifact.sha256;
+                        spec.size = d.artifact.size;
+                      }
                       const std::string invalid = validate_update_spec(spec);
                       if (!invalid.empty()) {
                         throw AppError(validate_update_spec_code(spec), invalid);
@@ -1241,25 +1363,29 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       // spec 直接 POST。清单验签失败时 check_enabled 已为
                       // false（上面就拒绝了）；数据目录没有清单文件时保持
                       // 旧行为，由白名单与版本检查兜底。
-                      if (manifest.found) {
-                        bool matched = false;
-                        for (const json& item : manifest.assets) {
-                          matched =
-                              item.value("browser_download_url", "") == spec.url &&
-                              item.value("digest", "") == "sha256:" + spec.sha256 &&
-                              item.value("size", std::uint64_t{0}) == spec.size;
-                          if (matched) break;
+                      // 无 spec 路径的产物来自编排层判定快照，天然与清单一致，
+                      // 不再重复比对本地投放文件（本地清单可能根本没投放）。
+                      if (legacy_spec) {
+                        if (manifest.found) {
+                          bool matched = false;
+                          for (const json& item : manifest.assets) {
+                            matched =
+                                item.value("browser_download_url", "") == spec.url &&
+                                item.value("digest", "") == "sha256:" + spec.sha256 &&
+                                item.value("size", std::uint64_t{0}) == spec.size;
+                            if (matched) break;
+                          }
+                          if (!matched) {
+                            throw AppError("not_in_manifest",
+                                           "下载信息与更新清单不一致（清单可能已更新，请重新检查更新）");
+                          }
                         }
-                        if (!matched) {
-                          throw AppError("not_in_manifest",
-                                         "下载信息与更新清单不一致（清单可能已更新，请重新检查更新）");
+                        // 没有比当前版本更新的版本时，不允许借下载接口落盘。
+                        // （Windows 同版本的新构建号要等客户端有了本机构建号
+                        // 来源才会放行——见 /api/version 里 build 比较的说明。）
+                        if (compare_version(spec.version, version) <= 0) {
+                          throw AppError("no_update", "没有可用的新版本");
                         }
-                      }
-                      // 没有比当前版本更新的版本时，不允许借下载接口落盘。
-                      // （Windows 同版本的新构建号要等客户端有了本机构建号
-                      // 来源才会放行——见 /api/version 里 build 比较的说明。）
-                      if (compare_version(spec.version, version) <= 0) {
-                        throw AppError("no_update", "没有可用的新版本");
                       }
                       // 用户在壳层 NSSavePanel 里选的完整落点（可选）。给了就先下到
                       // updates/ 校验，再整体挪到该路径，避免命令行出现非 ASCII 参数。
@@ -2490,6 +2616,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   });
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
+  // 监听起来后再起更新循环：首查延迟 30s，届时端口已就绪。
+  if (state.update_service) state.update_service->start();
   return handle;
 }
 

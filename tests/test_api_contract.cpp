@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +37,11 @@
 #endif
 
 #include "devcard/server.h"
+#include "update_service.h"
+
+extern "C" {
+#include <tweetnacl/tweetnacl.h>
+}
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -85,6 +91,10 @@ const RouteProbe kRoutes[] = {
     {"GET", "/api/update/download", nullptr},
     {"POST", "/api/update/install", "{"},
     {"GET", "/api/update/install-result", nullptr},
+    {"GET", "/api/update/state", nullptr},
+    {"POST", "/api/update/check", "{"},
+    {"POST", "/api/update/skip", "{"},
+    {"POST", "/api/update/options", "{"},
     // ---- 台账 ----
     {"GET", "/api/devices", nullptr},
     {"GET", "/api/devices/options", nullptr},
@@ -329,6 +339,37 @@ int main() {
     }
   }
 
+  // ===== 3.5 /api/update/state 字段集契约（编排层唯一状态机的对外形状） =====
+  {
+    const auto response = client.Get("/api/update/state", auth);
+    CHECK(response && response->status == 200);
+    if (response && response->status == 200) {
+      const json body = json::parse(response->body, nullptr, false);
+      CHECK(!body.is_discarded());
+      static const char* kKeys[] = {"enabled",      "endpoint",
+                                    "channel",      "auto_check",
+                                    "prefetch",     "install_id",
+                                    "last_check_epoch", "next_check_epoch",
+                                    "consecutive_failures", "skipped_version",
+                                    "skip_until_epoch", "last_error",
+                                    "checked"};
+      CHECK(body.is_object());
+      for (const char* key : kKeys) CHECK(body.contains(key));
+      CHECK(body["enabled"].get<bool>() == true);
+      CHECK(!body.value("install_id", std::string{}).empty());
+      // 后台首查在启动 30s 后，测试通常跑不到；但不把它当硬前提——
+      // checked 为 true 时判定字段必须齐（真实网络环境跑测试也不能误报）。
+      if (body["checked"].get<bool>()) {
+        CHECK(body.contains("verdict"));
+        CHECK(body.contains("update_available"));
+        CHECK(body.contains("mandatory"));
+      } else {
+        CHECK(!body.contains("verdict"));
+        CHECK(!body.contains("artifact"));
+      }
+    }
+  }
+
   // ===== 4. 乐观锁：创建 → 更新 → 过期提交 409 =====
   std::int64_t device_id = 0;
   {
@@ -509,6 +550,196 @@ int main() {
   {
     const auto after_logout = client.Get("/api/version", auth);
     CHECK(after_logout && after_logout->status == 401);
+  }
+
+  // ===== 8. UpdateService 编排层单测：注入 fetcher，不碰真实网络 =====
+  // 与 HTTP 路由分开：路由契约上面已锁；这里锁状态机本身——判定快照、
+  // 失败退避、持久化读回、跳过与开关。判据细节在 test_core 表驱动里锁。
+  {
+    using namespace devcard;
+    const fs::path svc_dir = fs::temp_directory_path() / "devcard_update_service_test";
+    fs::remove_all(svc_dir);
+    fs::create_directories(svc_dir);
+
+    // RFC 8032 向量密钥（与 manifest_v2.py selftest / test_core 同源）。
+    const unsigned char kSeed[32] = {
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a,
+        0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32,
+        0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60};
+    const unsigned char kPub[32] = {
+        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe,
+        0xd3, 0xc9, 0x64, 0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6,
+        0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
+    const std::string kPubHex =
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+    auto base64_of_64 = [](const unsigned char* raw) {
+      static const char* kTable =
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      std::string out;
+      for (std::size_t i = 0; i < 64; i += 3) {
+        const int b0 = raw[i], b1 = i + 1 < 64 ? raw[i + 1] : 0,
+                  b2 = i + 2 < 64 ? raw[i + 2] : 0;
+        out.push_back(kTable[b0 >> 2]);
+        out.push_back(kTable[((b0 & 3) << 4) | (b1 >> 4)]);
+        out.push_back(i + 1 < 64 ? kTable[((b1 & 15) << 2) | (b2 >> 6)] : '=');
+        out.push_back(i + 2 < 64 ? kTable[b2 & 63] : '=');
+      }
+      return out;
+    };
+    auto sign = [&](const std::string& canonical) {
+      unsigned char sk[64];
+      std::memcpy(sk, kSeed, 32);
+      std::memcpy(sk + 32, kPub, 32);
+      std::vector<unsigned char> sm(64 + canonical.size());
+      unsigned long long smlen = 0;
+      crypto_sign(sm.data(), &smlen,
+                  reinterpret_cast<const unsigned char*>(canonical.data()),
+                  canonical.size(), sk);
+      return base64_of_64(sm.data());
+    };
+    // 组一份「99.0.0 / build 99001」的合法 v2 清单；rollout/mandatory 可调。
+    auto fixture = [&](int rollout, bool mandatory) {
+      json doc{
+          {"manifest_version", 2},
+          {"channel", "stable"},
+          {"generated_at", "2026-11-26T00:00:00Z"},
+      };
+      // 产物按 v2 真实形状组织：artifacts 是以 role 为 key 的对象。
+      json win{{"version", "99.0.0"},
+               {"build", 99001},
+               {"rollout_percent", rollout},
+               {"artifacts",
+                {{"setup",
+                  {{"url",
+                    "https://dl.xiaotu.online/devcard/devcard-99.0.0-win64-setup.exe"},
+                   {"size", 123},
+                   {"sha256", std::string(64, '0')}}}}}};
+      json mac{{"version", "99.0.0"},
+               {"build", 0},
+               {"rollout_percent", rollout},
+               {"artifacts",
+                {{"dmg",
+                  {{"url",
+                    "https://dl.xiaotu.online/devcard/devcard-99.0.0-macos-arm64.dmg"},
+                   {"size", 456},
+                   {"sha256", std::string(64, '1')}}}}}};
+      if (mandatory) {
+        win["mandatory"] = true;
+        win["mandatory_reason"] = "安全修复";
+        win["mandatory_deadline"] = "2035-01-01T00:00:00Z";
+        mac["mandatory"] = true;
+        mac["mandatory_reason"] = "安全修复";
+        mac["mandatory_deadline"] = "2035-01-01T00:00:00Z";
+      }
+      win["notes_url"] = "https://dl.xiaotu.online/devcard/release-notes-99.0.0.html";
+      mac["notes_url"] = "https://dl.xiaotu.online/devcard/release-notes-99.0.0.html";
+      doc["platforms"] = json{{"windows", win}, {"macos", mac}};
+      doc.erase("signature");
+      const std::string canonical = doc.dump();
+      doc["signature"] = sign(canonical);
+      return doc.dump();
+    };
+
+    UpdateServiceConfig config;
+    config.endpoint = "https://dl.xiaotu.online/devcard/updates/stable/manifest.json";
+    config.pubkey_hex = kPubHex;
+    config.data_dir = svc_dir;
+    std::string current_fixture = fixture(100, false);
+    bool should_fail = false;
+    config.fetcher = [&](const std::string&, std::string& body, std::string& error) {
+      if (should_fail) {
+        error = "模拟断网";
+        return false;
+      }
+      body = current_fixture;
+      return true;
+    };
+
+    {
+      UpdateService svc(config);
+      // install_id 必须稳定且非空（灰度分桶的前提）。
+      const std::string first_id = svc.install_id();
+      CHECK(!first_id.empty());
+
+      json state = svc.check_now();
+      CHECK(state["checked"].get<bool>());
+      CHECK(state["verdict"] == "available");
+      CHECK(state["update_available"].get<bool>());
+      CHECK(state["latest"] == "99.0.0");
+#ifdef _WIN32
+      CHECK(state["latest_build"] == 99001);
+      CHECK(state["artifact"]["url"].get<std::string>().find("win64-setup") !=
+            std::string::npos);
+#else
+      CHECK(state["latest_build"] == 0);
+      CHECK(state["artifact"]["url"].get<std::string>().find("macos-arm64.dmg") !=
+            std::string::npos);
+#endif
+      CHECK(state["notes_url"] ==
+            "https://dl.xiaotu.online/devcard/release-notes-99.0.0.html");
+      CHECK(state["mandatory"]["active"].get<bool>() == false);
+
+      // 灰度 0%：停发语义，无人命中。
+      current_fixture = fixture(0, false);
+      state = svc.check_now();
+      CHECK(state["verdict"] == "rollout_blocked");
+      CHECK(state["update_available"].get<bool>() == false);
+
+      // 强制更新：豁免灰度（0% 也放行），期限未到不阻塞。
+      current_fixture = fixture(0, true);
+      state = svc.check_now();
+      CHECK(state["verdict"] == "available");
+      CHECK(state["mandatory"]["declared"].get<bool>());
+      CHECK(state["mandatory"]["active"].get<bool>() == false);
+
+      // 跳过此版本：Available → Skipped。
+      current_fixture = fixture(100, false);
+      svc.check_now();
+      svc.skip_version("99.0.0", 24);
+      state = svc.state_json();
+      CHECK(state["verdict"] == "skipped");
+
+      // 开关持久化 + 失败退避：拉取失败保留上次判定、累加失败计数。
+      svc.set_options(false, true);
+      should_fail = true;
+      state = svc.check_now();
+      CHECK(state["auto_check"].get<bool>() == false);
+      CHECK(state["prefetch"].get<bool>() == true);
+      CHECK(state["consecutive_failures"] == 1);
+      CHECK(state["last_error"].get<std::string>().find("fetch_failed") !=
+            std::string::npos);
+      // 失败不清判定快照：界面不塌。
+      CHECK(state["verdict"] == "skipped");
+
+      // 持久化读回：同目录重建服务，install_id 与判定结果都在。
+      UpdateService reopened(config);
+      CHECK(reopened.install_id() == first_id);
+      const json restored = reopened.state_json();
+      CHECK(restored["checked"].get<bool>());
+      CHECK(restored["verdict"] == "skipped");
+      CHECK(restored["auto_check"].get<bool>() == false);
+      CHECK(restored["consecutive_failures"] == 1);
+    }
+
+    // 清单非法（非 JSON）：失败计数走 manifest_invalid 分支，checked 保持 false。
+    {
+      UpdateServiceConfig bad = config;
+      bad.data_dir = svc_dir / "bad";
+      fs::create_directories(bad.data_dir);
+      bad.fetcher = [](const std::string&, std::string& body, std::string&) {
+        body = "not json at all";
+        return true;
+      };
+      UpdateService svc(bad);
+      const json state = svc.check_now();
+      CHECK(state["checked"].get<bool>() == false);
+      CHECK(state["consecutive_failures"] == 1);
+      CHECK(state["last_error"].get<std::string>().find("manifest_invalid") !=
+            std::string::npos);
+    }
+
+    fs::remove_all(svc_dir);
+    std::cout << "[update-service] 编排层单测完成" << std::endl;
   }
 
   server.reset();
