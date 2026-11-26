@@ -409,8 +409,10 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
   // 发布端（publish_args.py）只放行 YYYY-MM-DDTHH:MM:SSZ，Date.parse 对该格式
   // 各浏览器一致；这里再兜底手写/异常清单：空格分隔、无时区后缀一律按 UTC
   // 解析，避免 Safari 返回 NaN 或 Chrome 按本地时区解释造成三端口径漂移。
+  // 时区组整体可选：缺省时 offset=0，即按 UTC 解释（若写成必选，
+  // 无时区串会落到 Date.parse，Safari 返回 NaN 反被当成「已到期」立即强制）。
   function parseDeadline(raw) {
-    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-])(\d{2})?:?(\d{2})?$/.exec(String(raw).trim());
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:(Z|[+-])(\d{2}):?(\d{2})?)?$/.exec(String(raw).trim());
     if (!m) return Date.parse(raw);
     var ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
     var offset_min = 0;
