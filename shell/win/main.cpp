@@ -555,6 +555,9 @@ void ExportPdf(const std::string& suggested_name) {
 }
 
 // 直接打印：走 WebView2 的系统打印对话框（Chromium 打印管线，@page 控制分页）。
+// PrintDialogClosing 令牌：每次打印前先移除旧令牌再注册，避免反复打印累积监听。
+EventRegistrationToken g_print_closing_token = {};
+
 void ShowPrintDialog() {
   if (!g.webview || g.print_busy) return;
   if (!HasPrinter()) {
@@ -570,13 +573,32 @@ void ShowPrintDialog() {
            L"Runtime，或改用「导出 PDF」");
     return;
   }
+  // 与 ExportPdf 同一互斥：原实现只查不置 print_busy，打印面板开着期间
+  // 再点导出会通过 RequestExportLayout 并发改写 is-export 布局，
+  // 打出去的版式与导出的 PDF 互踩；对话框关闭后由监听统一释放。
+  g.print_busy = true;
+  auto on_dialog_closing = Callback<ICoreWebView2PrintingEventHandler>(
+      [](ICoreWebView2*, IUnknown*) -> HRESULT {
+        g.print_busy = false;
+        ExitExportMode();
+        return S_OK;
+      });
+  webview16->remove_PrintDialogClosing(g_print_closing_token);
+  if (FAILED(webview16->add_PrintDialogClosing(on_dialog_closing.Get(),
+                                               &g_print_closing_token))) {
+    g.print_busy = false;
+    Notify(L"error", L"无法监听打印对话框关闭事件，已中止打印");
+    return;
+  }
   RequestExportLayout([webview16](int pages, const std::string& layout_error) {
         if (!layout_error.empty()) {
+          g.print_busy = false;
           ExitExportMode();
           Notify(L"error", Widen(layout_error));
           return;
         }
         if (pages <= 0) {
+          g.print_busy = false;
           ExitExportMode();
           Notify(L"error", L"没有可打印的卡片");
           return;
@@ -584,6 +606,7 @@ void ShowPrintDialog() {
         const HRESULT hr =
             webview16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM);
         if (FAILED(hr)) {
+          g.print_busy = false;
           ExitExportMode();
           Notify(L"error", L"无法打开打印对话框（" + HResultText(hr) + L"）");
         }
