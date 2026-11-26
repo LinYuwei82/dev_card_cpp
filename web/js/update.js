@@ -354,6 +354,14 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
       var current = appState.version || (data && data.version) || '';
       if (compareVersion(result.release.version, current) <= 0) return;
       setUpdatePill(result.release.version, result.release.notes || '');
+      // 强制更新已生效时静默路径也必须弹窗阻塞：mandatory 的语义是
+      // 「到期后无法跳过」，不能因为用户没点顶栏 pill 就继续用旧版。
+      if (mandatoryActive({
+            mandatory: result.release.mandatory,
+            deadline: result.release.mandatory_deadline
+          })) {
+        openUpdateModal();
+      }
     });
   }
 
@@ -911,10 +919,22 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
       var version = status.manifest_version || '';
       var notes = status.notes_url || '';
       if (version) {
-        updateState.info = { update_available: true, latest: version, notes: notes };
+        // 强制字段一并透传给 updateState.info：本地命中路径（localWins）
+        // 只读 manifest 的 mandatory/deadline/reason，漏了弹窗就判不出 force。
+        updateState.info = {
+          update_available: true, latest: version, notes: notes,
+          mandatory: !!status.mandatory,
+          mandatory_deadline: status.mandatory_deadline || '',
+          mandatory_reason: status.mandatory_reason || ''
+        };
         setUpdatePill(version, notes);
-        // 非静默检查 → 弹 modal
-        if (!lastCheckSilent && typeof openUpdateModal === 'function') openUpdateModal();
+        // 非静默检查弹 modal；静默但强制更新已到期同样要弹，否则可绕过阻塞。
+        if (!lastCheckSilent || mandatoryActive({
+              mandatory: status.mandatory,
+              deadline: status.mandatory_deadline
+            })) {
+          if (typeof openUpdateModal === 'function') openUpdateModal();
+        }
       }
     } else if (msg.code === 'NO_UPDATE') {
       updateState.info = { update_available: false };
