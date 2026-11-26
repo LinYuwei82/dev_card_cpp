@@ -61,11 +61,18 @@ struct ManifestPlatform {
   std::int64_t rollout_percent = 100;  // 灰度百分比（v2 清单，默认 100 = 全量）
   std::int64_t min_os = 0;              // 最低系统版本（可选）
   std::vector<ManifestArtifact> artifacts;
+  // 强制更新与发行说明（v2 可选字段，缺省不强制、无说明页）。
+  // 语义与发布端 manifest_v2.py、win/mac 旧桥逐字段对齐：收口后全仓仅此一份。
+  bool mandatory = false;
+  std::string mandatory_reason;
+  std::string mandatory_deadline;
+  std::string notes_url;
 };
 
 struct SignedManifest {
   bool ok = false;
   std::string error;  // !ok 时给人话原因
+  std::string channel;  // 顶层 channel（v2 在清单根上）
   ManifestPlatform platform;
 };
 
@@ -74,9 +81,10 @@ struct SignedManifest {
 SignedManifest parse_signed_manifest(std::string_view raw_json,
                                      std::string_view pubkey_hex);
 
-// ---- 更新判定共享原语（Windows updater_win bridge 使用） ----
+// ---- 更新判定共享原语（检测层唯一判据源，server UpdateService 使用） ----
 // 注：曾有过一个 evaluate_manifest 汇总判定函数，但生产代码（updater_win 与
 // server /api/version）各自内联了判定流程，无人调用且语义已漂移，已删除。
+// 本次分层重构把判定以 evaluate_update 的形态收回 core，且这次真的有唯一调用方。
 
 // 灰度分桶：SHA-256(install_id + ":" + build) 前 4 字节 mod 100。
 int rollout_bucket(std::string_view install_id, std::uint64_t build);
@@ -87,5 +95,50 @@ std::int64_t check_retry_delay(int failures);
 
 // 点分版本比较（如 10.0 < 11.0）；无法解析时按 0 处理。
 int compare_dotted_version(std::string_view a, std::string_view b);
+
+// 强制更新期限解析（确定性 UTC）：接受 "YYYY-MM-DD[T ]HH:MM[:SS]"，
+// 可带 "Z" 或 "±HH[:MM]" 偏移；无时区后缀按 UTC。解析失败返回 false，
+// 调用方必须按「已到期」处理（fail-closed，与 1.3.6 修前的浏览器分歧说再见）。
+bool parse_update_deadline_utc(std::string_view raw, std::int64_t& epoch_seconds);
+
+// 本机更新状态（判定输入）。version/build 来自编译期注入；install_id 用于
+// 灰度分桶（同一台机器稳定，落盘复用）；skipped_* 记录「跳过此版本」窗口。
+struct LocalUpdateState {
+  std::string version;            // 本机版本号（VERSION.txt 编译期值）
+  std::uint64_t build = 0;        // 本机构建号；0 = 未注入（开发构建）
+  std::string channel;            // 本机订阅通道；空 = 不比通道
+  std::string install_id;         // 灰度分桶 ID
+  std::string skipped_version;    // 用户跳过并仍生效中的版本
+  std::int64_t skip_until_epoch = 0;
+  std::int64_t now_epoch = 0;     // 当前 UTC 秒
+};
+
+struct UpdateDecision {
+  enum class Verdict {
+    NoUpdate,        // 无更新（含已是最新、通道不符、清单字段非法）
+    RolloutBlocked,  // 有更新但灰度未命中
+    Skipped,         // 有更新但落在「跳过此版本」窗口内
+    Available,       // 有更新，可提示/下载/安装
+  };
+  Verdict verdict = Verdict::NoUpdate;
+  std::string reason;  // 细分原因（up_to_date/channel_mismatch/rollout/skip…）
+  std::string version;
+  std::uint64_t build = 0;
+  ManifestArtifact artifact;  // 按平台选中的产物（win=setup，mac=dmg）
+  bool has_artifact = false;  // Available 但 false 时只提示版本、不给下载
+  bool mandatory = false;           // 清单声明了强制更新
+  bool mandatory_active = false;    // 期限已到（含无期限/期限非法 fail-closed）
+  std::string mandatory_reason;
+  std::string mandatory_deadline;
+  std::int64_t mandatory_deadline_epoch = 0;  // 0 = 无期限
+  std::string notes_url;
+};
+
+// 唯一一份更新判定：channel → 版本/build 双键 → mandatory 直通灰度与跳过
+// （raw mandatory 标志即豁免，不等到期）→ 灰度 → 跳过 → 选产物。
+// 语义与 updater_win L613-700、server /api/version L1071-1076 的并集对齐，
+// 收口后这两处必须改为调用本函数（防回潮自检盯住这一点）。
+UpdateDecision evaluate_update(const SignedManifest& manifest,
+                               const LocalUpdateState& local);
 
 }  // namespace devcard

@@ -184,6 +184,11 @@ SignedManifest parse_signed_manifest(std::string_view raw_json,
     result.error = "更新清单不是 v2 格式（manifest_version 必须为 2）";
     return result;
   }
+  // 顶层 channel（v2 在清单根上）：缺失时留空，由 evaluate_update 决定放行。
+  const auto channel_field = doc.find("channel");
+  if (channel_field != doc.end() && channel_field->is_string()) {
+    result.channel = channel_field->get<std::string>();
+  }
   const auto platforms = doc.find("platforms");
   if (platforms == doc.end() || !platforms->is_object()) {
     result.error = "更新清单缺少 platforms";
@@ -249,6 +254,25 @@ SignedManifest parse_signed_manifest(std::string_view raw_json,
   const auto mo = section->find("min_os");
   if (mo != section->end() && mo->is_number_integer()) {
     result.platform.min_os = mo->get<std::int64_t>();
+  }
+  // mandatory / notes_url：v2 可选字段。类型不符一律按缺省（不拒整份清单——
+  // 验签已保证来源可信，坏字段只影响这一个功能）。
+  const auto mand = section->find("mandatory");
+  if (mand != section->end() && mand->is_boolean()) {
+    result.platform.mandatory = mand->get<bool>();
+  }
+  for (const char* key : {"mandatory_reason", "mandatory_deadline", "notes_url"}) {
+    const auto field = section->find(key);
+    if (field == section->end() || !field->is_string()) continue;
+    const std::string value = field->get<std::string>();
+    if (std::strcmp(key, "mandatory_reason") == 0) {
+      result.platform.mandatory_reason = value;
+    } else if (std::strcmp(key, "mandatory_deadline") == 0) {
+      result.platform.mandatory_deadline = value;
+    } else {
+      // notes_url 只认 https：与前端旧判据一致，http 一律当没有。
+      if (value.rfind("https://", 0) == 0) result.platform.notes_url = value;
+    }
   }
   result.ok = true;
   return result;
@@ -337,6 +361,179 @@ std::int64_t check_retry_delay(int failures) {
   if (failures <= 1) return 60;
   if (failures == 2) return 600;
   return 3600;
+}
+
+// ---- 强制更新期限（确定性 UTC 解析） ----
+
+namespace {
+
+// Howard Hinnant days_from_civil：公历日期 → 距 1970-01-01 的天数（可为负）。
+std::int64_t days_from_civil(std::int64_t y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+
+}  // namespace
+
+bool parse_update_deadline_utc(std::string_view raw, std::int64_t& epoch_seconds) {
+  epoch_seconds = 0;
+  std::string_view s = raw;
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+  if (s.empty()) return false;
+  auto read_digits = [](std::string_view& rest, int count, long& out) {
+    if (static_cast<int>(rest.size()) < count) return false;
+    long value = 0;
+    for (int i = 0; i < count; ++i) {
+      if (!std::isdigit(static_cast<unsigned char>(rest[i]))) return false;
+      value = value * 10 + (rest[i] - '0');
+    }
+    rest.remove_prefix(count);
+    out = value;
+    return true;
+  };
+  long year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+  if (!read_digits(s, 4, year)) return false;
+  if (s.empty() || s.front() != '-') return false;
+  s.remove_prefix(1);
+  if (!read_digits(s, 2, month)) return false;
+  if (s.empty() || s.front() != '-') return false;
+  s.remove_prefix(1);
+  if (!read_digits(s, 2, day)) return false;
+  if (s.empty() || (s.front() != 'T' && s.front() != 't' && s.front() != ' ')) {
+    return false;
+  }
+  s.remove_prefix(1);
+  if (!read_digits(s, 2, hour)) return false;
+  if (s.empty() || s.front() != ':') return false;
+  s.remove_prefix(1);
+  if (!read_digits(s, 2, minute)) return false;
+  if (!s.empty() && s.front() == ':') {
+    s.remove_prefix(1);
+    if (!read_digits(s, 2, second)) return false;
+  }
+  // 时区后缀：Z / ±HH[:MM]；缺省按 UTC（与 1.3.6 修后的前端判据一致）。
+  long offset_minutes = 0;
+  if (!s.empty()) {
+    const char marker = s.front();
+    if (marker == 'Z' || marker == 'z') {
+      s.remove_prefix(1);
+    } else if (marker == '+' || marker == '-') {
+      s.remove_prefix(1);
+      long offset_hour = 0, offset_min = 0;
+      if (!read_digits(s, 2, offset_hour)) return false;
+      if (!s.empty() && s.front() == ':') s.remove_prefix(1);
+      if (!s.empty() && !read_digits(s, 2, offset_min)) return false;
+      offset_minutes = offset_hour * 60 + offset_min;
+      if (marker == '-') offset_minutes = -offset_minutes;
+    } else {
+      return false;
+    }
+  }
+  if (!s.empty()) return false;  // 尾部有多余内容
+  if (month < 1 || month > 12 || day < 1 || day > 31 ||
+      hour > 23 || minute > 59 || second > 60) {
+    return false;
+  }
+  epoch_seconds = days_from_civil(year, static_cast<unsigned>(month),
+                                  static_cast<unsigned>(day)) * 86400 +
+                  hour * 3600 + minute * 60 + second - offset_minutes * 60;
+  return true;
+}
+
+// ---- 唯一一份更新判定 ----
+
+UpdateDecision evaluate_update(const SignedManifest& manifest,
+                               const LocalUpdateState& local) {
+  UpdateDecision d;
+  if (!manifest.ok) {
+    d.reason = "manifest_invalid";
+    return d;
+  }
+  const ManifestPlatform& p = manifest.platform;
+  // 通道不符：视为「本平台无更新」，不是错误（与 updater_win 旧行为一致）。
+  if (!local.channel.empty() && !manifest.channel.empty() &&
+      manifest.channel != local.channel) {
+    d.reason = "channel_mismatch";
+    return d;
+  }
+  ProductVersion remote{}, self{};
+  if (!parse_product_version(p.version, remote) ||
+      !parse_product_version(local.version, self)) {
+    d.reason = "version_invalid";
+    return d;
+  }
+  // 双键判据（全仓唯一一份）：先比 version；同版本只有双方 build 都 >0
+  // 且远端更大才算更新——本机未注入构建号（开发构建）不被同版本重发打扰。
+  const int version_cmp = compare_product_version(remote, self);
+  const bool available =
+      version_cmp > 0 ||
+      (version_cmp == 0 && p.build > 0 && local.build > 0 && p.build > local.build);
+
+  // 声明信息无论结论如何都带回去（提示与弹窗要用）。
+  d.version = p.version;
+  d.build = p.build;
+  d.mandatory = p.mandatory;
+  d.mandatory_reason = p.mandatory_reason;
+  d.mandatory_deadline = p.mandatory_deadline;
+  d.notes_url = p.notes_url;
+  if (p.mandatory) {
+    // 无期限 → 立即生效；期限解析失败 → 按已到期（fail-closed）；
+    // 有期限 → now >= 期限才生效。期限只决定「阻塞」，不决定灰度豁免。
+    bool active = true;
+    if (!p.mandatory_deadline.empty()) {
+      std::int64_t at = 0;
+      if (parse_update_deadline_utc(p.mandatory_deadline, at)) {
+        d.mandatory_deadline_epoch = at;
+        active = local.now_epoch >= at;
+      }
+    }
+    d.mandatory_active = active;
+  }
+
+  if (!available) {
+    d.reason = "up_to_date";
+    return d;
+  }
+  // raw mandatory 标志豁免灰度与跳过（对齐 updater_win L647 的旧判据）：
+  // 强制发布不能被「灰度未命中」或「用户跳过」挡住。
+  if (!p.mandatory) {
+    if (!rollout_allows(static_cast<int>(p.rollout_percent),
+                        rollout_bucket(local.install_id, p.build))) {
+      d.verdict = UpdateDecision::Verdict::RolloutBlocked;
+      d.reason = "rollout";
+      return d;
+    }
+    if (!local.skipped_version.empty() &&
+        local.skipped_version == p.version &&
+        local.now_epoch < local.skip_until_epoch) {
+      d.verdict = UpdateDecision::Verdict::Skipped;
+      d.reason = "skip";
+      return d;
+    }
+  }
+  d.verdict = UpdateDecision::Verdict::Available;
+  d.reason = "available";
+  // 按平台选产物：win 只认 setup（绿色包不支持自动安装），mac 只有 dmg。
+  // 选不到产物时仍 Available（照常提示版本），has_artifact=false 让调用方
+  // 只给「打开下载页」、不给下载/安装按钮。
+#if defined(_WIN32)
+  constexpr const char* kPreferredRole = "setup";
+#else
+  constexpr const char* kPreferredRole = "dmg";
+#endif
+  for (const ManifestArtifact& artifact : p.artifacts) {
+    if (artifact.role == kPreferredRole) {
+      d.artifact = artifact;
+      d.has_artifact = true;
+      break;
+    }
+  }
+  return d;
 }
 
 // ---- 判定 ----

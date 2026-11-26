@@ -510,6 +510,194 @@ void run_rollout_decision_case() {
   CHECK(bucket == rollout_bucket("11111111-1111-1111-1111-111111111111", 100));
 }
 
+// 检测层唯一判据源 evaluate_update 的表驱动用例。
+// 双键部分直接吃发布端共用的判据向量（tools/release/update_compare_vectors.json），
+// 保证「客户端判定」与「发布端/三仓单测」永远同一口径。
+void run_update_evaluate_case() {
+  using namespace devcard;
+
+  // ---- 判据向量：newer == Available ----
+  std::ifstream vectors(DEVCARD_VECTORS_FILE);
+  if (!vectors) {
+    std::cout << "[update-evaluate] 跳过：找不到判据向量 "
+              << DEVCARD_VECTORS_FILE << "\n";
+    ++skips;
+  } else {
+    const nlohmann::json doc = nlohmann::json::parse(vectors, nullptr, false);
+    CHECK(!doc.is_discarded());
+    if (!doc.is_discarded() && doc.contains("cases")) {
+      for (const nlohmann::json& c : doc["cases"]) {
+        SignedManifest manifest;
+        manifest.ok = true;
+        manifest.platform.version = c.at("remote_version").get<std::string>();
+        manifest.platform.build =
+            static_cast<std::uint64_t>(c.at("remote_build").get<long long>());
+        LocalUpdateState local;
+        local.version = c.at("local_version").get<std::string>();
+        const long long local_build = c.at("local_build").get<long long>();
+        local.build = local_build > 0 ? static_cast<std::uint64_t>(local_build) : 0;
+        const bool newer = c.at("newer").get<bool>();
+        const UpdateDecision d = evaluate_update(manifest, local);
+        CHECK((d.verdict == UpdateDecision::Verdict::Available) == newer);
+      }
+    }
+  }
+
+  // ---- 期限解析（确定性 UTC）----
+  std::int64_t at = -1;
+  CHECK(parse_update_deadline_utc("1970-01-01T00:00:00Z", at) && at == 0);
+  CHECK(parse_update_deadline_utc("2000-01-01T00:00:00Z", at) && at == 946684800);
+  // 无时区后缀按 UTC；'T' 与空格分隔等价。
+  std::int64_t at_space = -1, at_tz = -1;
+  CHECK(parse_update_deadline_utc("2000-01-01 00:00:00", at_space) &&
+        at_space == 946684800);
+  // 带偏移：+08:00 的 08:30 == UTC 00:30。
+  CHECK(parse_update_deadline_utc("2000-01-01T08:30:00+08:00", at_tz) &&
+        at_tz == 946684800 + 30 * 60);
+  std::int64_t at_z = -1;
+  CHECK(parse_update_deadline_utc("2000-01-01T00:30:00Z", at_z) && at_z == at_tz);
+  // 秒可缺省；负偏移：01:00-01:00 == UTC 02:00。
+  CHECK(parse_update_deadline_utc("2000-01-01T01:00-01:00", at) &&
+        at == 946684800 + 2 * 3600);
+  // 非法输入一律 false（调用方按已到期处理）。
+  CHECK(!parse_update_deadline_utc("", at));
+  CHECK(!parse_update_deadline_utc("not-a-date", at));
+  CHECK(!parse_update_deadline_utc("2000-13-01T00:00:00Z", at));
+  CHECK(!parse_update_deadline_utc("2000-01-01T24:00:00Z", at));
+  CHECK(!parse_update_deadline_utc("2000-01-01T00:00:00X", at));
+
+  // ---- 判定分支 ----
+  auto make_manifest = [](std::string version, std::uint64_t build,
+                          int rollout = 100, bool mandatory = false,
+                          std::string deadline = "") {
+    SignedManifest m;
+    m.ok = true;
+    m.channel = "stable";
+    m.platform.version = std::move(version);
+    m.platform.build = build;
+    m.platform.rollout_percent = rollout;
+    m.platform.mandatory = mandatory;
+    m.platform.mandatory_deadline = std::move(deadline);
+    ManifestArtifact setup;
+    setup.role = "setup";
+    setup.url = "https://dl.xiaotu.online/devcard/devcard-9.9.9-win64-setup.exe";
+    setup.name = "devcard-9.9.9-win64-setup.exe";
+    setup.sha256 = std::string(64, '0');
+    setup.size = 1;
+    ManifestArtifact dmg;
+    dmg.role = "dmg";
+    dmg.url = "https://dl.xiaotu.online/devcard/devcard-9.9.9-macos-arm64.dmg";
+    dmg.name = "devcard-9.9.9-macos-arm64.dmg";
+    dmg.sha256 = std::string(64, '1');
+    dmg.size = 2;
+    m.platform.artifacts = {setup, dmg};
+    return m;
+  };
+  LocalUpdateState base_local;
+  base_local.version = "9.9.8";
+  base_local.build = 10;
+  base_local.channel = "stable";
+  base_local.install_id = "11111111-1111-1111-1111-111111111111";
+  base_local.now_epoch = 1'000'000'000;
+
+  // 通道不符：无更新，且不算错误。
+  {
+    SignedManifest beta = make_manifest("9.9.9", 20);
+    beta.channel = "beta";
+    const UpdateDecision d = evaluate_update(beta, base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::NoUpdate);
+    CHECK(d.reason == "channel_mismatch");
+  }
+  // 清单非法（!ok）：直接 NoUpdate。
+  {
+    SignedManifest bad;
+    bad.ok = false;
+    const UpdateDecision d = evaluate_update(bad, base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::NoUpdate);
+    CHECK(d.reason == "manifest_invalid");
+  }
+  // 灰度 0%：无人命中（统一语义：0=停发，不是全量）。
+  {
+    const UpdateDecision d = evaluate_update(make_manifest("9.9.9", 20, 0), base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::RolloutBlocked);
+  }
+  // 灰度 100%：正常放行，产物按平台选中。
+  {
+    const UpdateDecision d = evaluate_update(make_manifest("9.9.9", 20, 100), base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::Available);
+    CHECK(d.has_artifact);
+#ifdef _WIN32
+    CHECK(d.artifact.role == "setup");
+#else
+    CHECK(d.artifact.role == "dmg");
+#endif
+  }
+  // 跳过窗口：skipped_version 命中且未过期 → Skipped；过期后恢复 Available。
+  {
+    LocalUpdateState local = base_local;
+    local.skipped_version = "9.9.9";
+    local.skip_until_epoch = local.now_epoch + 3600;
+    CHECK(evaluate_update(make_manifest("9.9.9", 20), local).verdict ==
+          UpdateDecision::Verdict::Skipped);
+    local.skip_until_epoch = local.now_epoch - 1;
+    CHECK(evaluate_update(make_manifest("9.9.9", 20), local).verdict ==
+          UpdateDecision::Verdict::Available);
+  }
+  // 强制更新豁免灰度与跳过（raw 标志即豁免，与期限是否已到无关）。
+  {
+    LocalUpdateState local = base_local;
+    local.skipped_version = "9.9.9";
+    local.skip_until_epoch = local.now_epoch + 3600;
+    const UpdateDecision d =
+        evaluate_update(make_manifest("9.9.9", 20, 0, true, "2035-01-01T00:00:00Z"), local);
+    CHECK(d.verdict == UpdateDecision::Verdict::Available);
+    CHECK(d.mandatory);
+    // 期限未到：提示照常，但不阻塞。
+    CHECK(!d.mandatory_active);
+    CHECK(d.mandatory_deadline_epoch > local.now_epoch);
+  }
+  // 强制更新期限三态：无期限立即生效；已到生效；解析失败按已到期（fail-closed）。
+  {
+    const UpdateDecision no_deadline =
+        evaluate_update(make_manifest("9.9.9", 20, 100, true, ""), base_local);
+    CHECK(no_deadline.mandatory_active);
+    const UpdateDecision passed = evaluate_update(
+        make_manifest("9.9.9", 20, 100, true, "2001-01-01T00:00:00Z"), base_local);
+    CHECK(passed.mandatory_active);
+    const UpdateDecision garbage = evaluate_update(
+        make_manifest("9.9.9", 20, 100, true, "garbage"), base_local);
+    CHECK(garbage.mandatory_active);
+  }
+  // 非强制但期限字段乱填：不影响判定（mandatory=false 时期限不参与）。
+  {
+    const UpdateDecision d =
+        evaluate_update(make_manifest("9.9.9", 20, 100, false, "garbage"), base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::Available);
+    CHECK(!d.mandatory_active);
+  }
+  // 已是最新 / 版本回退：NoUpdate + up_to_date。
+  // 注意同版本 build 更大（20>10）按双键判据是更新，上面向量已覆盖；
+  // 这里用 build 更小与相等验证「不更新」的两条路。
+  {
+    CHECK(evaluate_update(make_manifest("9.9.8", 5), base_local).reason == "up_to_date");
+    CHECK(evaluate_update(make_manifest("9.9.8", 10), base_local).reason == "up_to_date");
+    CHECK(evaluate_update(make_manifest("9.9.7", 20), base_local).reason == "up_to_date");
+  }
+  // 版本号非法：version_invalid。
+  {
+    CHECK(evaluate_update(make_manifest("v9", 20), base_local).reason == "version_invalid");
+  }
+  // 清单没给本平台可安装产物：仍 Available，但 has_artifact=false。
+  {
+    SignedManifest m = make_manifest("9.9.9", 20);
+    m.platform.artifacts.clear();
+    const UpdateDecision d = evaluate_update(m, base_local);
+    CHECK(d.verdict == UpdateDecision::Verdict::Available);
+    CHECK(!d.has_artifact);
+  }
+  std::cout << "[update-evaluate] decision + deadline checks done\n";
+}
+
 void run_update_manifest_case() {
   using namespace devcard;
   using nlohmann::json;
@@ -1562,6 +1750,8 @@ int run_all_tests() {
     run_update_manifest_case();
     // 灰度判定 fail-closed（0% 不放行）。
     run_rollout_decision_case();
+    // 检测层唯一判据源 evaluate_update：双键向量 + 灰度/跳过/强制/期限。
+    run_update_evaluate_case();
   }
 
   {

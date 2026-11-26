@@ -6,6 +6,10 @@
 add_executable(devcard_core_tests test_core.cpp)
 target_link_libraries(devcard_core_tests PRIVATE devcard_core)
 devcard_add_build_stamp(devcard_core_tests)
+# 检测层表驱动用例读发布端共用的判据向量（只读，不改文件内容——
+# 该文件由 sync_guard.sh 三仓同步，任何改动都要过 test_shared_sync.py）。
+target_compile_definitions(devcard_core_tests PRIVATE
+    DEVCARD_VECTORS_FILE="${CMAKE_SOURCE_DIR}/tools/release/update_compare_vectors.json")
 add_test(NAME devcard_core_tests COMMAND devcard_core_tests)
 
 # UTF-8 边界模块：严格校验、宽窄往返、ACP 兜底、路径往返、系统错误文本。
