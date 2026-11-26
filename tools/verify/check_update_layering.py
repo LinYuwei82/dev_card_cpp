@@ -167,7 +167,7 @@ def main() -> int:
         except OSError:
             continue
         if PUBKEY_HEX in text:
-            rel = str(path.relative_to(root))
+            rel = path.relative_to(root).as_posix()
             if rel not in PUBKEY_ALLOWED:
                 failures.append(f"清单公钥 hex 出现在 {rel}（只允许 {sorted(PUBKEY_ALLOWED)}）")
 
