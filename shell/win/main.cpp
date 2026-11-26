@@ -51,7 +51,6 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 #include <nlohmann/json.hpp>
 
 #include "devcard/server.h"
-#include "updater_win.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -83,68 +82,6 @@ struct ShellState {
 
 ShellState g;
 std::unique_ptr<devcard::ServerHandle> g_server;
-
-// updater_win bridge：异步回调需要往前端推消息。
-// ControllerCompleted 里赋值，WM_DESTROY 里清 null。
-ICoreWebView2* g_webview_for_post = nullptr;
-std::mutex g_webview_mutex;
-
-// UTF-8 → UTF-16，供 PostWebMessageAsJson。
-static std::wstring utf8_to_wide(const std::string& s) {
-  if (s.empty()) return L"";
-  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-  if (n <= 0) return L"";
-  std::wstring out(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-  return out;
-}
-
-static void post_web_message_json(const std::string& json) {
-  std::lock_guard<std::mutex> lock(g_webview_mutex);
-  if (!g_webview_for_post) return;
-  g_webview_for_post->PostWebMessageAsJson(utf8_to_wide(json).c_str());
-}
-
-// updater_win 的下载/安装在后台线程跑，完成回调也来自后台线程；
-// WebView2 的 PostWebMessageAsJson 必须在 UI 线程调用，否则静默失败，
-// 前端永远收不到 downloadUpdate/installUpdate 完成事件。
-constexpr UINT kBridgePostMessage = WM_APP + 0x51;
-DWORD g_ui_thread_id = 0;
-
-static void post_web_message_json_any(const std::string& json) {
-  if (g.hwnd && g_ui_thread_id && GetCurrentThreadId() != g_ui_thread_id) {
-    auto* payload = new std::string(json);
-    if (!PostMessageW(g.hwnd, kBridgePostMessage, 0,
-                      reinterpret_cast<LPARAM>(payload))) {
-      delete payload;
-    }
-    return;
-  }
-  post_web_message_json(json);
-}
-
-// 把 updater_win 的 Completion 回调接 PostWebMessage 推前端。
-static devcard::updater::Completion BindCompletion(const std::string& event) {
-  return [event](const std::string& code, const std::string& detail) {
-    nlohmann::json j;
-    j["event"] = event;
-    j["code"] = code;
-    j["detail"] = detail;
-    try {
-      j["status"] = nlohmann::json::parse(
-          devcard::updater::UpdaterWin::instance().statusJson());
-    } catch (const nlohmann::json::exception&) {
-      j["status"] = nlohmann::json::object();
-    }
-    post_web_message_json_any(j.dump());
-  };
-}
-
-// updater_win 桥：不用 WebView2 HostObject（自实现的 IDispatch 没有类型信息，
-// JS 侧取成员会走 DISPATCH_PROPERTYGET 拿到字符串，再调用即报
-// "Unable to call method on non-function"）。改为在页面注入 updater_win 形状的
-// shim（见 InjectShim），动作经 postMessage 到达 HandleBridgeMessage，
-// 结果仍走 post_web_message_json 推回前端。
 
 std::wstring Widen(const std::string& utf8) {
   if (utf8.empty()) return std::wstring();
@@ -682,21 +619,7 @@ void HandleBridgeMessage(const std::wstring& json_text) {
     const nlohmann::json message = nlohmann::json::parse(Narrow(json_text));
     if (!message.is_object()) return;
     const std::string action = message.value("action", std::string());
-    if (message.value("bridge", std::string()) == "updater_win") {
-      // 页面注入的 updater_win shim 转发到这里；完成后由 BindCompletion 推回前端。
-      auto& upd = devcard::updater::UpdaterWin::instance();
-      if (action == "checkNow") {
-        upd.checkNow(BindCompletion("checkNow"));
-      } else if (action == "downloadUpdate") {
-        upd.downloadUpdate(BindCompletion("downloadUpdate"));
-      } else if (action == "installUpdate") {
-        upd.installUpdate(BindCompletion("installUpdate"));
-      } else if (action == "cancelPrefetch") {
-        upd.cancelPrefetch(BindCompletion("cancelPrefetch"));
-      } else if (action == "checkMinSupportedVersion") {
-        upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion"));
-      }
-    } else if (action == "exportPdf") {
+    if (action == "exportPdf") {
       ExportPdf(message.value("filename", std::string("设备管理卡.pdf")));
     } else if (action == "print") {
       ShowPrintDialog();
@@ -835,10 +758,8 @@ void InjectShim() {
   // 页面按 window.webkit.messageHandlers.devcard 判断是否在壳内；
   // 这里把 WebView2 的 chrome.webview 桥映射成同一形状，页面代码不用改。
   //
-  // updater_win：不再用 AddHostObjectToScript 的 COM 宿主对象（没有类型信息，
-  // 调用一律失败），改为在页面里注入同形状的 shim：方法把 action 发给壳，
-  // 壳完成后用 PostWebMessageAsJson 推 {event,code,detail,status} 回来；
-  // statusJson 返回最近一次推回的状态快照。
+  // 自动更新不再注入 __devcardUpdater：分层重构后检测/编排全在 server，
+  // win 壳只是平台安装器（协助器），前端直接调 /api/update/*。
   const wchar_t* script =
       L"window.__devcardShell = true;"
       L"if (window.chrome && window.chrome.webview) {"
@@ -849,32 +770,6 @@ void InjectShim() {
       L"      postMessage: function (message) {"
       L"        window.chrome.webview.postMessage(message);"
       L"      }"
-      L"    };"
-      L"  }"
-      L"  if (!window.__devcardUpdater) {"
-      L"    window.__devcardUpdaterStatus = window.__devcardUpdaterStatus || {};"
-      L"    var send = function (action) {"
-      L"      window.chrome.webview.postMessage("
-      L"          { bridge: 'updater_win', action: action });"
-      L"      return Promise.resolve('');"
-      L"    };"
-      L"    window.chrome.webview.addEventListener('message', function (e) {"
-      L"      var m = e && e.data;"
-      L"      if (typeof m === 'string') {"
-      L"        try { m = JSON.parse(m); } catch (_) { return; }"
-      L"      }"
-      L"      if (m && m.status) { window.__devcardUpdaterStatus = m.status; }"
-      L"    });"
-      L"    window.__devcardUpdater = {"
-      L"      checkNow: function () { return send('checkNow'); },"
-      L"      downloadUpdate: function () { return send('downloadUpdate'); },"
-      L"      installUpdate: function () { return send('installUpdate'); },"
-      L"      cancelPrefetch: function () { return send('cancelPrefetch'); },"
-      L"      checkMinSupportedVersion: function () {"
-      L"        return send('checkMinSupportedVersion'); },"
-      L"      statusJson: function () {"
-      L"        return Promise.resolve("
-      L"            JSON.stringify(window.__devcardUpdaterStatus || {})); }"
       L"    };"
       L"  }"
       L"}";
@@ -934,15 +829,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       }
       return 0;
     }
-    case kBridgePostMessage: {
-      // 后台线程转投的 updater 事件：回到 UI 线程再推给页面。
-      auto* payload = reinterpret_cast<std::string*>(lparam);
-      if (payload) {
-        post_web_message_json(*payload);
-        delete payload;
-      }
-      return 0;
-    }
     case WM_CLOSE:
       if (g.server_exit_requested) {
         // server handler (auto-update install) requested exit — skip confirmation,
@@ -953,11 +839,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       }
       return 0;
     case WM_DESTROY:
-      // updater_win 后台回调还在跑，先清 post 指针防止往已释放的 webview 推消息。
-      {
-        std::lock_guard<std::mutex> lk(g_webview_mutex);
-        if (g_webview_for_post) { g_webview_for_post->Release(); g_webview_for_post = nullptr; }
-      }
       PostQuitMessage(0);
       return 0;
     default:
@@ -997,16 +878,6 @@ bool CreateWebView() {
                   RegisterHandlers();
                   InjectShim();
 
-                  // updater_win bridge：把 ICoreWebView2 指针给全局变量，供
-                  // updater_win 异步回调 PostWebMessageAsJson 推前端。
-                  {
-                    std::lock_guard<std::mutex> lk(g_webview_mutex);
-                    g_webview_for_post = g.webview.Get();
-                    g_webview_for_post->AddRef();
-                  }
-                  // 注册 HostObject：前端 window.chrome.webview.hostObjects.updater_win.*
-                  // 已废弃：COM 宿主对象调用不可用，改由 InjectShim 注入同形状 shim。
-
                   const std::wstring url = g.origin + L"/";
                   g.webview->Navigate(url.c_str());
                   return S_OK;
@@ -1033,7 +904,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   // 从 cmd 启动或重定向时，stderr 里的中文按 UTF-8 写出，需要把控制台代码页切到 UTF-8；
   // 纯 GUI 启动（无控制台）时本调用是空操作。
   win_encoding::init_console();
-  g_ui_thread_id = GetCurrentThreadId();
 
   // 单实例：第二个进程不重复起服务/WebView，只把已有窗口叫到前台。
   // 用 Local\ 命名空间（同一登录会话内唯一），句柄保持到进程退出。
@@ -1084,7 +954,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
 
   g.origin = L"http://127.0.0.1:" + std::to_wstring(g_server->port());
-  devcard::updater::UpdaterWin::instance().setServerOrigin(Narrow(g.origin));
 
   WNDCLASSEXW window_class = {};
   window_class.cbSize = sizeof(window_class);
@@ -1137,12 +1006,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
   ShowWindow(g.hwnd, SW_SHOW);
   UpdateWindow(g.hwnd);
-
-  // 启动 Windows 自更新桥：manifest_url 默认指向 OSS 统一清单，
-  // 客户端只取 platforms.windows 段做判定。channel=stable。
-  devcard::updater::UpdaterWin::instance().start(
-      "https://dl.xiaotu.online/devcard/updates/stable/manifest.json",
-      "stable");
 
   // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
   // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。

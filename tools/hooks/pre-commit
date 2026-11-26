@@ -6,10 +6,12 @@
 #         无 BOM 会被按 GBK 读，中文字面量断裂 → 脚本崩溃。
 #
 # 门禁 2：清单 v2 的 Ed25519 公钥（hex）一致性
-#         Windows 更新桥 DEVCARD_UPDATER_PUBKEY_HEX（shell/win/CMakeLists.txt）
-#         与 /api/version 的 kUpdateSignPubkeyHex（server/src/server.cpp）必须同值；
-#         有 ~/.config/devcard/manifest-keys/ed25519_seed.b64 时还会从种子推导公钥
-#         核对，防止两处一起写错。混用 Sparkle 公钥会导致 SIGNATURE_INVALID。
+#         分层重构后全仓只剩一处：/api/version 的 kUpdateSignPubkeyHex
+#         （server/src/server.cpp）。Windows 更新桥 DEVCARD_UPDATER_PUBKEY_HEX
+#         （shell/win/CMakeLists.txt）已随 updater_win 一起退役——win 壳不再
+#         自己验签，公钥一致性由 server 单点保证。
+#         有 ~/.config/devcard/manifest-keys/ed25519_seed.b64 时还会从种子推导
+#         公钥核对，防止写错。混用 Sparkle 公钥会导致 SIGNATURE_INVALID。
 #
 # 门禁 3：Sparkle EdDSA 公钥硬编码一致性
 #         Sparkle 验签公钥在 shell/CMakeLists.txt 硬编码一处，且会全仓扫描
@@ -69,23 +71,18 @@ hex_after_marker() {
 }
 
 SERVER_KEY_FILE="$REPO_ROOT/server/src/server.cpp"
-SHELL_KEY_FILE="$REPO_ROOT/shell/win/CMakeLists.txt"
 SERVER_HEX=$(hex_after_marker "$SERVER_KEY_FILE" "kUpdateSignPubkeyHex")
-SHELL_HEX=$(hex_after_marker "$SHELL_KEY_FILE" "DEVCARD_UPDATER_PUBKEY_HEX")
 
 hex_fail=0
 if [ -z "$SERVER_HEX" ]; then
     echo -e "  ${RED}✗${NC} server/src/server.cpp 里找不到 kUpdateSignPubkeyHex 的 64 位 hex 公钥"
     hex_fail=$((hex_fail + 1))
 fi
-if [ -z "$SHELL_HEX" ]; then
-    echo -e "  ${RED}✗${NC} shell/win/CMakeLists.txt 里找不到 DEVCARD_UPDATER_PUBKEY_HEX 的 64 位 hex 公钥"
-    hex_fail=$((hex_fail + 1))
-fi
-if [ -n "$SERVER_HEX" ] && [ -n "$SHELL_HEX" ] && [ "$SERVER_HEX" != "$SHELL_HEX" ]; then
-    echo -e "  ${RED}✗${NC} 两处清单公钥不一致："
-    echo -e "     server/src/server.cpp        ：$SERVER_HEX"
-    echo -e "     shell/win/CMakeLists.txt     ：$SHELL_HEX"
+# updater_win 退役后 win 壳不再有第二处公钥；若 DEVCARD_UPDATER_PUBKEY_HEX
+# 复现（有人把旧桥搬回来），这里拒绝。
+if grep -q "DEVCARD_UPDATER_PUBKEY_HEX" "$REPO_ROOT/shell/win/CMakeLists.txt" 2>/dev/null; then
+    echo -e "  ${RED}✗${NC} shell/win/CMakeLists.txt 又出现了 DEVCARD_UPDATER_PUBKEY_HEX"
+    echo -e "     updater_win 已退役，清单验签只在 server 一处；win 壳不应再自带公钥。"
     hex_fail=$((hex_fail + 1))
 fi
 
