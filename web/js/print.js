@@ -302,6 +302,14 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
 
   window.addEventListener('resize', updatePrintScale);
 
+  // Windows 壳的打印对话框没有 SDK 事件可监听关闭（稳定版 ICoreWebView2_16
+  // 无 PrintDialogClosing）：afterprint 触发说明对话框已关或已出纸，
+  // 通知壳释放 print_busy 并收起 is-export 布局；若对话框被取消、页面
+  // 收不到打印事件，由壳侧 20s 兜底定时器释放。浏览器模式无需上报。
+  window.addEventListener('afterprint', function () {
+    if (window.__devcardShell) sendToShell('printDone');
+  });
+
   el.printExport.addEventListener('click', function () {
     if (!printState.items.length) return;
     // 有壳层时一律交给壳：壳会向页面要布局，页面用 {error} 回应并中止，

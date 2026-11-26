@@ -555,8 +555,11 @@ void ExportPdf(const std::string& suggested_name) {
 }
 
 // 直接打印：走 WebView2 的系统打印对话框（Chromium 打印管线，@page 控制分页）。
-// PrintDialogClosing 令牌：每次打印前先移除旧令牌再注册，避免反复打印累积监听。
-EventRegistrationToken g_print_closing_token = {};
+// 稳定版 SDK（1.0.2903.40）的 ICoreWebView2_16 只有 ShowPrintUI/PrintToPdf，
+// 没有 PrintDialogClosing 事件可监听关闭：释放走双通道——页面 afterprint 触发后
+// 前端发 printDone（精确路径），以及 20s 兜底定时器（对话框被取消、页面收不到
+// 打印事件时防 print_busy 永久卡死；定时器只放锁不清布局，与成功路径原行为一致）。
+constexpr UINT_PTR kPrintFallbackTimer = 0x4C05;
 
 void ShowPrintDialog() {
   if (!g.webview || g.print_busy) return;
@@ -575,21 +578,8 @@ void ShowPrintDialog() {
   }
   // 与 ExportPdf 同一互斥：原实现只查不置 print_busy，打印面板开着期间
   // 再点导出会通过 RequestExportLayout 并发改写 is-export 布局，
-  // 打出去的版式与导出的 PDF 互踩；对话框关闭后由监听统一释放。
+  // 打出去的版式与导出的 PDF 互踩。
   g.print_busy = true;
-  auto on_dialog_closing = Callback<ICoreWebView2PrintingEventHandler>(
-      [](ICoreWebView2*, IUnknown*) -> HRESULT {
-        g.print_busy = false;
-        ExitExportMode();
-        return S_OK;
-      });
-  webview16->remove_PrintDialogClosing(g_print_closing_token);
-  if (FAILED(webview16->add_PrintDialogClosing(on_dialog_closing.Get(),
-                                               &g_print_closing_token))) {
-    g.print_busy = false;
-    Notify(L"error", L"无法监听打印对话框关闭事件，已中止打印");
-    return;
-  }
   RequestExportLayout([webview16](int pages, const std::string& layout_error) {
         if (!layout_error.empty()) {
           g.print_busy = false;
@@ -609,7 +599,10 @@ void ShowPrintDialog() {
           g.print_busy = false;
           ExitExportMode();
           Notify(L"error", L"无法打开打印对话框（" + HResultText(hr) + L"）");
+          return;
         }
+        KillTimer(g.hwnd, kPrintFallbackTimer);
+        SetTimer(g.hwnd, kPrintFallbackTimer, 20000, nullptr);
       });
 }
 
@@ -707,6 +700,11 @@ void HandleBridgeMessage(const std::wstring& json_text) {
       ExportPdf(message.value("filename", std::string("设备管理卡.pdf")));
     } else if (action == "print") {
       ShowPrintDialog();
+    } else if (action == "printDone") {
+      // 页面 afterprint 已触发：打印对话框关闭或出纸完成，释放打印互斥并收布局。
+      KillTimer(g.hwnd, kPrintFallbackTimer);
+      g.print_busy = false;
+      ExitExportMode();
     } else if (action == "openDataDir") {
       OpenDataDir(Widen(message.value("path", std::string())));
     } else if (action == "openExternal") {
@@ -910,6 +908,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
     case WM_SIZE:
       ResizeWebView();
       return 0;
+    case WM_TIMER:
+      if (wparam == kPrintFallbackTimer) {
+        KillTimer(hwnd, kPrintFallbackTimer);
+        // 兜底释放：只放锁不清 is-export 布局（无法区分「已取消」与「仍开着」，
+        // 清布局可能破坏尚未出纸的打印；精确清理走 printDone）。
+        g.print_busy = false;
+        return 0;
+      }
+      break;
     case WM_COMMAND: {
       switch (LOWORD(wparam)) {
         case IDM_HELP_CHECKUPDATE:
