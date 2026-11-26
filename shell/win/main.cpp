@@ -916,7 +916,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
         g.print_busy = false;
         return 0;
       }
-      break;
+      return DefWindowProcW(hwnd, message, wparam, lparam);
     case WM_COMMAND: {
       switch (LOWORD(wparam)) {
         case IDM_HELP_CHECKUPDATE:
