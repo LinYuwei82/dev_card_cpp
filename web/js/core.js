@@ -53,6 +53,8 @@
   var printState = {
     items: [],
     truncated: false,
+    // 服务端截断上限（/api/print/cards 的 print_limit），文案引用它不再写死。
+    limit: 10000,
     busy: false,
     // 非空时 /api/print/cards 带 ids，只打印台账里勾选的那几台。
     ids: []

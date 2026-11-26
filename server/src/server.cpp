@@ -1699,6 +1699,9 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      std::vector<Device> items;
                      std::int64_t total = 0;
                      bool truncated = false;
+                     // 打印卡片截断上限：随响应返回 print_limit，
+                     // 前端文案直接引用该值，不再各自写死数字。
+                     constexpr std::size_t kPrintCardLimit = 10000;
                      while (true) {
                        const DevicePage page = state.devices->list(query);
                        if (query.page == 0) total = page.total;
@@ -1707,7 +1710,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                            static_cast<std::int64_t>(items.size()) >= total) {
                          break;
                        }
-                       if (items.size() >= 10000) {
+                       if (items.size() >= kPrintCardLimit) {
                          truncated = true;
                          break;
                        }
@@ -1748,6 +1751,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                      set_json(response, json{{"items", array},
                                              {"total", total},
                                              {"truncated", truncated},
+                                             {"print_limit", kPrintCardLimit},
                                              {"company_name", company_print_name(*state.db)}});
                    });
 

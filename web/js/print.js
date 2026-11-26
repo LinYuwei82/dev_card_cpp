@@ -63,7 +63,7 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
     el.printScope.textContent = (selected > 0 ? '已选 ' + selected + ' 台 · ' : '当前筛选结果 ') +
       printState.items.length + ' 条 · 每页 ' +
       layout + ' 张 · 共 ' + pages + ' 页' +
-      (printState.truncated ? '（超过 10000 条，已截断）' : '');
+      (printState.truncated ? '（超过 ' + printState.limit + ' 条，已截断）' : '');
   }
 
   function renderPrint() {
@@ -225,6 +225,7 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
       .then(function (data) {
         printState.items = data.items || [];
         printState.truncated = !!data.truncated;
+        printState.limit = data.print_limit || 10000;
         // 勾选快照与实际可打印数据对齐：被删除或不再匹配当前筛选的 id 剔除，
         // 「已选 N 台 · X 条」不再显示两个对不上的数字。
         if (printState.ids.length > 0) {
