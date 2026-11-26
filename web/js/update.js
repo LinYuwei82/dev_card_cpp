@@ -406,11 +406,26 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
 
   // 强制是否已生效：未设期限 → 立即强制；设了期限 → 到期才强制（截止前可稍后）。
   // 期限解析失败按「已到期」处理，避免格式问题成为绕过手段；三端同一口径。
+  // 发布端（publish_args.py）只放行 YYYY-MM-DDTHH:MM:SSZ，Date.parse 对该格式
+  // 各浏览器一致；这里再兜底手写/异常清单：空格分隔、无时区后缀一律按 UTC
+  // 解析，避免 Safari 返回 NaN 或 Chrome 按本地时区解释造成三端口径漂移。
+  function parseDeadline(raw) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-])(\d{2})?:?(\d{2})?$/.exec(String(raw).trim());
+    if (!m) return Date.parse(raw);
+    var ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    var offset_min = 0;
+    if (m[7] === '+' || m[7] === '-') {
+      offset_min = (+m[8] || 0) * 60 + (+m[9] || 0);
+      if (m[7] === '-') offset_min = -offset_min;
+    }
+    return ms - offset_min * 60000;
+  }
+
   function mandatoryActive(info) {
     if (!info || !info.mandatory) return false;
     var raw = info.deadline || '';
     if (!raw) return true;
-    var at = Date.parse(raw);
+    var at = parseDeadline(raw);
     return !isFinite(at) || Date.now() >= at;
   }
 
