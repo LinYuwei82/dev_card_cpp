@@ -60,20 +60,18 @@
     ids: []
   };
 
-  // 自更新：远端检查结论、下载/安装进度与一次性定时器。
+  // 自更新：唯一数据源是服务端编排层的 /api/update/state 快照。
+  // 分层重构后页面不再有远端检查结论/资产/版本比较等中间状态——
+  // 出现新的判定字段说明有人把逻辑搬回了前端，会被防回潮自检拦下。
   var updateState = {
-    // 本地清单通道下发的更新信息（/api/bootstrap 的 update 段）。
-    info: null,
-    // 远端检查的原始结论（含接口原文），自检与核对用；
-    // 这层出过「拿假数据截图」的事，解析结果必须能对回原文。
-    check: null,
+    // 最近一次 /api/update/state（含判定快照与下载页地址）。
+    state: null,
     url: '',
     timer: null,
     downloading: false,
-    asset: null,
-    assetVersion: '',
     force: false,
-    installing: false
+    installing: false,
+    lastCheckSilent: true
   };
 
   var el = {

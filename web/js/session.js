@@ -1,5 +1,5 @@
 import { api, appState, el, handleAuthFailure, hasNativeBridge, printState, setAuthHooks, setStatusError, systemState, toast, updateStatusIdentity } from './core.js';
-import { isMacShell, sendToShell } from './shell.js';
+import { sendToShell } from './shell.js';
 import { loadFontCoverage } from './fonts.js';
 import { closeDelete, closeDrawer, load, loadOptions } from './devices.js';
 import { updateCompanyHint, updateLogoTime } from './settings.js';
@@ -98,10 +98,10 @@ import { loadPrint } from './print.js';
     loadOptions();
     loadFontCoverage();
     load();
-    // macOS 壳层由 Sparkle 自更新接管：前端不再 fetch update.json + 弹手动更新窗，
-    // 避免两套更新通道并存造成用户困惑。Windows 壳层 / 浏览器网络版照常跑。
-    // 顶栏「检查更新」按钮三端都显示：macOS 点击转交 Sparkle（见点击处理）。
-    if (!isMacShell()) checkUpdate();
+    // 三端统一走服务端编排层：启动时只读 /api/update/state 快照（不触网），
+    // 强制更新到期时由这份快照弹窗阻塞。macOS 不再依赖 Sparkle 后台自查
+    // （它只当安装执行器），避免同一台机器出现第二个检测源。
+    checkUpdate();
     if (appState.view === 'users') {
       loadUsers();
       loadBackups();

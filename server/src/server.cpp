@@ -1185,30 +1185,39 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   // —— 编排层统一状态接口（唯一状态机 UpdateService，见 update_service.h）——
   // 前端只读这份状态、只调这几个动作；检测判据在 core，编排在这里，
   // 壳不再各写一份状态机（双胞胎 bug 的根治点）。
+  // 统一载荷：附下载页与本机版本号，前端不必再回读 /api/version。
+  auto update_state_payload = [&state, version]() {
+    json out = state.update_service ? state.update_service->state_json()
+                                    : json{{"enabled", false}};
+    out["download_page"] = download_page();
+    out["version"] = version;
+    return out;
+  };
+
   state.server.Get("/api/update/state",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
+                   [&state, update_state_payload](
+                       const httplib::Request& request,
+                       httplib::Response& response) {
                      require_admin(state, request);
-                     if (!state.update_service) {
-                       set_json(response, json{{"enabled", false}});
-                       return;
-                     }
-                     set_json(response, state.update_service->state_json());
+                     set_json(response, update_state_payload());
                    });
 
   state.server.Post("/api/update/check",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
+                    [&state, update_state_payload](
+                        const httplib::Request& request,
+                        httplib::Response& response) {
                       require_admin(state, request);
                       if (!state.update_service) {
                         throw AppError("update_disabled", "更新服务未启用");
                       }
-                      set_json(response, state.update_service->check_now());
+                      state.update_service->check_now();
+                      set_json(response, update_state_payload());
                     });
 
   state.server.Post("/api/update/skip",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
+                    [&state, update_state_payload](
+                        const httplib::Request& request,
+                        httplib::Response& response) {
                       require_admin(state, request);
                       if (!state.update_service) {
                         throw AppError("update_disabled", "更新服务未启用");
@@ -1217,12 +1226,13 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       state.update_service->skip_version(
                           body.value("version", std::string{}),
                           body.value("hours", static_cast<std::int64_t>(24)));
-                      set_json(response, state.update_service->state_json());
+                      set_json(response, update_state_payload());
                     });
 
   state.server.Post("/api/update/options",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
+                    [&state, update_state_payload](
+                        const httplib::Request& request,
+                        httplib::Response& response) {
                       require_admin(state, request);
                       if (!state.update_service) {
                         throw AppError("update_disabled", "更新服务未启用");
@@ -1231,7 +1241,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       state.update_service->set_options(
                           body.value("auto_check", true),
                           body.value("prefetch", false));
-                      set_json(response, state.update_service->state_json());
+                      set_json(response, update_state_payload());
                     });
 
   state.server.Post("/api/session/local",
