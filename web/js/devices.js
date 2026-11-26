@@ -329,7 +329,13 @@ import { setView } from './session.js';
                  window.webkit.messageHandlers.devcard;
     return fetch(options.url)
       .then(function (response) {
-        if (!response.ok) throw new Error(options.fail + '（' + response.status + '）');
+        if (!response.ok) {
+          // 带上 status：会话过期时 handleAuthFailure 才能识别 401 跳登录，
+          // 而不是只弹一句「导出失败（401）」。
+          var failure = new Error(options.fail + '（' + response.status + '）');
+          failure.status = response.status;
+          throw failure;
+        }
         return response.blob();
       })
       .then(function (blob) {
@@ -361,6 +367,7 @@ import { setView } from './session.js';
       okText: '已导出 设备台账.xlsx'
     })
       .catch(function (error) {
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       })
       .then(function () {
@@ -378,6 +385,7 @@ import { setView } from './session.js';
       okText: '已下载 设备导入模板.xlsx，可直接上传（空模板导入 0 行）'
     })
       .catch(function (error) {
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       })
       .then(function () {
