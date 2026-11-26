@@ -1,4 +1,4 @@
-// 小兔进销存 Windows 桌面壳 —— 自动更新桥接层
+// DevCard Windows 桌面壳 —— 自动更新桥接层
 //
 // 实现：
 //   WinHTTP 拉 manifest.json（Schema v2 统一清单）→ nlohmann::json 解析
@@ -739,10 +739,10 @@ void UpdaterWin::downloadUpdate(Completion cb) {
   std::cerr << "[updater] " << "更新：开始下载 " + expected_sha256.substr(0, 12) + "…" << std::endl;
 
   download_thread_ = std::thread([this, url, expected_sha256, expected_size, cb] {
-    // 目标文件放在下载目录，文件名用 build 号
+    // 目标文件放在下载目录（DevCard 自己的产物名，勿再沿用其他产品的文件名）
     std::wstring dir = downloadDir();
-    std::wstring target = dir + L"\\xiaotu-inventory-setup.exe.part";
-    std::wstring final_name = dir + L"\\xiaotu-inventory-setup.exe";
+    std::wstring target = dir + L"\\devcard-setup.exe.part";
+    std::wstring final_name = dir + L"\\devcard-setup.exe";
 
     std::int64_t downloaded = 0;
     std::string err_code, err_detail;
