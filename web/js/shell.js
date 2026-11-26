@@ -6,8 +6,8 @@ import { hasNativeBridge, toast } from './core.js';
   }
 
   // Windows WebView2 壳：有 chrome.webview + hostObjects。hostObjects 仅作
-  // 「当前在 WebView2 里」的探测信号——updater_win 桥已退役，win 更新走
-  // server 的更新接口（state/check/download/install），页面不再注入 __devcardUpdater。
+  // 「当前在 WebView2 里」的探测信号——旧更新桥已退役，win 更新走
+  // server 的更新接口（state/check/download/install），页面不再注入更新 shim。
   function isWinWebview() {
     return !!(/Windows/i.test(navigator.userAgent || '') &&
       window.chrome && window.chrome.webview && window.chrome.webview.hostObjects);

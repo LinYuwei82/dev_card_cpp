@@ -709,8 +709,9 @@ int main(int argc, const char* argv[]) {
     [window setMinSize:NSMakeSize(960, 600)];
     [window center];
 
-    // 自检要的是「一次真实请求」，而正式节流是 24 小时：自检模式只清掉
-    // 「上次检查时间」这一个 key，不动登录态（换非持久存储会丢会话，接口直接 401）。
+    // 自检模式开关保留（DEVCARD_SELFTEST_UPDATE=live/其它）；
+    // 分层重构后检查节流在 server UpdateService，页面不再有 localStorage
+    // 节流键，无需为自检清状态。
     NSString* selftest_update_mode =
         NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_UPDATE"];
 
@@ -726,14 +727,6 @@ int main(int argc, const char* argv[]) {
                           initWithSource:@"window.__devcardShell = true;"
                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                         forMainFrameOnly:YES]];
-    if (selftest_update_mode.length > 0) {
-      [controller
-          addUserScript:[[WKUserScript alloc]
-                            initWithSource:@"try{localStorage.removeItem("
-                                             @"'devcard.update.lastCheckAt');}catch(e){}"
-                             injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                          forMainFrameOnly:YES]];
-    }
     config.userContentController = controller;
 
     WKWebView* web = [[WKWebView alloc] initWithFrame:frame configuration:config];

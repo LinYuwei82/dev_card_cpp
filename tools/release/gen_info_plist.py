@@ -83,9 +83,17 @@ def main():
 
     # Sparkle 2 两键：必须同时有 SUFeedURL + SUPublicEDKey 才启用。
     # 只给一个是配置错误——Sparkle 会报错退出。
+    #
+    # 分层重构后 Sparkle 只当安装执行器：检测/提示统一由 server UpdateService
+    # 负责（消除 mac 上第二个检测源），所以关掉 Sparkle 的后台自动检查；
+    # 应用内菜单/按钮的 checkForUpdates 手动触发不受此开关影响。
     if args.feed_url and args.pubkey:
         plist("SUFeedURL", args.feed_url)
         plist("SUPublicEDKey", args.pubkey)
+        # 布尔键必须写 <false/>，plist() 只产 <string>，这里手工补。
+        d.append(ET.Element("key"))
+        d[-1].text = "SUEnableAutomaticChecks"
+        d.append(ET.Element("false"))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="\t")

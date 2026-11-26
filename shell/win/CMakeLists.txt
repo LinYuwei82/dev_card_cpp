@@ -20,7 +20,7 @@ if(NOT EXISTS "${DEVCARD_WEBVIEW2_INCLUDE}/WebView2.h"
         "无网环境：给该脚本传 -LocalPackage <nupkg 路径>。")
 endif()
 
-# 分层重构后 win 壳不再自带更新状态机（updater_win 已退役）：
+# 分层重构后 win 壳不再自带更新状态机（旧更新桥已退役）：
 # 检测/编排全在 server，win 安装走 server→apply_update 协助器。
 add_executable(DevCard WIN32 main.cpp app.manifest app.rc)
 devcard_add_version_rc(DevCard)
@@ -38,7 +38,7 @@ target_include_directories(DevCard PRIVATE
 
 # WebView2LoaderStatic 自身要求 version.lib 与 shlwapi.lib；
 # 其余是 ShellExecute / 文件对话框 / 下载目录 / 打印机枚举所需。
-# winhttp/bcrypt 已随 updater_win 退役：win 壳不再自己拉清单与校验下载包。
+# HTTP 与哈希库已随旧更新桥退役：win 壳不再自己拉清单与校验下载包。
 target_link_libraries(DevCard PRIVATE
     devcard_server
     "${DEVCARD_WEBVIEW2_LIB}"

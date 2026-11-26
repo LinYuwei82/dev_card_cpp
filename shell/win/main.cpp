@@ -758,8 +758,8 @@ void InjectShim() {
   // 页面按 window.webkit.messageHandlers.devcard 判断是否在壳内；
   // 这里把 WebView2 的 chrome.webview 桥映射成同一形状，页面代码不用改。
   //
-  // 自动更新不再注入 __devcardUpdater：分层重构后检测/编排全在 server，
-  // win 壳只是平台安装器（协助器），前端直接调 /api/update/*。
+  // 自动更新不再注入更新 shim：分层重构后检测/编排全在 server，
+  // win 壳只是平台安装器（协助器），前端直接调 /api/update/state 等接口。
   const wchar_t* script =
       L"window.__devcardShell = true;"
       L"if (window.chrome && window.chrome.webview) {"

@@ -1,5 +1,17 @@
 // DevCard 自动更新自检：从 main.mm 抽出的独立诊断模块，只负责驱动页面自检，
 // 不参与正式更新流程（正式更新由 shell/mac/updater.mm 的 DevCardUpdaterBridge 负责）。
+//
+// 分层重构后（检测在 core、编排在 server、Sparkle 只当安装执行器）：
+//   - live 模式：页面同源 POST /api/update/check 让服务端立即出网拉清单，
+//     轮询结果 JSON（verdict / update_available / last_error），点开弹窗截图；
+//   - 默认（离线）模式：只读页面已渲染的 /api/update/state 快照
+//     （window.__devcardUpdateDiag），验证「服务端状态 → 界面」这一段通；
+//   - replay 模式随前端检测层一起退役：判据回放现在由
+//     tests/test_core.cpp 的 evaluate_update 表驱动用例承担（同一份
+//     update_compare_vectors.json），不再需要把响应喂进页面。
+// 状态放文件级变量而不是 __block：跨回调的 __block 状态在本项目第一次实现时直接
+// SIGSEGV（dispatch 回调里调到了空 block），换成静态变量后不再依赖编译器对
+// ObjC++ 下 __block 的处理。
 
 #import "update_selftest.h"
 
@@ -7,301 +19,166 @@
 
 #include <cstdlib>
 
-// 自动更新自检：四种失败路径（超时 / DNS 非 JSON / 版本号非法）必须全静默。
-// 状态放文件级变量而不是 __block：跨回调的 __block 状态在本项目第一次实现时直接
-// SIGSEGV（dispatch 回调里调到了空 block），换成静态变量后不再依赖编译器对
-// ObjC++ 下 __block 的处理。
 static WKWebView* g_update_selftest_web = nil;
-static BOOL g_update_selftest_started = NO;
 
-// replay 模式：把已抓到的真实 Release 响应体喂进页面的解析/比较/提示链路，
-// 再用 WKWebView 自己的快照落 PNG——不经过窗口层级，绕开「Trae 永远在前」的问题。
-static void devcard_poll_replay(int attempts) {
-  WKWebView* web = g_update_selftest_web;
-  NSString* fixture = NSProcessInfo.processInfo.environment[@"DEVCARD_UPDATE_FIXTURE"];
-  if (fixture.length == 0) {
-    fixture = @"/tmp/m6_release_fixture.json";
-  }
-  NSString* body = [NSString stringWithContentsOfFile:fixture
-                                             encoding:NSUTF8StringEncoding
-                                                error:nil];
-  if (!web || body.length == 0) {
-    NSLog(@"DEVCARD_SELFTEST replay_fail 读不到 fixture：%@", fixture);
-    exit(2);
-  }
-  [web evaluateJavaScript:@"typeof window.__devcardUpdateReplay"
-        completionHandler:^(id value, NSError* error) {
-          NSString* kind = [value isKindOfClass:NSString.class] ? value : @"";
-          if (![kind isEqualToString:@"function"]) {
-            if (attempts <= 0) {
-              NSLog(@"DEVCARD_SELFTEST replay_fail 页面未就绪");
-              exit(2);
-            }
-            dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                dispatch_get_main_queue(), ^{
-                  devcard_poll_replay(attempts - 1);
-                });
-            return;
-          }
-          NSData* encoded = [NSJSONSerialization dataWithJSONObject:@[ body ]
-                                                           options:0
-                                                             error:nil];
-          NSString* literal = [[NSString alloc] initWithData:encoded
-                                                    encoding:NSUTF8StringEncoding];
-          NSString* call =
-              [NSString stringWithFormat:@"window.__devcardUpdateReplay((%@)[0])", literal];
-          [web evaluateJavaScript:call
-                completionHandler:^(id result, NSError* call_error) {
-                  NSString* summary =
-                      [result isKindOfClass:NSString.class] ? result : @"{}";
-                  NSLog(@"DEVCARD_SELFTEST replay=%@", summary);
-                  [web evaluateJavaScript:
-                           @"(function(){var p=document.getElementById('update-pill');"
-                            "if(!p||p.hidden)return 'no-pill';p.click();return 'clicked';})()"
-                        completionHandler:^(id clicked, NSError* click_error) {
-                          NSLog(@"DEVCARD_SELFTEST replay_ui=%@",
-                                [clicked isKindOfClass:NSString.class] ? clicked : @"?");
-                          dispatch_after(
-                              dispatch_time(DISPATCH_TIME_NOW,
-                                            (int64_t)(0.8 * NSEC_PER_SEC)),
-                              dispatch_get_main_queue(), ^{
-                                WKSnapshotConfiguration* config =
-                                    [[WKSnapshotConfiguration alloc] init];
-                                [web takeSnapshotWithConfiguration:config
-                                                 completionHandler:^(NSImage* image,
-                                                                     NSError* snap_error) {
-                                                   if (image == nil) {
-                                                     NSLog(@"DEVCARD_SELFTEST replay_fail 快照失败：%@",
-                                                           snap_error.localizedDescription
-                                                               ?: @"(无图)");
-                                                   } else {
-                                                     NSBitmapImageRep* rep =
-                                                         [NSBitmapImageRep imageRepWithData:
-                                                                               [image TIFFRepresentation]];
-                                                     NSData* png = [rep representationUsingType:
-                                                                            NSBitmapImageFileTypePNG
-                                                                                    properties:@{}];
-                                                     NSString* png_path =
-                                                         @"/tmp/m6_update_ui.png";
-                                                     [png writeToFile:png_path atomically:YES];
-                                                     NSLog(@"DEVCARD_SELFTEST replay_shot=%@ (%lu B)",
-                                                           png_path,
-                                                           (unsigned long)png.length);
-                                                   }
-                                                   [summary writeToFile:@"/tmp/m6_update_replay.json"
-                                                             atomically:YES
-                                                               encoding:NSUTF8StringEncoding
-                                                                  error:nil];
-                                                   BOOL ok =
-                                                       [summary rangeOfString:@"\"ok\":true"]
-                                                           .location != NSNotFound;
-                                                   NSLog(@"DEVCARD_SELFTEST %@",
-                                                         ok ? @"OK" : @"FAIL");
-                                                   exit(ok ? 0 : 1);
-                                                 }];
-                              });
-                        }];
-                }];
-        }];
+static NSString* devcard_selftest_out_path(void) {
+  NSString* out_path =
+      NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_UPDATE_OUT"];
+  return out_path.length > 0 ? out_path : @"/tmp/m6_update_live.json";
 }
 
-static void devcard_poll_update_step(int attempts);
-
-// 超时诊断再进一步：直接问页面「你自己的 /api/version 拿不拿得到」。
-// 更新检查失败只报 Load failed，分不清是会话丢了，还是请求被拦在网络上。
-static void devcard_live_api_probe(WKWebView* web, int attempts, NSString* out_path) {
-  NSString* js =
-      @"(function(){"
-       "if(!window.__devcardApiProbe){"
-       "window.__devcardApiProbe='pending';"
-       "fetch('/api/version',{cache:'no-store',credentials:'same-origin'})"
-       ".then(function(r){return r.text().then(function(t){"
-       "window.__devcardApiProbe='HTTP '+r.status+' '+t.slice(0,160);});})"
-       ".catch(function(e){window.__devcardApiProbe='ERR '+e.name+': '+e.message;});}"
-       "return window.__devcardApiProbe;})()";
-  [web evaluateJavaScript:js
-        completionHandler:^(id value, NSError* error) {
-          NSString* probe = [value isKindOfClass:NSString.class] ? value : @"?";
-          if ([probe isEqualToString:@"pending"] && attempts > 0) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                         (int64_t)(0.3 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                             devcard_live_api_probe(web, attempts - 1, out_path);
-                           });
-            return;
-          }
-          [web evaluateJavaScript:@"(window.__devcardUpdateDiag ? window.__devcardUpdateDiag() : '{}')"
-                completionHandler:^(id diag, NSError* diag_error) {
-                  NSString* body = [diag isKindOfClass:NSString.class] ? diag : @"{}";
-                  NSData* encoded = [NSJSONSerialization dataWithJSONObject:@[ probe ]
-                                                                   options:0
-                                                                     error:nil];
-                  NSString* quoted = [[NSString alloc] initWithData:encoded
-                                                          encoding:NSUTF8StringEncoding];
-                  NSString* text_out = [NSString
-                      stringWithFormat:@"{\"status\":\"no-result\",\"api_probe\":%@,"
-                                       @"\"diag\":%@}",
-                                       [quoted substringWithRange:NSMakeRange(1, quoted.length - 2)],
-                                       body];
-                  [text_out writeToFile:out_path
-                              atomically:YES
-                                encoding:NSUTF8StringEncoding
-                                   error:nil];
-                  NSLog(@"DEVCARD_SELFTEST update_live=%@", text_out);
-                  exit(2);
-                }];
-        }];
+// 点开顶栏 pill（若有）并截图弹窗，供验收记录。
+static void devcard_snapshot_then_exit(WKWebView* web, int exit_code) {
+  [web evaluateJavaScript:
+           @"(function(){var p=document.getElementById('update-pill');"
+            "if(!p||p.hidden)return 'no-pill';p.click();return 'clicked';})()"
+      completionHandler:^(id clicked, NSError* click_error) {
+        NSString* ui = [clicked isKindOfClass:NSString.class] ? clicked : @"?";
+        NSLog(@"DEVCARD_SELFTEST update_ui=%@", ui);
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+              WKSnapshotConfiguration* config =
+                  [[WKSnapshotConfiguration alloc] init];
+              [web takeSnapshotWithConfiguration:config
+                               completionHandler:^(NSImage* image,
+                                                   NSError* snap_error) {
+                                 NSString* png_path =
+                                     NSProcessInfo.processInfo.environment
+                                         [@"DEVCARD_SELFTEST_UPDATE_SHOT"];
+                                 if (png_path.length == 0) {
+                                   png_path = @"/tmp/m6_update_live_ui.png";
+                                 }
+                                 if (image == nil) {
+                                   NSLog(@"DEVCARD_SELFTEST shot_fail=%@",
+                                         snap_error.localizedDescription
+                                             ?: @"(无图)");
+                                   exit(exit_code == 0 ? 4 : exit_code);
+                                   return;
+                                 }
+                                 NSBitmapImageRep* rep =
+                                     [NSBitmapImageRep imageRepWithData:
+                                           [image TIFFRepresentation]];
+                                 NSData* png = [rep representationUsingType:
+                                                        NSBitmapImageFileTypePNG
+                                                                properties:@{}];
+                                 [png writeToFile:png_path atomically:YES];
+                                 NSLog(@"DEVCARD_SELFTEST shot=%@ (%lu B)",
+                                       png_path, (unsigned long)png.length);
+                                 NSLog(@"DEVCARD_SELFTEST %@",
+                                       exit_code == 0 ? @"OK" : @"FAIL");
+                                 exit(exit_code);
+                               }];
+            });
+      }];
 }
 
-// live 模式：不替换传输层，直接打真实发布接口，把请求地址、响应原文长度与片段、
-// 解析结果打印出来。留在前台不退出，便于同时截屏——验收记录要的是「真实元数据 + 界面」。
+// live 模式：让服务端立即检查（页面同源带会话），轮询到结果后落盘 + 截图。
 static void devcard_poll_update_live(int attempts) {
   WKWebView* web = g_update_selftest_web;
   if (!web) {
     NSLog(@"DEVCARD_SELFTEST update_fail 没有页面");
     exit(2);
   }
-  NSString* probe =
+  NSString* js =
       @"(function(){"
-       "var s=window.__devcardUpdateState?window.__devcardUpdateState():null;"
-       "var c=s&&s.check;"
-       "if(!c||!c.status)return '';"
-       "return JSON.stringify({version:s.version,pill:s.pill,endpoint:c.endpoint||'',"
-       "status:c.status||'',rawLen:(c.raw||'').length,rawHead:(c.raw||'').slice(0,200),"
-       "release:c.release||null,detail:c.detail||''});})()";
-  [web evaluateJavaScript:probe
+       "if(!window.__devcardSelftestCheck){"
+       "window.__devcardSelftestCheck='pending';"
+       "fetch('/api/update/check',{method:'POST',credentials:'same-origin',"
+       "headers:{'Content-Type':'application/json'},body:'{}'})"
+       ".then(function(r){return r.text();})"
+       ".then(function(t){window.__devcardSelftestCheck=t;})"
+       ".catch(function(e){window.__devcardSelftestCheck='ERR '+e.name+': '+e.message;});}"
+       "return window.__devcardSelftestCheck;})()";
+  [web evaluateJavaScript:js
         completionHandler:^(id value, NSError* error) {
           NSString* text = [value isKindOfClass:NSString.class] ? value : @"";
-          if (text.length == 0) {
-            if (attempts <= 0) {
-              // 把中间状态写盘：只报「超时」不足以判断卡在哪一步。
-              NSString* out_path =
-                  NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_UPDATE_OUT"];
-              if (out_path.length == 0) {
-                out_path = @"/tmp/m6_update_live.json";
-              }
-              devcard_live_api_probe(web, 20, out_path);
+          if ([text isEqualToString:@"pending"] || text.length == 0) {
+            if (attempts > 0) {
+              dispatch_after(
+                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                  dispatch_get_main_queue(), ^{
+                    devcard_poll_update_live(attempts - 1);
+                  });
               return;
             }
-            dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                dispatch_get_main_queue(), ^{
-                  devcard_poll_update_live(attempts - 1);
-                });
-            return;
+            // 超时也要留证据：把当时的界面状态写盘，别只报「超时」。
+            NSString* fail_out =
+                [NSString stringWithFormat:
+                    @"{\"status\":\"timeout\",\"attempts_left\":0}"];
+            [fail_out writeToFile:devcard_selftest_out_path()
+                       atomically:YES
+                         encoding:NSUTF8StringEncoding
+                            error:nil];
+            NSLog(@"DEVCARD_SELFTEST update_fail 服务端检查未返回");
+            exit(2);
           }
           NSLog(@"DEVCARD_SELFTEST update_live=%@", text);
-          // 同时落盘：NSLog 在输出重定向时会被缓冲，进程被清理就什么都不剩。
-          NSString* out_path =
-              NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_UPDATE_OUT"];
-          if (out_path.length == 0) {
-            out_path = @"/tmp/m6_update_live.json";
-          }
-          [text writeToFile:out_path atomically:YES
+          [text writeToFile:devcard_selftest_out_path()
+                 atomically:YES
                    encoding:NSUTF8StringEncoding
                       error:nil];
-          // 有提示就把弹窗打开，供截屏；没有提示也把状态打完，别伪装成成功。
-          [web evaluateJavaScript:
-                   @"(function(){var p=document.getElementById('update-pill');"
-                    "if(!p||p.hidden)return 'no-pill';p.click();return 'clicked';})()"
-                completionHandler:^(id clicked, NSError* click_error) {
-                  NSString* ui =
-                      [clicked isKindOfClass:NSString.class] ? clicked : @"?";
-                  NSLog(@"DEVCARD_SELFTEST update_live_ui=%@", ui);
-                  if (![ui isEqualToString:@"clicked"]) {
-                    NSLog(@"DEVCARD_SELFTEST live_ready");
-                    exit(3);
-                    return;
-                  }
-                  // 弹窗打开后等一下再拍：快照拿到的是 WebView 自己渲染的位图，
-                  // 不经过窗口层级，Trae 挡在前面也不影响。
-                  dispatch_after(
-                      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                      dispatch_get_main_queue(), ^{
-                        WKSnapshotConfiguration* shot_config =
-                            [[WKSnapshotConfiguration alloc] init];
-                        [web takeSnapshotWithConfiguration:shot_config
-                                         completionHandler:^(NSImage* image,
-                                                             NSError* snap_error) {
-                                           NSString* png_path =
-                                               NSProcessInfo.processInfo.environment
-                                                   [@"DEVCARD_SELFTEST_UPDATE_SHOT"];
-                                           if (png_path.length == 0) {
-                                             png_path = @"/tmp/m6_update_live_ui.png";
-                                           }
-                                           if (image == nil) {
-                                             NSLog(@"DEVCARD_SELFTEST live_shot_fail=%@",
-                                                   snap_error.localizedDescription
-                                                       ?: @"(无图)");
-                                             exit(4);
-                                             return;
-                                           }
-                                           NSBitmapImageRep* rep =
-                                               [NSBitmapImageRep imageRepWithData:
-                                                                     [image TIFFRepresentation]];
-                                           NSData* png = [rep representationUsingType:
-                                                                  NSBitmapImageFileTypePNG
-                                                                          properties:@{}];
-                                           [png writeToFile:png_path atomically:YES];
-                                           NSLog(@"DEVCARD_SELFTEST live_shot=%@ (%lu B)",
-                                                 png_path, (unsigned long)png.length);
-                                           exit(0);
-                                         }];
-                      });
-                }];
+          if ([text hasPrefix:@"ERR "]) {
+            NSLog(@"DEVCARD_SELFTEST FAIL");
+            exit(1);
+          }
+          // 有更新才期待 pill；没更新时界面没弹窗也属正常，按 OK 收尾。
+          BOOL available =
+              [text rangeOfString:@"\"update_available\":true"].location != NSNotFound;
+          if (!available) {
+            NSLog(@"DEVCARD_SELFTEST OK（无可用更新，不截图弹窗）");
+            exit(0);
+          }
+          devcard_snapshot_then_exit(web, 0);
         }];
 }
 
-static void devcard_poll_update_later(int attempts) {
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-                   devcard_poll_update_step(attempts);
-                 });
-}
-
+// 默认（离线）模式：不触发服务端出网，只读页面已拿到的状态快照。
 static void devcard_poll_update_step(int attempts) {
   WKWebView* web = g_update_selftest_web;
   if (!web) {
     NSLog(@"DEVCARD_SELFTEST update_fail 没有页面");
     exit(2);
   }
-  NSString* probe = g_update_selftest_started
-                        ? @"window.__devcardUpdateSelftestResult ? "
-                           "JSON.stringify(window.__devcardUpdateSelftestResult) : ''"
-                        : @"typeof window.__devcardUpdateSelftestRun";
-  [web evaluateJavaScript:probe
+  [web evaluateJavaScript:@"(window.__devcardUpdateDiag ? window.__devcardUpdateDiag() : '')"
         completionHandler:^(id value, NSError* error) {
           NSString* text = [value isKindOfClass:NSString.class] ? value : @"";
-          if (!g_update_selftest_started) {
-            if ([text isEqualToString:@"function"]) {
-              g_update_selftest_started = YES;
-              [web evaluateJavaScript:@"window.__devcardUpdateSelftestRun()"
-                    completionHandler:nil];
-            }
-          } else if (text.length > 0) {
+          if (text.length > 0) {
             NSLog(@"DEVCARD_SELFTEST update=%@", text);
-            BOOL all_ok = [text rangeOfString:@"\"ok\":false"].location == NSNotFound;
-            NSLog(@"DEVCARD_SELFTEST %@", all_ok ? @"OK" : @"FAIL");
-            exit(all_ok ? 0 : 1);
+            NSString* out_path = devcard_selftest_out_path();
+            [text writeToFile:out_path atomically:YES
+                     encoding:NSUTF8StringEncoding
+                        error:nil];
+            // 判据：页面拿到了服务端状态（checked 或 last_error 至少其一），
+            // 且没有 JS 侧异常——具体 verdict 合理性由 ctest 与 guard 保证。
+            BOOL has_signal =
+                [text rangeOfString:@"\"checked\":true"].location != NSNotFound ||
+                [text rangeOfString:@"last_check_epoch" ].location != NSNotFound;
+            NSLog(@"DEVCARD_SELFTEST %@", has_signal ? @"OK" : @"FAIL");
+            exit(has_signal ? 0 : 1);
           }
           if (attempts <= 0) {
-            NSLog(@"DEVCARD_SELFTEST update_fail 自检超时（started=%@）",
-                  g_update_selftest_started ? @"YES" : @"NO");
+            NSLog(@"DEVCARD_SELFTEST update_fail 自检超时（页面未就绪）");
             exit(2);
           }
-          devcard_poll_update_later(attempts - 1);
+          dispatch_after(
+              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+              dispatch_get_main_queue(), ^{
+                devcard_poll_update_step(attempts - 1);
+              });
         }];
 }
 
 void DevCardUpdateSelftestStart(WKWebView* web, NSString* mode) {
   g_update_selftest_web = web;
-  g_update_selftest_started = NO;
   if ([mode isEqualToString:@"live"]) {
-    devcard_poll_update_live(80);
-  } else if ([mode isEqualToString:@"replay"]) {
-    devcard_poll_replay(60);
-  } else {
-    devcard_poll_update_step(60);
+    devcard_poll_update_live(60);
+    return;
   }
+  if ([mode isEqualToString:@"replay"]) {
+    // 判据回放已迁到 core 表驱动单测（test_core 的 update-evaluate 用例）。
+    // 这里降级为离线模式，保持旧调用方（脚本/文档）不炸。
+    NSLog(@"DEVCARD_SELFTEST replay 模式已退役：判据在 core 单测，改跑离线状态自检");
+  }
+  devcard_poll_update_step(60);
 }
