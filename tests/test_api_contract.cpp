@@ -165,7 +165,7 @@ int main() {
   // 从文件里取 root 的密码：这是「首次登录必须改密」链路的真实入口。
   std::string root_password;
   {
-    std::ifstream in(data_dir / fs::u8path("初始账号密码.txt"), std::ios::binary);
+    std::ifstream in(data_dir / fs::path(u8"初始账号密码.txt"), std::ios::binary);
     std::string line;
     while (std::getline(in, line)) {
       const std::size_t sep = line.find("：");

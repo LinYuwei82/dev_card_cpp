@@ -120,7 +120,7 @@ std::string entry_text(mz_zip_archive& zip, const std::string& name) {
 
 void add_entry(mz_zip_archive& zip, const char* name, const std::string& body) {
   if (!mz_zip_writer_add_mem(&zip, name, body.data(), body.size(),
-                             MZ_DEFAULT_COMPRESSION)) {
+                             static_cast<mz_uint>(MZ_DEFAULT_COMPRESSION))) {
     throw AppError("xlsx_write_failed", "生成 xlsx 失败：写入 zip 条目出错");
   }
 }

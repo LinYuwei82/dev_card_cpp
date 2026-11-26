@@ -15,6 +15,8 @@
        必须与 VERSION.txt 逐字符相等，任一不等即失败。
     3. macOS 只看**真产物** build/release/shell/DevCard.app/Contents/Info.plist 的
        CFBundleShortVersionString；不一致即失败。
+       CFBundleVersion 是构建号（发布 tag 的序号），与 VERSION.txt 本来就不是同源，
+       只打印、不参与比对；构建号由 package_macos.sh 对 tag 序号校验。
        packaging/mac/Info.plist 是旧 Qt 线的冻结文件，package_macos.sh 不引用它，
        只作为一行信息列出，不参与判定。
 
@@ -68,7 +70,10 @@ PLIST_KEYS = ("CFBundleShortVersionString", "CFBundleVersion")
 
 
 def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, list[str], bool]:
-    """读真产物的 Info.plist，双键都比。返回 (说明, 失败项, 是否缺产物)。"""
+    """读真产物的 Info.plist：版本键与 VERSION.txt 比对，构建号只列出。
+
+    返回 (说明, 失败项, 是否缺产物)。
+    """
     path = root / APP_PLIST
     if not path.exists():
         return (f"（没有 app bundle：{APP_PLIST} 不存在）", [], True)
@@ -76,18 +81,22 @@ def check_app_plist(root: pathlib.Path, version: str) -> tuple[str, list[str], b
     messages = []
     failures = []
     for key in PLIST_KEYS:
-        # 缺失也判失败：package_macos.sh:123-134 是双键都比，缺一个就不算同源。
+        # 缺失也判失败：版本键是本脚本的判据，构建键缺失说明产物不完整。
         match = re.search(rf"{key}</key>\s*<string>([^<]*)</string>", text)
         if not match:
             messages.append(f"{key} 缺失")
             failures.append(f"{APP_PLIST}: 缺少 {key}")
             continue
         found = match.group(1).strip()
-        if found == version:
-            messages.append(f"{key}={found}，一致")
+        if key == "CFBundleShortVersionString":
+            if found == version:
+                messages.append(f"{key}={found}，一致")
+            else:
+                messages.append(f"{key}={found}，与 VERSION.txt 不一致")
+                failures.append(f"{APP_PLIST}: {key} {found} != VERSION.txt {version}")
         else:
-            messages.append(f"{key}={found}，与 VERSION.txt 不一致")
-            failures.append(f"{APP_PLIST}: {key} {found} != VERSION.txt {version}")
+            # CFBundleVersion 是发布 tag 序号（构建号），不与 VERSION.txt 比较。
+            messages.append(f"{key}={found}（构建号，由 package_macos.sh 对 tag 序号校验）")
     return ("；".join(messages), failures, False)
 
 
@@ -127,7 +136,7 @@ def main() -> int:
     else:
         print(f"  {ISS}：从 VERSION.txt 取，无第二处字面量")
 
-    print("macOS 产物 Info.plist（判据指向真产物，双键都比）")
+    print("macOS 产物 Info.plist（版本键比对；构建号只列出）")
     message, plist_failures, missing_bundle = check_app_plist(root, version)
     print(f"  {message}")
     failures.extend(plist_failures)

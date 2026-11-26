@@ -1366,6 +1366,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       require_admin(state, request);
 #ifndef _WIN32
                       // mac 侧只有下载（阶段一），替换与重启未实现。
+                      (void)response;
                       throw AppError("install_unsupported",
                                      "自动安装目前只有 Windows 安装版支持");
 #else
@@ -1449,41 +1450,50 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                         state.update->installing = true;
                       }
 
-                      // 协助器用 devcard-server.exe（它的 main 解析 --apply-update），
-                      // 而不是当前的壳层 DevCard.exe（不处理 --apply-update 参数）。
-                      const std::filesystem::path helper =
-                          updates_dir / "devcard-updater.exe";
-                      const std::filesystem::path server_exe =
-                          current_executable().parent_path() / L"devcard-server.exe";
-                      std::filesystem::copy_file(
-                          server_exe, helper,
-                          std::filesystem::copy_options::overwrite_existing, ec);
-                      if (ec) {
-                        throw AppError("install_failed",
-                                       "无法准备更新协助程序：" + ec.message());
-                      }
-                      // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
-                      std::filesystem::remove(updates_dir / "install-result.json",
-                                              ec);
-                      // 先落 installing 再起协助器：没这一步，协助器被杀后
-                      // 磁盘上没有任何「升级曾经开始过」的证据。
-                      {
-                        std::string state_error;
-                        if (!write_apply_state(state.data_dir,
-                                               ApplyState::Installing,
-                                               "安装接口已受理，等待协助器接管",
-                                               &state_error)) {
+                      // 从置位到协助器真正起来之间任何一步失败，都必须复位
+                      // installing；否则本次进程内的重试会一直得到 install_busy，
+                      // 只能靠重启程序恢复。
+                      try {
+                        // 协助器用 devcard-server.exe（它的 main 解析 --apply-update），
+                        // 而不是当前的壳层 DevCard.exe（不处理 --apply-update 参数）。
+                        const std::filesystem::path helper =
+                            updates_dir / "devcard-updater.exe";
+                        const std::filesystem::path server_exe =
+                            current_executable().parent_path() / L"devcard-server.exe";
+                        std::filesystem::copy_file(
+                            server_exe, helper,
+                            std::filesystem::copy_options::overwrite_existing, ec);
+                        if (ec) {
                           throw AppError("install_failed",
-                                         "无法写入安装状态：" + state_error);
+                                         "无法准备更新协助程序：" + ec.message());
                         }
+                        // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
+                        std::filesystem::remove(updates_dir / "install-result.json",
+                                                ec);
+                        // 先落 installing 再起协助器：没这一步，协助器被杀后
+                        // 磁盘上没有任何「升级曾经开始过」的证据。
+                        {
+                          std::string state_error;
+                          if (!write_apply_state(state.data_dir,
+                                                 ApplyState::Installing,
+                                                 "安装接口已受理，等待协助器接管",
+                                                 &state_error)) {
+                            throw AppError("install_failed",
+                                           "无法写入安装状态：" + state_error);
+                          }
+                        }
+                        ApplyUpdateOptions options;
+                        options.setup = full;
+                        options.wait_pid = current_process_id();
+                        options.result = updates_dir / "install-result.json";
+                        options.relaunch = current_executable();
+                        options.relaunch_args = current_arguments();
+                        spawn_apply_update(helper, options);
+                      } catch (...) {
+                        std::lock_guard<std::mutex> lock(state.update->mutex);
+                        state.update->installing = false;
+                        throw;
                       }
-                      ApplyUpdateOptions options;
-                      options.setup = full;
-                      options.wait_pid = current_process_id();
-                      options.result = updates_dir / "install-result.json";
-                      options.relaunch = current_executable();
-                      options.relaunch_args = current_arguments();
-                      spawn_apply_update(helper, options);
 
                       set_json(response,
                                json{{"state", "installing"},
@@ -2143,6 +2153,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                json{{"ok", true},
                                     {"path", path_to_utf8(state.data_dir)}});
 #else
+                      (void)response;
                       throw AppError("bad_request",
                                      "打开数据目录仅在 Windows 版本提供");
 #endif

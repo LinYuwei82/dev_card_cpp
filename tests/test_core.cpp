@@ -382,9 +382,9 @@ void run_update_package_case(const std::filesystem::path& dir) {
           std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (!finished.load() && std::chrono::steady_clock::now() < deadline) {
         std::error_code size_ec;
-        const auto size = std::filesystem::file_size(part, size_ec);
-        if (!size_ec && size > observed) {
-          observed = static_cast<std::uint64_t>(size);
+        const auto part_size = std::filesystem::file_size(part, size_ec);
+        if (!size_ec && part_size > observed) {
+          observed = static_cast<std::uint64_t>(part_size);
         }
         if (observed > 0) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

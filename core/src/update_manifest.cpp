@@ -75,7 +75,7 @@ bool decode_base64(std::string_view text, unsigned char* out,
   }
   // padding 数量由编码字节数唯一决定（64 字节 → 尾组 1 字节 → 2 个 '='）。
   const std::size_t expected_padding = (3 - bytes % 3) % 3;
-  return written == bytes && padding == expected_padding;
+  return written == bytes && static_cast<std::size_t>(padding) == expected_padding;
 }
 
 // TweetNaCl 官方源码只声明不实现 randombytes（crypto_sign_keypair 生成密钥时
@@ -265,7 +265,6 @@ std::uint64_t compiled_build_number() {
 // ---- 版本号工具 ----
 
 bool parse_product_version(std::string_view text, ProductVersion& out) {
-  ProductVersion parsed;
   std::string_view rest = text;
   int parts[3] = {0, 0, 0};
   for (int i = 0; i < 3; ++i) {

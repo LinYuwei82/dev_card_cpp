@@ -11,6 +11,8 @@
 判据：
     1. path_utf8 / path_to_utf8 / path_from_utf8 每个名字最多只许一份**定义**；
        多一份即失败（防止有人在某个 TU 里又抄一份按 ACP 解释的实现）。
+       core/src/paths.cpp 里直接 `return win_encoding::<同名>(...)` 的转发包装
+       不算第二份实现，单列一节说明。
     2. 输出每个名字的调用点计数与所在文件。
     3. core/src/paths.cpp 里 POSIX 分支的 .string() 单列一节，标成「允许的例外」；
        其余 .string() 只列出待核，不判红。
@@ -20,7 +22,9 @@
     1  失败：某个名字有 2 份及以上定义
 
 故意造坏输入的示例（应得到退出码 1）：
-    mkdir -p /tmp/dup/core/src && cp core/src/paths.cpp /tmp/dup/core/src/a.cpp
+    mkdir -p /tmp/dup/modules/win_encoding/src
+    cp modules/win_encoding/src/encoding.cpp /tmp/dup/modules/win_encoding/src/a.cpp
+    cp modules/win_encoding/src/encoding.cpp /tmp/dup/modules/win_encoding/src/b.cpp
     python3 tools/verify/check_path_helpers.py --root /tmp/dup
 """
 
@@ -35,6 +39,22 @@ SKIP_TOP_DIRS = {"build", "build-new", "build-win", "third_party", "src", ".git"
 DEF_PATTERN = re.compile(
     r"^(?:std::string|std::filesystem::path|auto)\s+(" + "|".join(HELPERS) + r")\s*\("
 )
+# 包装定义允许的「函数体行数」窗口：签名下一行就 return 转发，最多看几行。
+FORWARD_WINDOW = 3
+
+
+def forwards_to_win_encoding(lines: list[str], index: int, name: str) -> bool:
+    """判断某处定义是否是转发到 win_encoding 的包装。
+
+    core/src/paths.cpp 的 `devcard::path_from_utf8` 只是 `return
+    win_encoding::path_from_utf8(...)`，真正的实现只有 modules/win_encoding
+    一份；把这种包装算成「第二份定义」会误报。
+    """
+    pattern = re.compile(r"\bwin_encoding::" + re.escape(name) + r"\s*\(")
+    return any(
+        pattern.search(line)
+        for line in lines[index + 1:index + 1 + FORWARD_WINDOW]
+    )
 
 
 def repo_root() -> pathlib.Path:
@@ -89,6 +109,7 @@ def main() -> int:
     root = pathlib.Path(args.root)
 
     definitions = {name: [] for name in HELPERS}
+    wrappers = {name: [] for name in HELPERS}
     calls = {name: [] for name in HELPERS}
     string_uses = []
     name_re = re.compile(r"\b(" + "|".join(HELPERS) + r")\b")
@@ -104,9 +125,9 @@ def main() -> int:
     for path in iter_sources(root):
         relative = path.relative_to(root)
         top = relative.parts[0] if relative.parts else ""
-        for number, line in enumerate(
-            path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-        ):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            number = index + 1
             if narrow_into_wide.search(line):
                 bucket = "product" if top in WIDE_ARG_PRODUCT_DIRS else "tests"
                 wide_arg_offenders[bucket].append((relative, number, line.strip()))
@@ -114,7 +135,11 @@ def main() -> int:
             if match:
                 # 以 `;` 结尾的是头文件声明，不是定义。
                 if not line.rstrip().endswith(";"):
-                    definitions[match.group(1)].append(f"{relative}:{number}")
+                    name = match.group(1)
+                    if forwards_to_win_encoding(lines, index, name):
+                        wrappers[name].append(f"{relative}:{number}")
+                    else:
+                        definitions[name].append(f"{relative}:{number}")
                 continue
             for name in name_re.findall(line):
                 calls[name].append(str(relative))
@@ -128,6 +153,18 @@ def main() -> int:
         print(f"  {name:<15} {len(where)} 份" + (f"：{', '.join(where)}" if where else ""))
         if len(where) > 1:
             failures.append(f"{name} 有 {len(where)} 份定义：{', '.join(where)}")
+
+    print()
+    print("包装定义（转发到 win_encoding，不计入重复）")
+    any_wrapper = False
+    for name in HELPERS:
+        where = wrappers[name]
+        if not where:
+            continue
+        any_wrapper = True
+        print(f"  {name:<15} {len(where)} 份：{', '.join(where)}")
+    if not any_wrapper:
+        print("  （无）")
 
     print()
     print("调用点")

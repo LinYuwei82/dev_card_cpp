@@ -22,7 +22,6 @@ namespace devcard {
 namespace {
 
 constexpr const char* kRegularFontName = "NotoSansSC-Regular.subset.ttf";
-constexpr const char* kInstallerUninstaller = "unins000.exe";
 
 bool has_fonts(const std::filesystem::path& dir) {
   std::error_code ec;
@@ -30,6 +29,8 @@ bool has_fonts(const std::filesystem::path& dir) {
 }
 
 #ifdef _WIN32
+constexpr const char* kInstallerUninstaller = "unins000.exe";
+
 std::wstring lower_wide(std::wstring text) {
   for (wchar_t& ch : text) ch = static_cast<wchar_t>(std::towlower(ch));
   return text;
@@ -114,8 +115,6 @@ void ensure_writable(const std::filesystem::path& dir, bool installed,
   }
   std::filesystem::remove(probe, ec);
 }
-#else
-bool installed_layout(const std::filesystem::path&) { return false; }
 #endif
 
 }  // namespace

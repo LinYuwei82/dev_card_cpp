@@ -367,6 +367,7 @@ bool write_app_started_marker(const std::filesystem::path& data_dir,
 
 int run_apply_update(const ApplyUpdateOptions& options) {
 #ifndef _WIN32
+  (void)options;
   std::cerr << "协助更新仅支持 Windows" << std::endl;
   return 1;
 #else

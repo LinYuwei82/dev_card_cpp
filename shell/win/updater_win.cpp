@@ -15,6 +15,7 @@
 #include <shellapi.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -358,7 +359,9 @@ UpdaterWin::UpdaterWin() {
     if (devcard::parse_product_version(status_.manifest_version, remote) &&
         devcard::parse_product_version(devcard::current_product_version(), local)) {
       const int cmp = devcard::compare_product_version(remote, local);
-      if (cmp <= 0 || (cmp == 0 && status_.manifest_build <= devcard::compiled_build_number())) {
+      if (cmp <= 0 || (cmp == 0 && status_.manifest_build <=
+                                        static_cast<std::int64_t>(
+                                            devcard::compiled_build_number()))) {
         status_.manifest_version.clear();
         status_.manifest_build = 0;
         status_.manifest_sha256.clear();
@@ -637,8 +640,9 @@ void UpdaterWin::checkNow(Completion cb) {
   // 本地未注入构建号（开发构建，local_build=0）时不被同版本重发包反复打扰。
   const auto local_build = compiled_build_number();
   bool update_available =
-      version_cmp > 0 || (version_cmp == 0 && pw.build > 0 &&
-                          local_build > 0 && pw.build > local_build);
+      version_cmp > 0 ||
+      (version_cmp == 0 && pw.build > 0 && local_build > 0 &&
+       static_cast<std::uint64_t>(pw.build) > local_build);
 
   if (update_available && !pw.mandatory) {
     // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
