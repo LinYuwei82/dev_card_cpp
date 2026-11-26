@@ -150,7 +150,7 @@ Device DeviceService::create(Device device, const AuditContext& audit) {
   db_.write([&](sqlite3* conn) {
     if (dao_.exists_triplet(conn, device.dev_name, device.location,
                             device.control_range)) {
-      throw AppError("duplicate", "你要添加的设备己经存在，请重新输入");
+      throw AppError("duplicate", "你要添加的设备已经存在，请重新输入");
     }
     dao_.insert(conn, device);
     if (audit.enabled()) {
