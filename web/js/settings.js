@@ -69,10 +69,17 @@ import { renderPrint } from './print.js';
 
   el.logoFile.addEventListener('change', handleLogoFile);
 
+  var logoBusy = false;
   function handleLogoFile() {
     var file = el.logoFile.files && el.logoFile.files[0];
     el.logoFile.value = '';
     if (!file) return;
+    // 上传中拒绝再次触发：慢网络下重复选文件会并发发多个 POST，
+    // 后一个的响应可能先落地，预览与真实图标错位。
+    if (logoBusy) {
+      toast('正在上传图标，请稍候', 'error');
+      return;
+    }
     if (file.size > 2 * 1024 * 1024) {
       toast('图标不能超过 2 MB', 'error');
       return;
@@ -81,23 +88,43 @@ import { renderPrint } from './print.js';
       toast('只接受 PNG 或 JPEG 图片（不支持 SVG）', 'error');
       return;
     }
+    logoBusy = true;
     fetch('/api/system/company-logo', {
       method: 'POST',
       headers: { 'Content-Type': file.type, 'X-Requested-With': 'DevCard' },
       body: file
     })
       .then(function (response) {
-        return response.json().then(function (body) {
-          if (!response.ok) throw new Error(body.message || '上传失败');
-          return body;
+        // 与 core.js api() 同款兜底：非 JSON 错误体（代理页/异常页）按原文
+        // 展示，不再把「Unexpected token」抛给用户；错误带 status/code，
+        // handleAuthFailure 才能识别 401 跳登录。
+        return response.text().then(function (text) {
+          var data = null;
+          if (text) {
+            try {
+              data = JSON.parse(text);
+            } catch (error) {
+              data = { message: text };
+            }
+          }
+          if (!response.ok) {
+            var failure = new Error((data && data.message) || '上传失败');
+            failure.code = data && data.error;
+            failure.status = response.status;
+            throw failure;
+          }
+          return data;
         });
       })
       .then(function (data) {
+        logoBusy = false;
         el.companyLogoPreview.src = data.logo_url + '?t=' + Date.now();
         updateLogoTime(data.updated_at);
         toast(data.message || '图标已更新');
       })
       .catch(function (error) {
+        logoBusy = false;
+        if (handleAuthFailure(error)) return;
         toast(error.message, 'error');
       });
   }
