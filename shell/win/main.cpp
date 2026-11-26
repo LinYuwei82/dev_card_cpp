@@ -648,6 +648,14 @@ void WatchDownload(ComPtr<ICoreWebView2DownloadOperation> operation) {
         if (!watch->finished) {
           watch->finished = true;
           sender->remove_StateChanged(watch->token);
+          // 下载结束即从列表摘除：g_downloads 原先只增不减，
+          // 本回调已按值捕获 watch，摘除后仍存活到返回，安全。
+          for (std::size_t i = 0; i < g_downloads.size(); ++i) {
+            if (g_downloads[i].get() == watch.get()) {
+              g_downloads.erase(g_downloads.begin() + i);
+              break;
+            }
+          }
         }
         return S_OK;
       });
