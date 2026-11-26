@@ -4,7 +4,7 @@
 凭证只从环境变量读取，不接受命令行传参，避免出现在 shell 历史与进程列表：
     OSS_ACCESS_KEY_ID
     OSS_ACCESS_KEY_SECRET
-    OSS_ENDPOINT       形如 https://oss-cn-hongkong.aliyuncs.com
+    OSS_ENDPOINT       形如 https://oss-cn-shenzhen.aliyuncs.com
     OSS_BUCKET         桶名
 
 用法：

@@ -135,7 +135,7 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\test_webview2_clean_v
 - **上传前门禁**：`guard.py preflight` 校验 v2 命名、版本、覆盖风险、内嵌地址、清单签名与构建号，并要求 DevCard 清单同时含 `platforms.macos + platforms.windows`；Windows 侧还会从绿色包 `DevCard.exe` 里提取 `DEVCARD_BUILD=<digits>` 与 `--build` 比对。同版本 build 判定逻辑与客户端共用 `tools/release/update_compare_vectors.json`。
 - **上传后门禁**：`guard.py verify-live` 核对线上清单、大小、SHA256、Content-Type / Cache-Control。
 - **发布脚本**：macOS `tools/release/publish_macos.sh`；Windows `tools/release/publish_windows.ps1`（Windows 本机一条龙）或 `tools/release/publish_windows.sh`（macOS 上只发布现成产物）。本地清单落在 `dist/manifest.json`、`dist/appcast.xml`，上传后即 OSS 上的同名对象。
-- **OSS**：bucket `xiaotu-update`，前缀 `devcard/`，域名 `https://dl.xiaotu.online`；appcast 的 `sparkle:version` = `build`（即 tag 序号）。
+- **OSS**：bucket `xiaotu-update-sz`（oss-cn-shenzhen），前缀 `devcard/`，域名 `https://dl.xiaotu.online`；appcast 的 `sparkle:version` = `build`（即 tag 序号）。
 - **CI**：`.github/workflows/ci.yml`——`release-guard`（guard 哈希、selftest、发布脚本布局检查）、`windows-build`（取 WebView2 SDK → MSVC 环境 → `windows-release` 构建/ctest → 绿色包 + 安装包）、`macos-build`（`macos-release` 构建/ctest）。`.github/workflows/release-windows.yml`——tag 或手动触发，解析构建号 → 版本/构建号递增校验 → `windows-release` 构建 → 发布。
 - **测试**：C++ 测试在 `tests/`（`ctest` 6 条：core / win_encoding / web_assets / no_opposans / embed_web / api_contract）；发布工具测试为 `tools/release/test_release_tag.py`、`test_version_bump.py`、`test_guard.py`、`test_guard_manifest.py`（v2 清单字段/跨平台构建号/artifact 校验）、`test_release_layout.py`、`test_publish_release.py`、`test_shared_sync.py`（兄弟仓库存在时比对共享文件，单仓环境自动跳过）、`test_release_scripts.py`（shell 用例仅 macOS 执行）、`test_appcast.py`。
 
