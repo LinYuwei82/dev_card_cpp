@@ -313,7 +313,7 @@ int main() {
                                     "update_available", "download_url",
                                     "download_page",  "notes",
                                     "assets",         "check",
-                                    "manifest",       "checked_at",
+                                    "checked_at",
                                     "error"};
       CHECK(body.is_object());
       CHECK(body.size() == sizeof(kKeys) / sizeof(kKeys[0]));

@@ -1089,10 +1089,8 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                   {"check", json{{"enabled", manifest.check_enabled},
                                  {"endpoint", manifest.check_endpoint},
                                  {"interval_hours", manifest.check_interval_hours}}},
-                  {"manifest", manifest.found
-                                   ? json(path_to_utf8(state.data_dir /
-                                                       kUpdateManifestName))
-                                   : json(nullptr)},
+                  // 清单文件的本地绝对路径不再下发：前端与壳均未消费该字段，
+                  // 留着只会向任意登录用户泄露数据目录结构。
                   {"checked_at", now_text()},
                   {"error", manifest.error.empty() ? json(nullptr)
                                                    : json(manifest.error)}});
@@ -1421,12 +1419,18 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                            path_to_utf8(package));
                       }
                       // 只认 updates/ 下的 .exe：这个接口不能变成「跑任意程序」。
-                      const std::filesystem::path relative =
-                          full.lexically_relative(base);
-                      if (relative.empty() ||
-                          path_to_utf8(relative).rfind("..", 0) == 0) {
-                        throw AppError("install_package_invalid",
-                                       "安装包必须位于数据目录 updates/ 下");
+                      // 例外：未显式传 path 时用的是下载成功后服务端记录的路径——
+                      // 它可能因 save_path 落点被 relocate 到 updates/ 之外，
+                      // 该值非用户输入且随后仍按清单 SHA256 复验，
+                      // 否则「下载到自定义位置 + 自动安装」组合会被自己挡死。
+                      if (!requested.empty()) {
+                        const std::filesystem::path relative =
+                            full.lexically_relative(base);
+                        if (relative.empty() ||
+                            path_to_utf8(relative).rfind("..", 0) == 0) {
+                          throw AppError("install_package_invalid",
+                                         "指定安装包必须位于数据目录 updates/ 下");
+                        }
                       }
                       if (full.extension() != L".exe") {
                         throw AppError("install_package_invalid",
@@ -2423,7 +2427,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                json{{"error", app_error.code()}, {"message", app_error.what()}},
                status_for(app_error));
     } catch (const std::exception& other) {
-      set_json(response, json{{"error", "internal"}, {"message", other.what()}}, 500);
+      // 内部异常文本（sqlite/文件系统细节、绝对路径）只写服务端日志，
+      // 客户端统一拿通用文案，避免向登录用户泄露实现信息。
+      std::cerr << "警告：未处理异常：" << other.what() << std::endl;
+      set_json(response, json{{"error", "internal"}, {"message", "服务器内部错误"}},
+               500);
     } catch (...) {
       set_json(response, json{{"error", "internal"}, {"message", "未知错误"}}, 500);
     }
