@@ -114,6 +114,9 @@ def scan(files, pattern: re.Pattern):
 
 
 def main() -> int:
+    # Windows 控制台默认 GBK，✓/✗ 会炸 UnicodeEncodeError——统一切 UTF-8。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", default=None)
     args = parser.parse_args()
