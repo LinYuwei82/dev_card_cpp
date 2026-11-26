@@ -1419,18 +1419,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                                            path_to_utf8(package));
                       }
                       // 只认 updates/ 下的 .exe：这个接口不能变成「跑任意程序」。
-                      // 例外：未显式传 path 时用的是下载成功后服务端记录的路径——
-                      // 它可能因 save_path 落点被 relocate 到 updates/ 之外，
-                      // 该值非用户输入且随后仍按清单 SHA256 复验，
-                      // 否则「下载到自定义位置 + 自动安装」组合会被自己挡死。
-                      if (!requested.empty()) {
-                        const std::filesystem::path relative =
-                            full.lexically_relative(base);
-                        if (relative.empty() ||
-                            path_to_utf8(relative).rfind("..", 0) == 0) {
-                          throw AppError("install_package_invalid",
-                                         "指定安装包必须位于数据目录 updates/ 下");
-                        }
+                      const std::filesystem::path relative =
+                          full.lexically_relative(base);
+                      if (relative.empty() ||
+                          path_to_utf8(relative).rfind("..", 0) == 0) {
+                        throw AppError("install_package_invalid",
+                                       "安装包必须位于数据目录 updates/ 下");
                       }
                       if (full.extension() != L".exe") {
                         throw AppError("install_package_invalid",
