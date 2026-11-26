@@ -551,14 +551,30 @@ bool UpdaterWin::fetchManifest(const std::string& url, std::string& out_body,
 }
 
 void UpdaterWin::checkNow(Completion cb) {
-  if (manifest_url_.empty()) {
+  // checkNow 可能同时被 autoCheckLoop 线程与 UI 桥线程调用，而 recordOutcome /
+  // setOptions 等会持锁写 status_。这里一次性读出判定要用的字段快照，
+  // 后续只读局部副本，不再裸读共享状态（数据竞争即 UB）。
+  std::string manifest_url;
+  std::string channel;
+  std::string install_id;
+  std::string skipped_version;
+  std::int64_t skip_until_epoch = 0;
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    manifest_url = manifest_url_;
+    channel = status_.channel;
+    install_id = status_.install_id;
+    skipped_version = status_.skipped_version;
+    skip_until_epoch = status_.skip_until_epoch;
+  }
+  if (manifest_url.empty()) {
     recordOutcome("UPDATE_UNAVAILABLE", "未配置清单地址", false);
     if (cb) cb("UPDATE_UNAVAILABLE", "未配置清单地址");
     return;
   }
 
   std::string body, err_code, err_detail;
-  if (!fetchManifest(manifest_url_, body, err_code, err_detail)) {
+  if (!fetchManifest(manifest_url, body, err_code, err_detail)) {
     recordOutcome("FETCH_FAILED", err_code + ":" + err_detail, true);
     if (cb) cb("FETCH_FAILED", err_code + ":" + err_detail);
     return;
@@ -587,7 +603,7 @@ void UpdaterWin::checkNow(Completion cb) {
 
   // v2：channel 在顶层；platform 由只取 platforms.windows 隐含，无需再比。
   std::string manifest_channel;
-  if (!v2_read_string(j, "channel", manifest_channel) || manifest_channel != status_.channel) {
+  if (!v2_read_string(j, "channel", manifest_channel) || manifest_channel != channel) {
     recordOutcome("NO_UPDATE", "channel mismatch", false);
     if (cb) cb("NO_UPDATE", "channel mismatch");
     return;
@@ -618,10 +634,10 @@ void UpdaterWin::checkNow(Completion cb) {
   if (update_available && !pw.mandatory) {
     // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
     if (!devcard::rollout_allows(pw.rollout_percent,
-                                devcard::rollout_bucket(status_.install_id, pw.build))) {
+                                devcard::rollout_bucket(install_id, pw.build))) {
       update_available = false;
-    } else if (status_.skipped_version == pw.version &&
-               epochNow() < status_.skip_until_epoch) {
+    } else if (skipped_version == pw.version &&
+               epochNow() < skip_until_epoch) {
       update_available = false;
     }
   }
