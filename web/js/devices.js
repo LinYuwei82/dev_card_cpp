@@ -333,7 +333,11 @@ import { setView } from './session.js';
         return response.blob();
       })
       .then(function (blob) {
-        if (!window.__devcardShell || !bridge) {
+        // Windows 壳没有 saveFile 桥（NSSavePanel 仅 macOS 实现）：走浏览器下载
+        // 通道，WebView2 的 DownloadStarting 会接管落点到下载目录并提示完成；
+        // 若误走 shellSaveFile，消息被壳丢弃、Promise 永不 resolve，按钮会卡死。
+        if (!window.__devcardShell || !bridge ||
+            (window.chrome && window.chrome.webview)) {
           downloadInBrowser(blob, options.filename);
           toast(options.okText);
           return null;
