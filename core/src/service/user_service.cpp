@@ -23,6 +23,13 @@ namespace {
 constexpr int kMaxFailures = 5;
 constexpr int kLockMinutes = 15;
 
+// 用户不存在时也跑一次完整 Argon2 校验，让两种失败路径的响应耗时
+// 基本一致，避免通过时间差枚举出有效用户名。哈希只算一次并缓存。
+const std::string& dummy_password_hash() {
+  static const std::string hash = hash_password("devcard-timing-equalizer");
+  return hash;
+}
+
 std::string trim(std::string value) {
   auto not_space = [](unsigned char c) { return !std::isspace(c); };
   value.erase(value.begin(),
@@ -99,6 +106,7 @@ User UserService::get(std::string_view name) const {
 User UserService::authenticate(std::string_view name, std::string_view password) {
   User user;
   if (!dao_.find(db_, name, user)) {
+    verify_password(dummy_password_hash(), password);
     throw AppError("invalid_credentials", "用户名或密码错误");
   }
   if (!user.locked_until.empty() && user.locked_until > now_text()) {
