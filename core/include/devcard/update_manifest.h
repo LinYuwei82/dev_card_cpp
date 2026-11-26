@@ -74,29 +74,9 @@ struct SignedManifest {
 SignedManifest parse_signed_manifest(std::string_view raw_json,
                                      std::string_view pubkey_hex);
 
-// ---- 更新判定（用于 Windows updater_win bridge） ----
-
-// 清单查询参数（客户端发起更新检查时填入自身信息）。
-struct UpdateQuery {
-  std::string version;           // 当前版本号字符串，如 "1.3.0"
-  std::uint64_t build = 0;       // 当前构建号（同版本重发靠 build 区分）
-  std::string channel = "stable";
-  std::string install_id;        // 随机 UUID，用于灰度分桶
-  std::uint64_t os_version = 0;  // 如 10022 = Win10 22H2；0 表示未知
-  std::int64_t rollout_percent = 100;
-};
-
-struct UpdateDecision {
-  bool update_available = false;
-  bool mandatory = false;
-  std::string code;    // NO_UPDATE / UPDATE_AVAILABLE / UPDATE_REQUIRED / NOT_IN_ROLLOUT / OS_UNSUPPORTED
-  std::string reason;  // 强制原因（非强制为空）
-};
-
-// 判定当前清单对本客户端是否应提示更新。
-// now_epoch 为 UTC 秒（用于跳过有效期等）。
-UpdateDecision evaluate_manifest(const ManifestPlatform& platform, const UpdateQuery& query,
-                                 std::int64_t now_epoch = 0);
+// ---- 更新判定共享原语（Windows updater_win bridge 使用） ----
+// 注：曾有过一个 evaluate_manifest 汇总判定函数，但生产代码（updater_win 与
+// server /api/version）各自内联了判定流程，无人调用且语义已漂移，已删除。
 
 // 灰度分桶：SHA-256(install_id + ":" + build) 前 4 字节 mod 100。
 int rollout_bucket(std::string_view install_id, std::uint64_t build);

@@ -496,34 +496,18 @@ constexpr const char* kV2ManifestVector = R"json({
 constexpr const char* kV2VectorPubkey =
     "c877ab759c694dcb2da43b6053be35c9bf20cabc10ad97cb68357a3c1ea74cb5";
 
-// 灰度判定必须 fail-closed：rollout_percent=0 表示「停止放量」，
-// 不能当「未设置」回落成全量下发。
+// 灰度原语必须 fail-closed：0% 表示「停止放量」，任何分桶都不放行。
 void run_rollout_decision_case() {
   using namespace devcard;
-  ManifestPlatform platform;
-  platform.version = "9.9.9";
-  platform.build = 100;
-  UpdateQuery query;
-  query.version = "1.0.0";
-  query.build = 1;
-  query.install_id = "11111111-1111-1111-1111-111111111111";
-
-  platform.rollout_percent = 0;
-  CHECK(evaluate_manifest(platform, query).code == "NOT_IN_ROLLOUT");
-  // 缺 InstallId 也不能把 0% 放行。
-  UpdateQuery no_id = query;
-  no_id.install_id.clear();
-  CHECK(evaluate_manifest(platform, no_id).code == "NOT_IN_ROLLOUT");
-  // 越界值钳制：负数按 0% 拒绝，超过 100 按全量。
-  platform.rollout_percent = -5;
-  CHECK(evaluate_manifest(platform, query).code == "NOT_IN_ROLLOUT");
-  platform.rollout_percent = 100;
-  CHECK(evaluate_manifest(platform, query).code == "UPDATE_AVAILABLE");
-  // 字段缺省（结构体默认 100）→ 全量。
-  ManifestPlatform defaulted;
-  defaulted.version = "9.9.9";
-  defaulted.build = 100;
-  CHECK(evaluate_manifest(defaulted, query).code == "UPDATE_AVAILABLE");
+  CHECK(!rollout_allows(0, 0));
+  CHECK(!rollout_allows(0, 99));
+  CHECK(rollout_allows(100, 99));
+  CHECK(rollout_allows(50, 49));
+  CHECK(!rollout_allows(50, 50));
+  // 分桶只由 install_id 与 build 决定，且落在 0-99。
+  const int bucket = rollout_bucket("11111111-1111-1111-1111-111111111111", 100);
+  CHECK(bucket >= 0 && bucket < 100);
+  CHECK(bucket == rollout_bucket("11111111-1111-1111-1111-111111111111", 100));
 }
 
 void run_update_manifest_case() {

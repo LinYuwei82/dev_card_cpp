@@ -371,46 +371,4 @@ int compare_dotted_version(std::string_view a, std::string_view b) {
   return 0;
 }
 
-UpdateDecision evaluate_manifest(const ManifestPlatform& platform, const UpdateQuery& query,
-                                 std::int64_t /*now_epoch*/) {
-  UpdateDecision decision;
-  // v2：先比版本，同版本再比 build。
-  ProductVersion remote{};
-  ProductVersion local{};
-  if (!parse_product_version(platform.version, remote) ||
-      !parse_product_version(query.version, local)) {
-    decision.code = "VERSION_INVALID";
-    return decision;
-  }
-  const int order = compare_product_version(remote, local);
-  if (order < 0) {
-    decision.code = "NO_UPDATE";
-    return decision;
-  }
-  if (order == 0 && platform.build <= query.build) {
-    decision.code = "NO_UPDATE";
-    return decision;
-  }
-  // min_os 判定：v2 清单可选字段（Windows 平台清单一般不带）。
-  if (platform.min_os > 0 && query.os_version > 0 && query.os_version < platform.min_os) {
-    decision.code = "OS_UNSUPPORTED";
-    return decision;
-  }
-  // 灰度：percent < 100 且用户不在分桶里 → NOT_IN_ROLLOUT。
-  // rollout_percent=0 是「停止放量」，必须按 0% 判定为不在灰度内；
-  // 不能把 0 当「未设置」回落成全量（fail-open）。缺省值 100 由结构体给出。
-  const int percent = static_cast<int>(
-      std::clamp<std::int64_t>(platform.rollout_percent, 0, 100));
-  if (percent == 0 || (percent < 100 && !query.install_id.empty())) {
-    const int bucket = rollout_bucket(query.install_id, platform.build);
-    if (!rollout_allows(percent, bucket)) {
-      decision.code = "NOT_IN_ROLLOUT";
-      return decision;
-    }
-  }
-  decision.update_available = true;
-  decision.code = "UPDATE_AVAILABLE";
-  return decision;
-}
-
 }  // namespace devcard
