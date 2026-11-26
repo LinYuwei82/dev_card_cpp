@@ -920,17 +920,22 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
     var status = msg.status || {};
     if (msg.code === 'UPDATE_AVAILABLE') {
       var version = status.manifest_version || '';
-      var notes = status.notes_url || '';
+      // notes_url 是发布说明/下载页地址：应作为 download_page 给弹窗「打开
+      // 下载页」跳转用，不能塞进 notes——notes 是 pill 标题与弹窗展示的纯文本，
+      // 塞 URL 会把一长串链接显示给用户。
+      var download_page = /^https:\/\//i.test(String(status.notes_url || ''))
+        ? String(status.notes_url) : '';
       if (version) {
         // 强制字段一并透传给 updateState.info：本地命中路径（localWins）
         // 只读 manifest 的 mandatory/deadline/reason，漏了弹窗就判不出 force。
         updateState.info = {
-          update_available: true, latest: version, notes: notes,
+          update_available: true, latest: version, notes: '',
+          download_page: download_page,
           mandatory: !!status.mandatory,
           mandatory_deadline: status.mandatory_deadline || '',
           mandatory_reason: status.mandatory_reason || ''
         };
-        setUpdatePill(version, notes);
+        setUpdatePill(version, '');
         // 非静默检查弹 modal；静默但强制更新已到期同样要弹，否则可绕过阻塞。
         if (!lastCheckSilent || mandatoryActive({
               mandatory: status.mandatory,
