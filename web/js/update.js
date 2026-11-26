@@ -876,12 +876,14 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
         try { return JSON.parse(raw); } catch (_) { return {}; }
       },
       // 等壳 checkNow 完成后（chrome.webview.message 事件）从 statusJson 取最新状态。
+      // Promise.resolve 包一层：旧 hostObjects 代理的返回值不保证带 .then，
+      // 直接链式调用会抛「then is not a function」；解析失败按空状态兜底。
       poll: function () {
         return new Promise(function (resolve) {
           setTimeout(function () {
-            updater.statusJson().then(function (raw) {
+            Promise.resolve(updater.statusJson()).then(function (raw) {
               try { resolve(JSON.parse(raw)); } catch (_) { resolve({}); }
-            });
+            }, function () { resolve({}); });
           }, 800);
         });
       },
