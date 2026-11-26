@@ -98,6 +98,10 @@ std::string column_name(int index) {
 // 请求体本身只有 8MB，不加限制时一个 zip 头就能声明数 GB 解压尺寸。
 constexpr std::size_t kMaxEntryBytes = 64U << 20U;
 
+// 导入行数硬上限：业务规模在数千条量级，5 万行足够宽松，
+// 只用于挡住畸形/超大表格把整表灌进单个写事务。
+constexpr std::size_t kMaxRows = 50000;
+
 std::string entry_text(mz_zip_archive& zip, const std::string& name) {
   mz_uint32 index = 0;
   if (!mz_zip_reader_locate_file_v2(&zip, name.c_str(), nullptr, 0, &index)) return {};
@@ -250,6 +254,11 @@ Rows read(const std::string& bytes) {
         cells[static_cast<std::size_t>(col)] = value;
       }
       cpos = c_close + 4;
+    }
+    if (rows.size() >= kMaxRows) {
+      throw AppError("bad_xlsx",
+                     "导入文件行数超过上限（" + std::to_string(kMaxRows) +
+                     " 行），请拆分后再导入");
     }
     rows.push_back(std::move(cells));
     pos = row_close + 6;
