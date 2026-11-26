@@ -305,6 +305,16 @@ std::string UpdateService::install_id() const {
   return install_id_;
 }
 
+std::string UpdateService::skipped_version() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return skipped_version_;
+}
+
+std::int64_t UpdateService::skip_until_epoch() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return skip_until_epoch_;
+}
+
 nlohmann::json UpdateService::state_json() const {
   std::lock_guard<std::mutex> lock(mutex_);
   nlohmann::json out{

@@ -1100,6 +1100,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     local.channel = "stable";
     local.install_id =
         state.update_service ? state.update_service->install_id() : std::string();
+    // 跳过窗口与远端判定同一口径：运维投放的本地清单也受「跳过此版本」约束
+    // （是否过期由 core evaluate_update 判，这里只透传原值）。
+    if (state.update_service) {
+      local.skipped_version = state.update_service->skipped_version();
+      local.skip_until_epoch = state.update_service->skip_until_epoch();
+    }
     local.now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
                           std::chrono::system_clock::now().time_since_epoch())
                           .count();

@@ -61,6 +61,10 @@ class UpdateService {
   UpdateDecision decision() const;
   bool has_decision() const;
   std::string install_id() const;
+  // 「跳过此版本」窗口原值（是否过期由 core evaluate_update 判）：
+  // /api/version 的本地清单分支也要受跳过约束，与远端判定同口径。
+  std::string skipped_version() const;
+  std::int64_t skip_until_epoch() const;
 
  private:
   void loop();
