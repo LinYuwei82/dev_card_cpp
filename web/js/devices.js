@@ -510,6 +510,9 @@ import { setView } from './session.js';
     api('DELETE', '/api/devices/' + id + '?version=' + version)
       .then(function () {
         closeDelete();
+        // 删除成功后必须同步撤销该设备的勾选，否则 selectedIds 里残留死 id，
+        // 「打印选中（N）」计数虚高，且打印快照会带上不存在的记录。
+        toggleSelection(id, false);
         toast('已删除设备');
         return loadOptions().then(load);
       })

@@ -225,6 +225,15 @@ import { companyFontCheck, loadFontCoverage, printFontSpec, printFonts, uncovere
       .then(function (data) {
         printState.items = data.items || [];
         printState.truncated = !!data.truncated;
+        // 勾选快照与实际可打印数据对齐：被删除或不再匹配当前筛选的 id 剔除，
+        // 「已选 N 台 · X 条」不再显示两个对不上的数字。
+        if (printState.ids.length > 0) {
+          var present = {};
+          printState.items.forEach(function (item) { present[item.id] = true; });
+          printState.ids = printState.ids.filter(function (id) {
+            return present[id];
+          });
+        }
         if (data.company_name) systemState.companyNamePrint = data.company_name;
         // 打印页初始化就等字体：用户点导出时字体必须已经就位，
         // 而不是在截图那一瞬间才去加载。
