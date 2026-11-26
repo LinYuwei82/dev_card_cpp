@@ -633,9 +633,12 @@ void UpdaterWin::checkNow(Completion cb) {
     return;
   }
   const int version_cmp = devcard::compare_product_version(remote_version, local_version);
-  auto local_build = compiled_build_number();
+  // 同版本重发：双方 build 都 >0 才比 build，与 server /api/version 口径一致；
+  // 本地未注入构建号（开发构建，local_build=0）时不被同版本重发包反复打扰。
+  const auto local_build = compiled_build_number();
   bool update_available =
-      version_cmp > 0 || (version_cmp == 0 && pw.build > local_build);
+      version_cmp > 0 || (version_cmp == 0 && pw.build > 0 &&
+                          local_build > 0 && pw.build > local_build);
 
   if (update_available && !pw.mandatory) {
     // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
