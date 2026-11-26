@@ -873,9 +873,11 @@ void UpdaterWin::cancelPrefetch(Completion cb) {
 
 void UpdaterWin::installUpdate(Completion cb) {
   std::wstring path;
+  std::string expected_sha;
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
     std::string utf8 = status_.pending_local_path;
+    expected_sha = status_.manifest_sha256;
     int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
     if (n > 0) { path.resize(n); MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, path.data(), n); }
   }
@@ -883,6 +885,21 @@ void UpdaterWin::installUpdate(Completion cb) {
     recordOutcome("NO_PENDING_UPDATE", "没有已下载的安装包", false);
     if (cb) cb("NO_PENDING_UPDATE", "");
     return;
+  }
+  // 起安装器前复验 SHA256：下载完成时的校验到这里之间文件可能被替换（TOCTOU），
+  // 与清单哈希不符就拒绝运行；清单哈希缺失时（老状态文件）保持原行为放行。
+  if (!expected_sha.empty()) {
+    const std::string actual = sha256File(path);
+    if (actual.empty()) {
+      recordOutcome("SHA256_COMPUTE_FAILED", "无法计算安装包 SHA256", false);
+      if (cb) cb("SHA256_COMPUTE_FAILED", "");
+      return;
+    }
+    if (actual != expected_sha) {
+      recordOutcome("SHA256_MISMATCH", "安装包与清单哈希不符，已拒绝安装", false);
+      if (cb) cb("SHA256_MISMATCH", actual);
+      return;
+    }
   }
   // ISCC 静默安装：/CLOSEAPPLICATIONS 让 Restart Manager 关掉正在运行的壳，
   // 否则 exe 被占用，静默安装会直接失败且没有任何可见提示（表现为「点安装没反应」）；
