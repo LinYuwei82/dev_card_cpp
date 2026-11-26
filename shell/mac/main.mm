@@ -658,6 +658,12 @@ int main(int argc, const char* argv[]) {
       activate_existing_instance();
       return 0;
     }
+    if (instance_lock < 0) {
+      // 锁文件打不开（目录权限等）：壳层单实例防护失效，继续启动并依赖
+      // server 层的实例锁兜底，但必须留下日志，不能让失效无声无息。
+      NSLog(@"[devcard] 警告：无法创建 shell.lock，壳层单实例防护跳过（errno=%d）",
+            errno);
+    }
 
     try {
       server = devcard::start_server(options);
