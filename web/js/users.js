@@ -235,7 +235,9 @@ import { api, appState, el, escapeHtml, formatBytes, handleAuthFailure, systemSt
     if (!window.confirm('确定用「' + name + '」覆盖当前数据库？恢复前会自动备份当前库。')) return;
     api('POST', '/api/system/restore', { name: name, confirm: 'RESTORE' })
       .then(function () {
-        window.alert('恢复完成，页面将重新加载。');
+        // 恢复会重建整库并清空所有会话，reload 后必然回到登录页：
+        // 提前说明，避免用户以为登录态丢失是异常。
+        window.alert('恢复完成，页面将重新加载。恢复后需要重新登录。');
         window.location.reload();
       })
       .catch(function (error) {
