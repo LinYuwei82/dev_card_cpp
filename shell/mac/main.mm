@@ -53,6 +53,7 @@ void show_error(const std::string& message) {
   alert.informativeText = [NSString stringWithUTF8String:message.c_str()];
   [alert addButtonWithTitle:@"退出"];
   [alert runModal];
+  [alert release];
 }
 
 // 打印统一使用 A4、零边距、100% 缩放；分页由页面里的 @page 控制。
@@ -67,7 +68,9 @@ NSPrintInfo* a4_print_info() {
   info.rightMargin = 0;
   info.horizontallyCentered = NO;
   info.verticallyCentered = NO;
-  return info;
+  // 调用方都是同步传给 printOperationForPrintInfo:（内部自行 retain），
+  // 这里 autorelease 掉 copy 的所有权，避免每次打印/导出泄漏一份。
+  return [info autorelease];
 }
 
 }  // namespace
@@ -499,6 +502,7 @@ API_AVAILABLE(macos(11.0))
                           collected:collected
                          completion:completion];
                }];
+  [config release];
 }
 
 // 每张截取结果是 210mm × 297mm（CSS px），按 A4 点尺寸缩放后逐页写入内存。
@@ -557,8 +561,8 @@ API_AVAILABLE(macos(11.0))
 
 - (void)printCards {
   // 没装打印机时打印面板会一直等不到纸张尺寸，先给出明确提示。
-  NSString* printer_name = [[NSPrintInfo.sharedPrintInfo.printer.name
-      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] copy];
+  NSString* printer_name = [NSPrintInfo.sharedPrintInfo.printer.name
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
   if (printer_name.length == 0) {
     [self notify:@"系统未添加打印机，请先在「系统设置 › 打印机与扫描仪」中添加，或改用导出 PDF"
             kind:@"error"];
