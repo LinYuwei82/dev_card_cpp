@@ -786,7 +786,11 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
     if (!asset || !asset.sha256 || !asset.size || updateState.downloading) return;
     var macBridge = window.webkit && window.webkit.messageHandlers &&
                     window.webkit.messageHandlers.devcard;
-    if (!window.__devcardShell || !macBridge) {
+    // pickSavePath 仅 macOS 壳实现（NSSavePanel）：Windows 壳若 shim 注入异常
+    // 落到这里，消息会被 HandleBridgeMessage 静默丢弃、Promise 永久挂起，
+    // 故探测 chrome.webview 存在时直接走服务端下载（默认落点 updates/）。
+    if (!window.__devcardShell || !macBridge ||
+        (window.chrome && window.chrome.webview)) {
       startUpdateDownload('');
       return;
     }
