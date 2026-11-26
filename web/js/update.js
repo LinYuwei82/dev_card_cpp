@@ -654,7 +654,8 @@ import { isMacShell, isWinWebview, sendToShell } from './shell.js';
       setUpdateProgress('已请求 Sparkle 检查更新：按它弹出的窗口完成下载与安装。');
       return;
     }
-    // Windows WebView2 壳：走 hostObjects.updater_win.installUpdate()
+    // Windows WebView2 壳：走 winUpdaterBridge().installUpdate()
+    // （主路径是 shim 注入的 window.__devcardUpdater，hostObjects.updater_win 仅兼容旧壳）
     var bridge = winUpdaterBridge();
     if (bridge) {
       el.updateInstall.disabled = true;

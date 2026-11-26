@@ -5,7 +5,9 @@ import { hasNativeBridge, toast } from './core.js';
     return /Macintosh|Mac OS X/i.test(navigator.userAgent || '') && hasNativeBridge();
   }
 
-  // Windows WebView2 壳：有 chrome.webview + hostObjects（由 main.cpp 注册 updater_win）。
+  // Windows WebView2 壳：有 chrome.webview + hostObjects。注意 updater_win 的
+  // HostObject 注册已废弃，现由 InjectShim 注入同形状 shim（window.__devcardUpdater），
+  // hostObjects 仅作「当前在 WebView2 里」的探测信号保留。
   function isWinWebview() {
     return !!(/Windows/i.test(navigator.userAgent || '') &&
       window.chrome && window.chrome.webview && window.chrome.webview.hostObjects);
