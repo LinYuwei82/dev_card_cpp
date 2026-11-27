@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <chrono>
 
 #include <fcntl.h>
@@ -658,7 +659,6 @@ int main(int argc, const char* argv[]) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
-    std::unique_ptr<devcard::ServerHandle> server;
     devcard::ServerOptions options;
     options.data_dir = devcard::default_data_dir();
     options.port = 18080;
@@ -676,13 +676,11 @@ int main(int argc, const char* argv[]) {
             errno);
     }
 
-    try {
-      server = devcard::start_server(options);
-    } catch (const std::exception& error) {
-      show_error(error.what());
-      return 1;
-    }
-    StartupLog("shell_start_server");
+    // 启动速度优化：server 初始化（含字体校验/DB 迁移，mac ~90ms、win ~250ms）
+    // 移到后台线程；主线程立刻建窗口并显示内联 splash，就绪后再导航到真实页面。
+    // 句柄用 shared_ptr 套壳：后台线程产出、主线程块里接管，生命周期仍随 main。
+    auto server_holder =
+        std::make_shared<std::unique_ptr<devcard::ServerHandle>>();
 
     NSMenu* menu = [[NSMenu alloc] init];
     NSMenuItem* app_item = [[NSMenuItem alloc] init];
@@ -775,15 +773,9 @@ int main(int argc, const char* argv[]) {
                          ? (selftest_nosubtle ? @"/?view=print&selftest_nosubtle=1"
                                               : @"/?view=print")
                          : @"/";
-    NSString* url_string = [NSString
-        stringWithFormat:@"http://127.0.0.1:%d%@", server->port(), page];
-    [web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:url_string]]];
 
-    if (selftest_update) {
-      // 自检细节全部在 shell/mac/update_selftest.mm，main 只负责在页面创建后启动。
-      DevCardUpdateSelftestStart(web, selftest_update_mode);
-    }
-
+    // 打印自检轮询函数：定义留在主线程，调用推迟到真实页面导航之后。
+    void (^print_selftest_poll)(int) = nil;
     if (selftest_pdf.length > 0) {
       __block void (^poll)(int) = nil;
       poll = ^(int attempts) {
@@ -862,12 +854,62 @@ int main(int argc, const char* argv[]) {
               }];
               }];
       };
-      poll(50);
+      print_selftest_poll = poll;
     }
 
+    // splash 用内联 HTML，不依赖 server：窗口先出现，server 在后台线程起。
+    [web loadHTMLString:
+             @"<!doctype html><html><head><meta charset='utf-8'>"
+              "<style>html,body{height:100%;margin:0;"
+              "font-family:-apple-system,'PingFang SC',sans-serif;"
+              "display:flex;align-items:center;justify-content:center;"
+              "background:#f5f6f8;color:#666}"
+              ".spin{width:28px;height:28px;border:3px solid #d0d5dd;"
+              "border-top-color:#2563eb;border-radius:50%;"
+              "animation:s 1s linear infinite}"
+              "@keyframes s{to{transform:rotate(360deg)}}"
+              "p{margin-top:14px;font-size:14px}</style></head>"
+              "<body><div><div class='spin' style='margin:0 auto'></div>"
+              "<p style='text-align:center'>正在启动 DevCard…</p>"
+              "</div></body></html>"
+         baseURL:nil];
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     StartupLog("shell_window_visible");
+
+    std::thread([options, server_holder, page, selftest_update,
+                 selftest_update_mode, print_selftest_poll, web]() {
+      auto result =
+          std::make_shared<std::unique_ptr<devcard::ServerHandle>>();
+      std::string startup_error;
+      try {
+        *result = devcard::start_server(options);
+      } catch (const std::exception& error) {
+        startup_error = error.what();
+      }
+      StartupLog("shell_start_server");
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (!*result) {
+          // 启动失败（字体损坏/实例占用/端口冲突等）：沿用既有弹窗语义。
+          show_error(startup_error);
+          [NSApp terminate:nil];
+          return;
+        }
+        *server_holder = std::move(*result);
+        NSString* url_string = [NSString
+            stringWithFormat:@"http://127.0.0.1:%d%@",
+                             (*server_holder)->port(), page];
+        [web loadRequest:[NSURLRequest
+                             requestWithURL:[NSURL
+                                              URLWithString:url_string]]];
+        if (selftest_update) {
+          // 自检细节全部在 shell/mac/update_selftest.mm，页面就绪后启动。
+          DevCardUpdateSelftestStart(web, selftest_update_mode);
+        }
+        if (print_selftest_poll) print_selftest_poll(50);
+      });
+    }).detach();
+
     [NSApp run];
   }
   return 0;

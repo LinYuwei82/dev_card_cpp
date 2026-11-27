@@ -68,6 +68,21 @@ void StartupLog(const char* name) {
   std::fprintf(stderr, "[startup] %s = %.1fms(cum)\n", name, ms);
 }
 
+// 启动 splash：纯内联 HTML，不依赖 server 与网络。
+constexpr wchar_t kSplashHtml[] =
+    L"<!doctype html><html><head><meta charset='utf-8'>"
+    L"<style>html,body{height:100%;margin:0;"
+    L"font-family:'Segoe UI','Microsoft YaHei',sans-serif;"
+    L"display:flex;align-items:center;justify-content:center;"
+    L"background:#f5f6f8;color:#666}"
+    L".spin{width:28px;height:28px;border:3px solid #d0d5dd;"
+    L"border-top-color:#2563eb;border-radius:50%;"
+    L"animation:s 1s linear infinite}"
+    L"@keyframes s{to{transform:rotate(360deg)}}"
+    L"p{margin-top:14px;font-size:14px}</style></head>"
+    L"<body><div><div class='spin' style='margin:0 auto'></div>"
+    L"<p style='text-align:center'>正在启动 DevCard…</p></div></body></html>";
+
 constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
 constexpr wchar_t kWindowTitle[] = L"设备管理卡";
 
@@ -85,6 +100,11 @@ struct ShellState {
   // 否则正常关窗时 join() 会永久阻塞（进程活着、18080 端口不释放）。
   std::atomic<bool> shutdown{false};
   std::wstring origin;
+  // server 后台启动完成后由 WM_APP_SERVER_READY 置位；webview 就绪时据此
+  // 决定直接导航真实页面还是先显示内联 splash。
+  bool server_ready = false;
+  // 后台启动失败（弹窗后销毁窗口）：进程退出码保持既有的 1。
+  bool startup_failed = false;
   std::filesystem::path data_dir;
   ComPtr<ICoreWebView2Environment> env;
   ComPtr<ICoreWebView2Controller> controller;
@@ -800,6 +820,21 @@ void ResizeWebView() {
 
 // ---------- 窗口 ----------
 
+// 启动速度优化：server 初始化在后台线程跑，就绪后通过自定义消息通知主线程。
+// 消息载荷是堆上的 ServerStartupResult，主线程接管 unique_ptr。
+constexpr UINT WM_APP_SERVER_READY = WM_APP + 7;
+
+struct ServerStartupResult {
+  std::unique_ptr<devcard::ServerHandle> server;  // null 表示启动失败
+  std::string error;
+};
+
+void NavigateToApp() {
+  if (!g.webview) return;
+  const std::wstring url = g.origin + L"/";
+  g.webview->Navigate(url.c_str());
+}
+
 void ConfirmExit() {
   const int answer = MessageBoxW(
       g.hwnd,
@@ -838,6 +873,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
           break;
         }
       }
+      return 0;
+    }
+    case WM_APP_SERVER_READY: {
+      std::unique_ptr<ServerStartupResult> res(
+          reinterpret_cast<ServerStartupResult*>(lparam));
+      if (!res->server) {
+        // 启动失败（字体损坏/实例占用/端口冲突等）：沿用既有弹窗语义。
+        g.startup_failed = true;
+        Fatal(Widen(res->error));
+        DestroyWindow(hwnd);
+        return 0;
+      }
+      StartupLog("shell_start_server");
+      g_server = std::move(res->server);
+      g.origin =
+          L"http://127.0.0.1:" + std::to_wstring(g_server->port());
+      g.server_ready = true;
+      // webview 可能还没建好（环境回调在消息循环里）；建好后走
+      // CreateWebView 内的 server_ready 分支自行导航。
+      if (g.webview) NavigateToApp();
       return 0;
     }
     case WM_CLOSE:
@@ -889,7 +944,6 @@ bool CreateWebView() {
                   RegisterHandlers();
                   InjectShim();
 
-                  const std::wstring url = g.origin + L"/";
                   EventRegistrationToken nav_token;
                   g.webview->add_NavigationCompleted(
                       Callback<ICoreWebView2NavigationCompletedEventHandler>(
@@ -901,7 +955,13 @@ bool CreateWebView() {
                           })
                           .Get(),
                       &nav_token);
-                  g.webview->Navigate(url.c_str());
+                  // server 还在后台初始化时先显示内联 splash，就绪后
+                  // WM_APP_SERVER_READY 会再导航到真实页面。
+                  if (g.server_ready) {
+                    NavigateToApp();
+                  } else {
+                    g.webview->NavigateToString(kSplashHtml);
+                  }
                   return S_OK;
                 });
         env->CreateCoreWebView2Controller(g.hwnd, controller_handler.Get());
@@ -964,20 +1024,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
   CoTaskMemFree(runtime_version);
 
-  try {
-    devcard::ServerOptions options;
-    options.data_dir = devcard::default_data_dir();
-    options.port = 18080;
-    g_server = devcard::start_server(options);
-    g.data_dir = options.data_dir;
-    StartupLog("shell_start_server");
-  } catch (const std::exception& error) {
-    Fatal(Widen(error.what()));
-    CoUninitialize();
-    return 1;
-  }
+  devcard::ServerOptions options;
+  options.data_dir = devcard::default_data_dir();
+  options.port = 18080;
+  g.data_dir = options.data_dir;
 
-  g.origin = L"http://127.0.0.1:" + std::to_wstring(g_server->port());
+  // 启动速度优化：server 初始化移到后台线程，就绪后 PostMessage 到主线程。
+  // 主线程立刻建窗口 + webview，先显示内联 splash，server 就绪后再导航真实页面。
 
   WNDCLASSEXW window_class = {};
   window_class.cbSize = sizeof(window_class);
@@ -987,7 +1040,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   window_class.lpszClassName = kWindowClass;
   if (!RegisterClassExW(&window_class)) {
     Fatal(L"窗口类注册失败。");
-    g_server.reset();
     CoUninitialize();
     return 1;
   }
@@ -1004,7 +1056,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                            nullptr, instance, nullptr);
   if (!g.hwnd) {
     Fatal(L"主窗口创建失败。");
-    g_server.reset();
     CoUninitialize();
     return 1;
   }
@@ -1024,13 +1075,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
 
   if (!CreateWebView()) {
-    g_server.reset();
     CoUninitialize();
     return 1;
   }
   ShowWindow(g.hwnd, SW_SHOW);
   UpdateWindow(g.hwnd);
   StartupLog("shell_window_visible");
+
+  // server 后台启动：就绪后 PostMessageW(WM_APP_SERVER_READY)，主线程接管。
+  std::thread([options]() mutable {
+    auto* result = new ServerStartupResult();
+    try {
+      result->server = devcard::start_server(options);
+    } catch (const std::exception& error) {
+      result->error = error.what();
+    }
+    PostMessageW(g.hwnd, WM_APP_SERVER_READY, 0,
+                 reinterpret_cast<LPARAM>(result));
+  }).detach();
 
   // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
   // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。
@@ -1064,5 +1126,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   g_downloads.clear();
   g_server.reset();
   CoUninitialize();
-  return 0;
+  return g.startup_failed ? 1 : 0;
 }
