@@ -8,6 +8,7 @@
 
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -743,7 +744,24 @@ int main(int argc, const char* argv[]) {
     web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     DownloadHandler* download_handler = [[DownloadHandler alloc] init];
     download_handler.window = window;
-    download_handler.onDidFinish = ^{ StartupLog("webview_did_finish"); };
+    // 打印自检启动钩子：必须等真实页（http://）didFinish 之后再发起 JS——
+    // splash→真实页导航进行中时 evaluateJavaScript 会被 WebKit 竞态吞掉。
+    // 轮询函数用 std::function + shared_ptr 自引用：ObjC 块递归 + 在 GCD
+    // 上下文拷贝块捕获的写法实测触发 _Block_copy(NULL) 段错误（DevCard-*.ips）。
+    auto print_poll_slot = std::make_shared<std::function<void(int)>>();
+    __block BOOL print_poll_started = NO;
+    download_handler.onDidFinish = ^{
+      StartupLog("webview_did_finish");
+      if (*print_poll_slot && !print_poll_started &&
+          [web.URL.absoluteString hasPrefix:@"http://"]) {
+        print_poll_started = YES;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+            dispatch_get_main_queue(), ^{
+              (*print_poll_slot)(50);
+            });
+      }
+    };
     web.navigationDelegate = download_handler;
     web.UIDelegate = download_handler;
     window.contentView = web;
@@ -774,11 +792,11 @@ int main(int argc, const char* argv[]) {
                                               : @"/?view=print")
                          : @"/";
 
-    // 打印自检轮询函数：定义留在主线程，调用推迟到真实页面导航之后。
-    void (^print_selftest_poll)(int) = nil;
+    // 打印自检轮询函数：定义留在主线程；启动时机由上面 onDidFinish 控制。
     if (selftest_pdf.length > 0) {
-      __block void (^poll)(int) = nil;
-      poll = ^(int attempts) {
+      auto poll_fn = print_poll_slot;
+      *poll_fn = [poll_fn, web, bridge, selftest_pdf,
+                  selftest_nosubtle](int attempts) {
         // 先取安全上下文与闸门的真实状态：不依赖数据，打印视图有没有卡片都能读到。
         [web evaluateJavaScript:@"window.__devcardFontGate ? JSON.stringify(window.__devcardFontGate()) : ''"
               completionHandler:^(id gate, NSError* gate_error) {
@@ -849,12 +867,11 @@ int main(int argc, const char* argv[]) {
                     dispatch_time(DISPATCH_TIME_NOW,
                                   (int64_t)(0.3 * NSEC_PER_SEC)),
                     dispatch_get_main_queue(), ^{
-                      poll(attempts - 1);
+                      (*poll_fn)(attempts - 1);
                     });
               }];
               }];
       };
-      print_selftest_poll = poll;
     }
 
     // splash 用内联 HTML，不依赖 server：窗口先出现，server 在后台线程起。
@@ -878,7 +895,7 @@ int main(int argc, const char* argv[]) {
     StartupLog("shell_window_visible");
 
     std::thread([options, server_holder, page, selftest_update,
-                 selftest_update_mode, print_selftest_poll, web]() {
+                 selftest_update_mode, web]() {
       auto result =
           std::make_shared<std::unique_ptr<devcard::ServerHandle>>();
       std::string startup_error;
@@ -906,7 +923,7 @@ int main(int argc, const char* argv[]) {
           // 自检细节全部在 shell/mac/update_selftest.mm，页面就绪后启动。
           DevCardUpdateSelftestStart(web, selftest_update_mode);
         }
-        if (print_selftest_poll) print_selftest_poll(50);
+        // 打印自检不在这里启动：见上面 onDidFinish——必须等真实页导航完成。
       });
     }).detach();
 
