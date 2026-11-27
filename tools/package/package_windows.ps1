@@ -63,9 +63,15 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     $ErrorActionPreference = "Continue"
     $genOutput = & $py.Source $genBuild --product devcard --repo-root $repoRoot 2>&1
     $ErrorActionPreference = $prevEap
-    $genText = ($genOutput | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $genText -notmatch '^\d+$') {
-        Fail "gen_build.py 生成构建号失败（退出码 $LASTEXITCODE）：$genText"
+    # gen_build 会把提示/警告写到 stderr，2>&1 混捕后不能整段当数字：
+    # 取最后一个纯数字行作为构建号（stdout 约定只打印数字）。
+    $genText = @(
+        foreach ($line in @($genOutput)) {
+            if ("$line".Trim() -match '^\d+$') { "$line".Trim() }
+        }
+    ) | Select-Object -Last 1
+    if (-not $genText) {
+        Fail "gen_build.py 生成构建号失败（退出码 $LASTEXITCODE）：$(($genOutput | Out-String).Trim())"
     }
     $Build = $genText
     Write-Host "构建号：$Build（来源 gen_build.py）"
