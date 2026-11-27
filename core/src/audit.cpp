@@ -18,7 +18,7 @@ std::string padded(int value, int width) {
 
 }  // namespace
 
-void record_audit(sqlite3* conn, const AuditEntry& entry) {
+void record_audit(Conn& conn, const AuditEntry& entry) {
   const std::string at = entry.at.empty() ? now_iso8601_utc() : entry.at;
   AuditDao().insert(conn, entry, at);
 }

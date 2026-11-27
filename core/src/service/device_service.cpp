@@ -147,7 +147,7 @@ Device DeviceService::create(Device device) {
 
 Device DeviceService::create(Device device, const AuditContext& audit) {
   validate(device);
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     if (dao_.exists_triplet(conn, device.dev_name, device.location,
                             device.control_range)) {
       throw AppError("duplicate", "你要添加的设备已经存在，请重新输入");
@@ -175,7 +175,7 @@ Device DeviceService::update(std::int64_t id, Device device,
   require_version(device.version);
   device.id = id;
   Device saved;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     // 先在同一事务里取旧值：审计的 before 与「行是否存在」都基于同一次快照。
     Device before;
     if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
@@ -207,7 +207,7 @@ Device DeviceService::force_update(std::int64_t id, Device device,
     throw AppError("forbidden", "强制覆盖必须带明确的操作人");
   }
   Device saved;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     Device before;
     if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
     // 覆盖不是回退：以库里当前版本为基准再 +1，旧页面上的 version 直接忽略。
@@ -240,7 +240,7 @@ void DeviceService::remove(std::int64_t id, std::int64_t version) {  remove(id, 
 void DeviceService::remove(std::int64_t id, std::int64_t version,
                            const AuditContext& audit) {
   require_version(version);
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     Device before;
     if (!dao_.find(conn, id, before)) throw AppError("not_found", "设备不存在");
     // 删除同样带版本：别人刚改过时拒绝，避免旧页面把新数据删掉。
@@ -262,7 +262,7 @@ DeviceOptions DeviceService::options() const {
 
 DedupeReport DeviceService::dedupe(const AuditContext& audit) {
   DedupeReport report;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     report.removed = dao_.dedupe(conn, audit.actor);
     if (audit.enabled()) {
       // 删除是整批动作，只记一条汇总；逐行记会让审计里塞满同类条目。
@@ -309,7 +309,7 @@ ImportReport DeviceService::import_rows(
 
   static constexpr std::size_t kLimits[4] = {10, 10, 10, 11};
   ImportReport report;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     for (std::size_t r = 1; r < rows.size(); ++r) {
       std::vector<std::string> cells(4);
       for (std::size_t c = 0; c < 4; ++c) {

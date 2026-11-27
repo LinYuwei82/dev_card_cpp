@@ -34,7 +34,7 @@ struct AuditContext {
 };
 
 // 调用方必须已处于 Db::write() 事务内，与业务写入同一次提交。
-void record_audit(sqlite3* conn, const AuditEntry& entry);
+void record_audit(Conn& conn, const AuditEntry& entry);
 
 // 最近 limit 条（按 id 倒序），limit 限制在 1..1000。
 std::vector<AuditEntry> list_audit(const Db& db, int limit);

@@ -30,6 +30,6 @@ double company_name_width(std::string_view text);
 std::string truncate_company_name(std::string_view text);
 
 // 写接口要求调用方已处于 Db::write() 事务内。
-void set_setting(sqlite3* conn, std::string_view key, std::string_view value);
+void set_setting(Conn& conn, std::string_view key, std::string_view value);
 
 }  // namespace devcard

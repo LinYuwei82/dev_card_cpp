@@ -119,13 +119,13 @@ User UserService::authenticate(std::string_view name, std::string_view password)
       locked_until = now_plus_minutes(kLockMinutes);
       failed = 0;
     }
-    db_.write([&](sqlite3* conn) {
+    db_.write([&](Conn& conn) {
       dao_.record_failed_login(conn, user.user_name, failed, locked_until);
     });
     throw AppError("invalid_credentials", "用户名或密码错误");
   }
   if (user.failed_count != 0 || !user.locked_until.empty()) {
-    db_.write([&](sqlite3* conn) { dao_.clear_failed_login(conn, user.user_name); });
+    db_.write([&](Conn& conn) { dao_.clear_failed_login(conn, user.user_name); });
     user.failed_count = 0;
     user.locked_until.clear();
   }
@@ -147,7 +147,7 @@ User UserService::create(std::string name, std::string password,
   user.password_hash = hash_password(password);
   user.must_change_password = true;
 
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     if (dao_.exists(conn, user.user_name)) {
       throw AppError("duplicate", "用户名已存在");
     }
@@ -163,7 +163,7 @@ User UserService::update_profile(std::string_view name, std::string display_name
   if (utf8_length(display) > 20) {
     throw AppError("invalid_user", "显示名不能超过 20 个字符");
   }
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     User current;
     if (!dao_.find(conn, name, current)) {
       throw AppError("not_found", "用户不存在");
@@ -182,7 +182,7 @@ void UserService::remove(std::string_view name, std::string_view actor) {
   if (name == actor) {
     throw AppError("self_delete", "不能删除当前登录账号");
   }
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     User current;
     if (!dao_.find(conn, name, current)) {
       throw AppError("not_found", "用户不存在");
@@ -203,7 +203,7 @@ void UserService::change_password(std::string_view name,
   }
   validate_password(new_password);
   const std::string hash = hash_password(new_password);
-  db_.write([&](sqlite3* conn) { dao_.set_password(conn, name, hash, false); });
+  db_.write([&](Conn& conn) { dao_.set_password(conn, name, hash, false); });
 }
 
 void UserService::complete_forced_change(std::string_view name,
@@ -215,7 +215,7 @@ void UserService::complete_forced_change(std::string_view name,
   }
   validate_password(new_password);
   const std::string hash = hash_password(new_password);
-  db_.write([&](sqlite3* conn) { dao_.set_password(conn, name, hash, false); });
+  db_.write([&](Conn& conn) { dao_.set_password(conn, name, hash, false); });
 }
 
 void UserService::reset_password(std::string_view name,
@@ -223,7 +223,7 @@ void UserService::reset_password(std::string_view name,
   get(name);
   validate_password(new_password);
   const std::string hash = hash_password(new_password);
-  db_.write([&](sqlite3* conn) { dao_.set_password(conn, name, hash, true); });
+  db_.write([&](Conn& conn) { dao_.set_password(conn, name, hash, true); });
 }
 
 bool UserService::any_must_change() const { return dao_.any_must_change(db_); }
@@ -262,7 +262,7 @@ SeedResult seed_default_users(Db& db, const std::filesystem::path& data_dir) {
     users.push_back(std::move(user));
   }
 
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     for (const User& user : users) dao.insert(conn, user);
     set_setting(conn, "local_user", "root");
   });

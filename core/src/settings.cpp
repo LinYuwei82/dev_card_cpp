@@ -55,7 +55,7 @@ bool has_setting(const Db& db, std::string_view key) {
   return SettingDao().has(db, key);
 }
 
-void set_setting(sqlite3* conn, std::string_view key, std::string_view value) {
+void set_setting(Conn& conn, std::string_view key, std::string_view value) {
   SettingDao().set(conn, key, value);
 }
 

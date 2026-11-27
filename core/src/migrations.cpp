@@ -91,12 +91,7 @@ const std::vector<Migration>& migrations() {
   return list;
 }
 
-bool table_exists(sqlite3* conn, const char* name) {
-  Stmt stmt(conn,
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?");
-  stmt.bind(1, name);
-  return stmt.step();
-}
+bool table_exists(Conn& conn, const char* name) { return conn.table_exists(name); }
 
 }  // namespace
 
@@ -107,7 +102,7 @@ int target_schema_version() {
 }
 
 void migrate(Db& db) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     // 旧版 Qt 库没有 schema 版本号，只有 tb_device / tb_user。
     // 在这里硬失败，避免把新表悄悄加到真实旧库、让用户误以为数据丢了；
     // 旧库导入已下线，不再有自动搬数据的路径。
@@ -168,7 +163,7 @@ void migrate(Db& db) {
       insert.run();
     }
 
-    exec_sql(conn, std::string("PRAGMA user_version = ") + std::to_string(target));
+    db.set_schema_version(conn, target);
   });
 }
 
