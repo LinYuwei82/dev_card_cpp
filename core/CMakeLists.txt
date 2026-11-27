@@ -1,12 +1,13 @@
 add_library(devcard_core STATIC
     src/db.cpp
+    src/backend/sqlite_db.cpp
+    src/backend/sqlite_backup_dao.cpp
     src/migrations.cpp
     src/audit.cpp
     src/dao/device_dao.cpp
     src/dao/user_dao.cpp
     src/dao/setting_dao.cpp
     src/dao/audit_dao.cpp
-    src/dao/backup_dao.cpp
     src/dao/instance_dao.cpp
     src/service/device_service.cpp
     src/service/user_service.cpp
@@ -35,9 +36,11 @@ target_include_directories(devcard_core
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         "${CMAKE_SOURCE_DIR}/third_party"
         "${CMAKE_SOURCE_DIR}/third_party/argon2/include"
-        # db.h 是公开头，直接 #include <sqlite3.h>；两个平台都用仓库这份。
+        # SQLite amalgamation 头：core 内仅 backend/ 下的实现文件允许使用；
+        # 测试/压测需要裸 sqlite3 时直接 #include <sqlite3.h>。
         "${DEVCARD_SQLITE_DIR}"
     PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_SOURCE_DIR}/third_party/miniz"
         "${CMAKE_SOURCE_DIR}/third_party/argon2/src"
 )

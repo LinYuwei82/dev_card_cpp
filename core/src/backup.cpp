@@ -1,27 +1,18 @@
 #include "devcard/backup.h"
 
-#include <sqlite3.h>
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <ctime>
-#include <memory>
 #include <string>
 
 #include "devcard/error.h"
 #include "devcard/dao/backup_dao.h"
+#include "devcard/db.h"
 #include "devcard/paths.h"
 
 namespace devcard {
 namespace {
-
-struct SqliteCloser {
-  void operator()(sqlite3* conn) const {
-    if (conn) sqlite3_close(conn);
-  }
-};
-using SqlitePtr = std::unique_ptr<sqlite3, SqliteCloser>;
 
 std::string stamp() {
   const std::time_t t = std::time(nullptr);
@@ -52,19 +43,6 @@ std::string format_time(std::filesystem::file_time_type time) {
   char buffer[32] = {};
   std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
   return buffer;
-}
-
-SqlitePtr open_readonly(const std::filesystem::path& file) {
-  sqlite3* raw = nullptr;
-  const int rc = sqlite3_open_v2(path_to_utf8(file).c_str(), &raw,
-                                 SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
-                                 nullptr);
-  if (rc != SQLITE_OK) {
-    std::string message = raw ? sqlite3_errmsg(raw) : sqlite3_errstr(rc);
-    if (raw) sqlite3_close(raw);
-    throw AppError("backup_invalid", "无法打开备份文件: " + message);
-  }
-  return SqlitePtr(raw);
 }
 
 BackupEntry describe(const std::filesystem::path& file) {
@@ -106,9 +84,7 @@ BackupEntry create_backup(Db& db, const std::filesystem::path& data_dir,
                     std::to_string(suffix++) + ".db");
   }
 
-  db.write_raw([&](sqlite3* conn) {
-    BackupDao().vacuum_into(conn, path_to_utf8(target));
-  });
+  db.backup().vacuum_into(db, path_to_utf8(target));
   return describe(target);
 }
 
@@ -144,17 +120,11 @@ void restore_backup(Db& db, const std::filesystem::path& data_dir,
   }
 
   // 备份必须是可用的本程序数据库，避免把任意文件恢复进来。
-  {
-    SqlitePtr conn = open_readonly(file);
-    BackupDao().verify_database(conn.get());
-  }
+  db.backup().verify_backup_file(file);
 
   create_backup(db, data_dir, "pre-restore");
 
-  // ATTACH/DETACH 不能在事务内执行：DAO 内部先挂载，再开写事务，提交后卸载。
-  db.write_raw([&](sqlite3* conn) {
-    BackupDao().restore_from(conn, path_to_utf8(file));
-  });
+  db.backup().restore_from(db, path_to_utf8(file));
 }
 
 }  // namespace devcard
