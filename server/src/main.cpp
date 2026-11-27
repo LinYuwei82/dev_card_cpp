@@ -17,6 +17,7 @@
 #include "apply_update.h"
 #include "devcard/backup.h"
 #include "devcard/db.h"
+#include "devcard/backend/sqlite_db.h"
 #include "devcard/error.h"
 #include "devcard/paths.h"
 #include "devcard/migrations.h"
@@ -62,7 +63,7 @@ struct OpenedDatabase {
 
 OpenedDatabase open_database(const std::filesystem::path& data_dir) {
   OpenedDatabase opened;
-  opened.db = std::make_unique<devcard::Db>(data_dir / "devicedb.db");
+  opened.db = devcard::open_sqlite_db(data_dir / "devicedb.db");
   devcard::migrate(*opened.db);
   devcard::seed_default_users(*opened.db, data_dir);
   return opened;

@@ -32,6 +32,7 @@
 #include "devcard/backup.h"
 #include "devcard/audit.h"
 #include "devcard/db.h"
+#include "devcard/backend/sqlite_db.h"
 #include "devcard/error.h"
 #include "devcard/image_meta.h"
 #include "devcard/migrations.h"
@@ -815,7 +816,7 @@ AuditContext audit_context(ServerState& state, const httplib::Request& request) 
 void audit_event(ServerState& state, AuditEntry entry) {
   if (entry.actor.empty()) entry.actor = "system";
   try {
-    state.db->write([&](sqlite3* conn) { record_audit(conn, entry); });
+    state.db->write([&](Conn& conn) { record_audit(conn, entry); });
   } catch (const std::exception& error) {
     std::cerr << "警告：审计写入失败：" << error.what() << std::endl;
   }
@@ -1001,7 +1002,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   log_startup("instance_guard", t_startup);
 
-  state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
+  state.db = open_sqlite_db(options.data_dir / "devicedb.db");
   migrate(*state.db);
 
   // 第三层防护：库内心跳。锁文件被删除、或两条路径 hardlink 到同一个库时，
@@ -2135,7 +2136,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                            "bad_company_name",
                            "公司名称最多 16 个字符（卡面按 13 字宽打印）");
                      }
-                     state.db->write([&](sqlite3* conn) {
+                     state.db->write([&](Conn& conn) {
                        set_setting(conn, "print_company_name", value);
                      });
                      set_json(response,
@@ -2194,7 +2195,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                               (std::string("assets/company-logo.") +
                                (png ? "jpg" : "png")),
                           ec);
-                      state.db->write([&](sqlite3* conn) {
+                      state.db->write([&](Conn& conn) {
                         set_setting(conn, kLogoSettingKey, relative);
                         set_setting(conn, "company_logo_updated_at", now_text());
                       });
@@ -2227,7 +2228,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       [&state](const httplib::Request& request,
                                httplib::Response& response) {
                         require_admin(state, request);
-                        state.db->write([&](sqlite3* conn) {
+                        state.db->write([&](Conn& conn) {
                           set_setting(conn, kLogoSettingKey, "");
                           set_setting(conn, "company_logo_updated_at", "");
                         });

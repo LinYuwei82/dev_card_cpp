@@ -23,6 +23,7 @@
 #include "devcard/backup.h"
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
+#include "devcard/backend/sqlite_db.h"
 #include "devcard/error.h"
 #include "devcard/migrations.h"
 #include "devcard/password.h"
@@ -857,7 +858,8 @@ void run_update_manifest_case() {
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_user_service_case(const std::filesystem::path& dir) {
   const std::filesystem::path file = dir / "devicedb.db";
-  devcard::Db db(file);
+  auto db_owner = devcard::open_sqlite_db(file);
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
 
   const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
@@ -976,7 +978,8 @@ void run_path_encoding_case(const std::filesystem::path& dir) {
   CHECK(devcard::path_to_utf8(devcard::path_from_utf8(emoji)) == emoji);
 
   {
-    devcard::Db db(dir / "devicedb.db");
+    auto db_owner = devcard::open_sqlite_db(dir / "devicedb.db");
+    devcard::Db& db = *db_owner;
     devcard::migrate(db);
     const devcard::SeedResult seed = devcard::seed_default_users(db, dir);
     CHECK(seed.seeded);
@@ -1123,7 +1126,8 @@ void run_update_download_landing_case(const std::filesystem::path& dir) {
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_backup_case(const std::filesystem::path& dir) {
-  devcard::Db db(dir / "devicedb.db");
+  auto db_owner = devcard::open_sqlite_db(dir / "devicedb.db");
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
 
   devcard::DeviceService service(db);
@@ -1140,7 +1144,7 @@ void run_backup_case(const std::filesystem::path& dir) {
   // 先改一次，让备份里的 version/updated_by 不是列默认值。
   devcard::Device edited = created;
   edited.phone = "13800000002";
-  db.write([&](sqlite3* conn) { CHECK(devices.update(conn, edited, "测试员")); });
+  db.write([&](devcard::Conn& conn) { CHECK(devices.update(conn, edited, "测试员")); });
   devcard::Device snapshot;
   CHECK(devices.find(db, created.id, snapshot));
   CHECK(snapshot.version == created.version + 1);
@@ -1174,7 +1178,8 @@ void run_backup_case(const std::filesystem::path& dir) {
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_company_name_case(const std::filesystem::path& dir) {
-  devcard::Db db(dir / "devicedb.db");
+  auto db_owner = devcard::open_sqlite_db(dir / "devicedb.db");
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
 
   CHECK(devcard::company_name(db) ==
@@ -1184,7 +1189,7 @@ void run_company_name_case(const std::filesystem::path& dir) {
   CHECK(devcard::company_name_width("安业AB") == 3.0);
   CHECK(devcard::company_name_width("") == 0.0);
 
-  db.write([](sqlite3* conn) {
+  db.write([](devcard::Conn& conn) {
     devcard::set_setting(conn, "print_company_name",
                          "深圳市安业物业管理有限公司南山分公司");
   });
@@ -1193,14 +1198,14 @@ void run_company_name_case(const std::filesystem::path& dir) {
 
   // 录入上限 16 个字符：存得下，卡面仍按 13 字宽截断。
   CHECK(devcard::kCompanyNameInputMaxLength == 16);
-  db.write([](sqlite3* conn) {
+  db.write([](devcard::Conn& conn) {
     devcard::set_setting(conn, "print_company_name",
                          "深圳市安业物业管理有限公司南山分");
   });
   CHECK(devcard::company_name_width(devcard::company_name(db)) == 16.0);
   CHECK(devcard::company_print_name(db) == "深圳市安业物业管理有限公司");
 
-  db.write([](sqlite3* conn) {
+  db.write([](devcard::Conn& conn) {
     devcard::set_setting(conn, "print_company_name",
                          "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   });
@@ -1210,7 +1215,7 @@ void run_company_name_case(const std::filesystem::path& dir) {
   // 边界：12 个汉字（12.0）+ 一个 ASCII（12.5）之后再来汉字就超宽了。
   // 超宽字必须直接停，不能「跳过它继续收后面的窄字」，否则打印名不是原串的真前缀，
   // 前端预览会和实际打印不一致（web/app.js truncateCompanyName 同口径）。
-  db.write([](sqlite3* conn) {
+  db.write([](devcard::Conn& conn) {
     devcard::set_setting(conn, "print_company_name",
                          "安安全全生产管理责任到位A汉A");
   });
@@ -1222,7 +1227,8 @@ void run_company_name_case(const std::filesystem::path& dir) {
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
 void run_xlsx_template_case(const std::filesystem::path& dir) {
   const std::filesystem::path file = dir / "devicedb.db";
-  devcard::Db db(file);
+  auto db_owner = devcard::open_sqlite_db(file);
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
   devcard::DeviceService service(db);
 
@@ -1253,7 +1259,8 @@ void run_xlsx_template_case(const std::filesystem::path& dir) {
 // 且重复行各自持有新的 id（COUNT(DISTINCT 三字段) 不变）。
 void run_xlsx_reimport_case(const std::filesystem::path& dir) {
   const std::filesystem::path file = dir / "devicedb.db";
-  devcard::Db db(file);
+  auto db_owner = devcard::open_sqlite_db(file);
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
   devcard::DeviceService service(db);
 
@@ -1311,7 +1318,8 @@ void run_xlsx_reimport_case(const std::filesystem::path& dir) {
 // 必填项缺失只跳过该行，不整批回滚，并带回行号。
 void run_xlsx_invalid_row_case(const std::filesystem::path& dir) {
   const std::filesystem::path file = dir / "devicedb.db";
-  devcard::Db db(file);
+  auto db_owner = devcard::open_sqlite_db(file);
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
   devcard::DeviceService service(db);
 
@@ -1340,7 +1348,8 @@ void run_xlsx_invalid_row_case(const std::filesystem::path& dir) {
 // 已有电话不覆盖；电话没变的行版本号不动，旧页面仍能正常编辑。
 void run_dedupe_case(const std::filesystem::path& dir) {
   const std::filesystem::path file = dir / "devicedb.db";
-  devcard::Db db(file);
+  auto db_owner = devcard::open_sqlite_db(file);
+  devcard::Db& db = *db_owner;
   devcard::migrate(db);
   devcard::DeviceService service(db);
 
@@ -1383,7 +1392,8 @@ void run_dedupe_case(const std::filesystem::path& dir) {
 int run_all_tests() {
   const std::filesystem::path file = temp_db();
   {
-    devcard::Db db(file);
+    auto db_owner = devcard::open_sqlite_db(file);
+    devcard::Db& db = *db_owner;
     CHECK(db.schema_version() == 0);
     devcard::migrate(db);
     CHECK(db.schema_version() == devcard::target_schema_version());
@@ -1396,7 +1406,7 @@ int run_all_tests() {
     pump.location = "B1栋";
     pump.control_range = "1-3层";
     pump.phone = "13800000001";
-    db.write([&](sqlite3* conn) { dao.insert(conn, pump); });
+    db.write([&](devcard::Conn& conn) { dao.insert(conn, pump); });
     CHECK(pump.id == 1);
 
     devcard::Device fan;
@@ -1404,7 +1414,7 @@ int run_all_tests() {
     fan.location = "B1栋";
     fan.control_range = "屋顶";
     fan.phone = "13800000002";
-    db.write([&](sqlite3* conn) { dao.insert(conn, fan); });
+    db.write([&](devcard::Conn& conn) { dao.insert(conn, fan); });
 
     devcard::DeviceQuery query;
     CHECK(dao.count(db, query) == 2);
@@ -1423,12 +1433,12 @@ int run_all_tests() {
     CHECK(found.location == "B1栋");
 
     found.location = "A2栋";
-    db.write([&](sqlite3* conn) { dao.update(conn, found); });
+    db.write([&](devcard::Conn& conn) { dao.update(conn, found); });
     devcard::Device updated;
     CHECK(dao.find(db, fan.id, updated));
     CHECK(updated.location == "A2栋");
 
-    db.write([&](sqlite3* conn) { dao.erase(conn, pump.id, pump.version); });
+    db.write([&](devcard::Conn& conn) { dao.erase(conn, pump.id, pump.version); });
     CHECK(dao.count(db, devcard::DeviceQuery{}) == 1);
 
     query.name.clear();
@@ -1440,7 +1450,7 @@ int run_all_tests() {
     try {
       devcard::Device bad;
       bad.dev_name = "";
-      db.write([&](sqlite3* conn) { dao.insert(conn, bad); });
+      db.write([&](devcard::Conn& conn) { dao.insert(conn, bad); });
     } catch (const devcard::AppError&) {
       rejected = true;
     }
@@ -1448,14 +1458,16 @@ int run_all_tests() {
   }
 
   {
-    devcard::Db db(file);
+    auto db_owner = devcard::open_sqlite_db(file);
+    devcard::Db& db = *db_owner;
     CHECK(db.schema_version() == devcard::target_schema_version());
   }
 
   {
     const std::filesystem::path service_file = temp_db();
     {
-      devcard::Db db(service_file);
+      auto db_owner = devcard::open_sqlite_db(service_file);
+      devcard::Db& db = *db_owner;
       devcard::migrate(db);
       devcard::DeviceService service(db);
 
@@ -1612,7 +1624,8 @@ int run_all_tests() {
   {
     const std::filesystem::path import_file = temp_db();
     {
-      devcard::Db db(import_file);
+      auto db_owner = devcard::open_sqlite_db(import_file);
+      devcard::Db& db = *db_owner;
       devcard::migrate(db);
       devcard::DeviceService service(db);
 
@@ -1668,8 +1681,9 @@ int run_all_tests() {
   {
     const std::filesystem::path legacy_file = temp_db();
     {
-      devcard::Db db(legacy_file);
-      db.write_raw([](sqlite3* conn) {
+      auto db_owner = devcard::open_sqlite_db(legacy_file);
+      devcard::Db& db = *db_owner;
+      db.write_raw([](devcard::Conn& conn) {
         devcard::exec_sql(
             conn,
             "CREATE TABLE tb_device(dev_id INTEGER PRIMARY KEY, dev_name TEXT)");

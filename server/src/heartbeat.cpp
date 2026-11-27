@@ -99,7 +99,7 @@ std::string owner_text(const InstanceOwner& owner, long long age_seconds) {
   return text;
 }
 
-void write_owner(sqlite3* conn, const std::string& instance_id) {
+void write_owner(Conn& conn, const std::string& instance_id) {
   const std::string now = now_iso8601_utc();
   InstanceDao().write(conn, instance_id, process_id(), local_host_name(), now,
                       now);
@@ -110,7 +110,7 @@ void write_owner(sqlite3* conn, const std::string& instance_id) {
 bool claim_heartbeat(Db& db, const std::string& instance_id,
                      std::string* error) {
   std::string message;
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     InstanceOwner owner;
     if (InstanceDao().read(conn, owner)) {
       const std::time_t beat = parse_utc(owner.heartbeat_at);
@@ -141,7 +141,7 @@ bool claim_heartbeat(Db& db, const std::string& instance_id,
 
 bool refresh_heartbeat(Db& db, const std::string& instance_id) {
   bool still_owner = false;
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     still_owner = InstanceDao().touch(conn, instance_id, now_iso8601_utc());
   });
   if (still_owner) db.checkpoint();
@@ -149,20 +149,20 @@ bool refresh_heartbeat(Db& db, const std::string& instance_id) {
 }
 
 void force_heartbeat(Db& db, const std::string& instance_id) {
-  db.write([&](sqlite3* conn) { write_owner(conn, instance_id); });
+  db.write([&](Conn& conn) { write_owner(conn, instance_id); });
   db.checkpoint();
 }
 
 void set_heartbeat_listen(Db& db, const std::string& instance_id,
                           const std::string& listen) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     InstanceDao().set_listen(conn, instance_id, listen);
   });
   db.checkpoint();
 }
 
 void release_heartbeat(Db& db, const std::string& instance_id) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     InstanceDao().erase(conn, instance_id);
   });
 }

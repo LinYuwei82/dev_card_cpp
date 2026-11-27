@@ -10,6 +10,7 @@
 
 #include "devcard/dao/device_dao.h"
 #include "devcard/db.h"
+#include "devcard/backend/sqlite_db.h"
 #include "devcard/migrations.h"
 #include "devcard/paths.h"
 #include "devcard/service/device_service.h"
@@ -50,20 +51,22 @@ int main() {
   //    可复现代理；窗口/WebView 启动时间不在这里，别把它当成整条链路的数字。
   {
     const auto start = Clock::now();
-    devcard::Db db(dir / "cold.db");
+    auto db_owner = devcard::open_sqlite_db(dir / "cold.db");
+    devcard::Db& db = *db_owner;
     devcard::migrate(db);
     report("冷启动（开库 + 迁移到 vN）", ms_since(start), 1000.0);
   }
 
   // 2) 1 万行查询：单事务装载 10000 行，再量首屏分页（20 条）。
   {
-    devcard::Db db(dir / "devicedb.db");
+    auto db_owner = devcard::open_sqlite_db(dir / "devicedb.db");
+    devcard::Db& db = *db_owner;
     devcard::migrate(db);
     devcard::DeviceService service(db);
     const auto seed_start = Clock::now();
     // 走 DAO 的批量插入（单事务），不要在这里再套一层 service.create。
     devcard::DeviceDao dao;
-    db.write([&dao](sqlite3* conn) {
+    db.write([&dao](devcard::Conn& conn) {
       for (int i = 0; i < 10000; ++i) {
         devcard::Device device;
         device.dev_name = "设备" + std::to_string(i);
@@ -105,7 +108,8 @@ int main() {
 
   // 3) 5000 行导入：造 xlsx → 重新解析 → import_rows。
   {
-    devcard::Db db(dir / "import.db");
+    auto db_owner = devcard::open_sqlite_db(dir / "import.db");
+    devcard::Db& db = *db_owner;
     devcard::migrate(db);
     devcard::DeviceService service(db);
     devcard::xlsx::Sheet sheet;
