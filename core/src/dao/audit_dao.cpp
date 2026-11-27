@@ -4,7 +4,7 @@
 
 namespace devcard {
 
-void AuditDao::insert(sqlite3* conn, const AuditEntry& entry,
+void AuditDao::insert(Conn& conn, const AuditEntry& entry,
                       std::string_view at) const {
   Stmt stmt(conn,
             "INSERT INTO audit_log(at,actor,actor_ip,action,entity,entity_id,"
@@ -24,7 +24,7 @@ void AuditDao::insert(sqlite3* conn, const AuditEntry& entry,
 std::vector<AuditEntry> AuditDao::list(const Db& db, int limit) const {
   const int capped = std::clamp(limit, 1, 1000);
   std::vector<AuditEntry> entries;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT id,at,actor,actor_ip,action,entity,entity_id,summary,"
               "before_json,after_json FROM audit_log ORDER BY id DESC LIMIT ?");

@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-#include <sqlite3.h>
+#include "devcard/db.h"
 
 namespace devcard {
 
@@ -20,16 +20,16 @@ struct InstanceOwner {
 // instance_heartbeat 表 DAO：跨实例互斥的 SQL 只出现在本类实现中。
 class InstanceDao {
  public:
-  bool read(sqlite3* conn, InstanceOwner& owner) const;
-  void write(sqlite3* conn, std::string_view instance_id, long long pid,
+  bool read(Conn& conn, InstanceOwner& owner) const;
+  void write(Conn& conn, std::string_view instance_id, long long pid,
              std::string_view host, std::string_view started_at,
              std::string_view heartbeat_at) const;
   // 只有 instance_id 仍是自己时才刷新；返回 false 表示已被别的实例接管。
-  bool touch(sqlite3* conn, std::string_view instance_id,
+  bool touch(Conn& conn, std::string_view instance_id,
              std::string_view heartbeat_at) const;
-  void set_listen(sqlite3* conn, std::string_view instance_id,
+  void set_listen(Conn& conn, std::string_view instance_id,
                   std::string_view listen) const;
-  void erase(sqlite3* conn, std::string_view instance_id) const;
+  void erase(Conn& conn, std::string_view instance_id) const;
 };
 
 }  // namespace devcard

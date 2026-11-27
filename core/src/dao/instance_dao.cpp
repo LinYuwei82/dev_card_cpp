@@ -1,6 +1,7 @@
 #include "devcard/dao/instance_dao.h"
 
 #include "devcard/db.h"
+#include "devcard/dao/dialect.h"
 
 namespace devcard {
 namespace {
@@ -9,7 +10,7 @@ constexpr int kOwnerId = 1;
 
 }  // namespace
 
-bool InstanceDao::read(sqlite3* conn, InstanceOwner& owner) const {
+bool InstanceDao::read(Conn& conn, InstanceOwner& owner) const {
   Stmt stmt(conn,
             "SELECT instance_id,pid,host,listen,started_at,heartbeat_at"
             " FROM instance_heartbeat WHERE id = ?");
@@ -24,12 +25,13 @@ bool InstanceDao::read(sqlite3* conn, InstanceOwner& owner) const {
   return true;
 }
 
-void InstanceDao::write(sqlite3* conn, std::string_view instance_id,
+void InstanceDao::write(Conn& conn, std::string_view instance_id,
                         long long pid, std::string_view host,
                         std::string_view started_at,
                         std::string_view heartbeat_at) const {
   Stmt stmt(conn,
-            "INSERT OR REPLACE INTO instance_heartbeat"
+            std::string(dialect::kHeartbeatUpsert) +
+            " instance_heartbeat"
             "(id,instance_id,pid,host,listen,started_at,heartbeat_at)"
             " VALUES(?,?,?,?,'',?,?)");
   stmt.bind(1, static_cast<std::int64_t>(kOwnerId))
@@ -41,7 +43,7 @@ void InstanceDao::write(sqlite3* conn, std::string_view instance_id,
   stmt.run();
 }
 
-bool InstanceDao::touch(sqlite3* conn, std::string_view instance_id,
+bool InstanceDao::touch(Conn& conn, std::string_view instance_id,
                         std::string_view heartbeat_at) const {
   Stmt stmt(conn,
             "UPDATE instance_heartbeat SET heartbeat_at = ?"
@@ -50,10 +52,10 @@ bool InstanceDao::touch(sqlite3* conn, std::string_view instance_id,
       .bind(2, static_cast<std::int64_t>(kOwnerId))
       .bind(3, instance_id);
   stmt.run();
-  return sqlite3_changes(conn) > 0;
+  return conn.changes() > 0;
 }
 
-void InstanceDao::set_listen(sqlite3* conn, std::string_view instance_id,
+void InstanceDao::set_listen(Conn& conn, std::string_view instance_id,
                              std::string_view listen) const {
   Stmt stmt(conn,
             "UPDATE instance_heartbeat SET listen = ?"
@@ -64,7 +66,7 @@ void InstanceDao::set_listen(sqlite3* conn, std::string_view instance_id,
   stmt.run();
 }
 
-void InstanceDao::erase(sqlite3* conn, std::string_view instance_id) const {
+void InstanceDao::erase(Conn& conn, std::string_view instance_id) const {
   Stmt stmt(conn,
             "DELETE FROM instance_heartbeat WHERE id = ? AND instance_id = ?");
   stmt.bind(1, static_cast<std::int64_t>(kOwnerId)).bind(2, instance_id);

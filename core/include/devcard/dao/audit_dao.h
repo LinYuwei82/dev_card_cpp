@@ -12,7 +12,7 @@ namespace devcard {
 class AuditDao {
  public:
   // 写方法要求调用方已处于 Db::write() 事务内。
-  void insert(sqlite3* conn, const AuditEntry& entry,
+  void insert(Conn& conn, const AuditEntry& entry,
               std::string_view at) const;
   std::vector<AuditEntry> list(const Db& db, int limit) const;
 };

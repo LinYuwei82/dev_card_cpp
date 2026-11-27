@@ -13,7 +13,7 @@ class SettingDao {
   std::string get(const Db& db, std::string_view key) const;
   bool has(const Db& db, std::string_view key) const;
   // 写方法要求调用方已处于 Db::write() 事务内。
-  void set(sqlite3* conn, std::string_view key, std::string_view value) const;
+  void set(Conn& conn, std::string_view key, std::string_view value) const;
 };
 
 }  // namespace devcard

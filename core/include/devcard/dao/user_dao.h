@@ -16,20 +16,20 @@ class UserDao {
   std::vector<User> list(const Db& db) const;
   std::int64_t count(const Db& db) const;
   bool find(const Db& db, std::string_view name, User& out) const;
-  bool find(sqlite3* conn, std::string_view name, User& out) const;
+  bool find(Conn& conn, std::string_view name, User& out) const;
 
   // 写方法要求调用方已处于 Db::write() 事务内。
-  void insert(sqlite3* conn, const User& user) const;
-  bool exists(sqlite3* conn, std::string_view name) const;
-  void update_profile(sqlite3* conn, std::string_view name,
+  void insert(Conn& conn, const User& user) const;
+  bool exists(Conn& conn, std::string_view name) const;
+  void update_profile(Conn& conn, std::string_view name,
                       std::string_view display_name, std::string_view role) const;
-  void set_password(sqlite3* conn, std::string_view name,
+  void set_password(Conn& conn, std::string_view name,
                     std::string_view password_hash, bool must_change) const;
-  void record_failed_login(sqlite3* conn, std::string_view name, int failed_count,
+  void record_failed_login(Conn& conn, std::string_view name, int failed_count,
                            std::string_view locked_until) const;
-  void clear_failed_login(sqlite3* conn, std::string_view name) const;
-  void erase(sqlite3* conn, std::string_view name) const;
-  std::int64_t count_admins(sqlite3* conn) const;
+  void clear_failed_login(Conn& conn, std::string_view name) const;
+  void erase(Conn& conn, std::string_view name) const;
+  std::int64_t count_admins(Conn& conn) const;
   // 是否还有账号处于「首次登录必须改密」状态。
   bool any_must_change(const Db& db) const;
   // 本地默认账号的候选：管理员优先，其次按用户名排序取第一个。

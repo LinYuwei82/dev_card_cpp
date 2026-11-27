@@ -4,6 +4,7 @@
 #include <string>
 
 #include "devcard/error.h"
+#include "devcard/dao/dialect.h"
 
 namespace devcard {
 namespace {
@@ -48,7 +49,8 @@ std::string DeviceDao::where_clause(const DeviceQuery& query) {
       std::string group;
       for (const char* field : fields) {
         if (!group.empty()) group += " OR ";
-        group += std::string(field) + " LIKE ? ESCAPE '\\'";
+        group += std::string(field) + " " + std::string(dialect::kLikeOp) +
+                 " ? ESCAPE '\\'";
       }
       add("(" + group + ")");
     } else {
@@ -57,7 +59,7 @@ std::string DeviceDao::where_clause(const DeviceQuery& query) {
                                        return query.field == field;
                                      });
       if (!valid) throw AppError("bad_field", "不支持的关键字字段");
-      add(query.field + " LIKE ? ESCAPE '\\'");
+      add(query.field + " " + std::string(dialect::kLikeOp) + " ? ESCAPE '\\'");
     }
   }
   if (!query.name.empty()) add("dev_name = ?");
@@ -91,7 +93,7 @@ std::vector<Device> DeviceDao::list(const Db& db, const DeviceQuery& query) cons
   const int page_size = std::clamp(query.page_size, 1, 1000);
 
   std::vector<Device> devices;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     const std::string sql = std::string("SELECT ") + kColumns + " FROM device" +
                             where_clause(query) + " ORDER BY " + sort +
                             (query.desc ? " DESC" : " ASC") +
@@ -118,7 +120,7 @@ std::vector<Device> DeviceDao::list(const Db& db, const DeviceQuery& query) cons
 
 std::int64_t DeviceDao::count(const Db& db, const DeviceQuery& query) const {
   std::int64_t total = 0;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT COUNT(*) FROM device" + where_clause(query));
     bind_filters(stmt, query, 1);
     if (stmt.step()) total = stmt.i64(0);
@@ -128,11 +130,11 @@ std::int64_t DeviceDao::count(const Db& db, const DeviceQuery& query) const {
 
 bool DeviceDao::find(const Db& db, std::int64_t id, Device& out) const {
   bool found = false;
-  db.read([&](sqlite3* conn) { found = find(conn, id, out); });
+  db.read([&](Conn& conn) { found = find(conn, id, out); });
   return found;
 }
 
-bool DeviceDao::find(sqlite3* conn, std::int64_t id, Device& out) const {
+bool DeviceDao::find(Conn& conn, std::int64_t id, Device& out) const {
   Stmt stmt(conn, std::string("SELECT ") + kColumns + " FROM device WHERE id = ?");
   stmt.bind(1, id);
   if (!stmt.step()) return false;
@@ -140,7 +142,7 @@ bool DeviceDao::find(sqlite3* conn, std::int64_t id, Device& out) const {
   return true;
 }
 
-std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
+std::int64_t DeviceDao::insert(Conn& conn, Device& device) const {
   if (device.dev_name.empty() || device.location.empty() ||
       device.control_range.empty()) {
     throw AppError("invalid_device", "设备名称、位置、控制范围不能为空");
@@ -160,7 +162,7 @@ std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
       .bind(5, device.created_at)
       .bind(6, device.updated_at);
   stmt.run();
-  device.id = sqlite3_last_insert_rowid(conn);
+  device.id = stmt.last_insert_id();
   device.version = 1;
   device.updated_by.clear();
   return device.id;
@@ -168,7 +170,7 @@ std::int64_t DeviceDao::insert(sqlite3* conn, Device& device) const {
 
 // 乐观锁：版本条件写在 SQL 里，和「version+1」同一条语句。
 // 不能先读后比再写——两个请求之间仍可能插入一次提交。
-bool DeviceDao::update(sqlite3* conn, const Device& device,
+bool DeviceDao::update(Conn& conn, const Device& device,
                        std::string_view updated_by) const {
   const std::string actor(updated_by);
   Stmt stmt(conn,
@@ -185,20 +187,20 @@ bool DeviceDao::update(sqlite3* conn, const Device& device,
       .bind(8, device.id)
       .bind(9, device.version);
   stmt.run();
-  return sqlite3_changes(conn) > 0;
+  return conn.changes() > 0;
 }
 
-bool DeviceDao::erase(sqlite3* conn, std::int64_t id,
+bool DeviceDao::erase(Conn& conn, std::int64_t id,
                       std::int64_t version) const {
   Stmt stmt(conn, "DELETE FROM device WHERE id = ? AND version = ?");
   stmt.bind(1, id).bind(2, version);
   stmt.run();
-  return sqlite3_changes(conn) > 0;
+  return conn.changes() > 0;
 }
 
-void DeviceDao::erase_all(sqlite3* conn) const { exec_sql(conn, "DELETE FROM device"); }
+void DeviceDao::erase_all(Conn& conn) const { exec_sql(conn, "DELETE FROM device"); }
 
-std::int64_t DeviceDao::dedupe(sqlite3* conn,
+std::int64_t DeviceDao::dedupe(Conn& conn,
                                std::string_view updated_by) const {
   const std::string actor(updated_by);
 
@@ -233,10 +235,10 @@ std::int64_t DeviceDao::dedupe(sqlite3* conn,
             " (SELECT MIN(id) FROM device"
             "  GROUP BY dev_name, location, control_range)");
   stmt.run();
-  return sqlite3_changes(conn);
+  return conn.changes();
 }
 
-bool DeviceDao::exists_triplet(sqlite3* conn, std::string_view name,
+bool DeviceDao::exists_triplet(Conn& conn, std::string_view name,
                                std::string_view location,
                                std::string_view control_range) const {
   Stmt stmt(conn,
@@ -248,7 +250,7 @@ bool DeviceDao::exists_triplet(sqlite3* conn, std::string_view name,
 
 std::vector<std::string> DeviceDao::distinct_names(const Db& db) const {
   std::vector<std::string> values;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT DISTINCT dev_name FROM device ORDER BY dev_name");
     while (stmt.step()) values.push_back(stmt.text(0));
   });
@@ -257,7 +259,7 @@ std::vector<std::string> DeviceDao::distinct_names(const Db& db) const {
 
 std::vector<std::string> DeviceDao::distinct_locations(const Db& db) const {
   std::vector<std::string> values;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT DISTINCT location FROM device ORDER BY location");
     while (stmt.step()) values.push_back(stmt.text(0));
   });

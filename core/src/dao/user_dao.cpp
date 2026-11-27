@@ -25,7 +25,7 @@ void UserDao::read_row(Stmt& stmt, User& user) {
 
 std::vector<User> UserDao::list(const Db& db) const {
   std::vector<User> users;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, std::string("SELECT ") + kColumns +
                         " FROM app_user ORDER BY user_name");
     while (stmt.step()) {
@@ -39,7 +39,7 @@ std::vector<User> UserDao::list(const Db& db) const {
 
 std::int64_t UserDao::count(const Db& db) const {
   std::int64_t total = 0;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT COUNT(*) FROM app_user");
     if (stmt.step()) total = stmt.i64(0);
   });
@@ -48,11 +48,11 @@ std::int64_t UserDao::count(const Db& db) const {
 
 bool UserDao::find(const Db& db, std::string_view name, User& out) const {
   bool found = false;
-  db.read([&](sqlite3* conn) { found = find(conn, name, out); });
+  db.read([&](Conn& conn) { found = find(conn, name, out); });
   return found;
 }
 
-bool UserDao::find(sqlite3* conn, std::string_view name, User& out) const {
+bool UserDao::find(Conn& conn, std::string_view name, User& out) const {
   Stmt stmt(conn, std::string("SELECT ") + kColumns +
                       " FROM app_user WHERE user_name = ?");
   stmt.bind(1, name);
@@ -61,7 +61,7 @@ bool UserDao::find(sqlite3* conn, std::string_view name, User& out) const {
   return true;
 }
 
-void UserDao::insert(sqlite3* conn, const User& user) const {
+void UserDao::insert(Conn& conn, const User& user) const {
   Stmt stmt(conn,
             "INSERT INTO app_user(user_name,password_hash,display_name,role,"
             "must_change_password,failed_count,locked_until,created_at,updated_at)"
@@ -77,13 +77,13 @@ void UserDao::insert(sqlite3* conn, const User& user) const {
   stmt.run();
 }
 
-bool UserDao::exists(sqlite3* conn, std::string_view name) const {
+bool UserDao::exists(Conn& conn, std::string_view name) const {
   Stmt stmt(conn, "SELECT 1 FROM app_user WHERE user_name = ? LIMIT 1");
   stmt.bind(1, name);
   return stmt.step();
 }
 
-void UserDao::update_profile(sqlite3* conn, std::string_view name,
+void UserDao::update_profile(Conn& conn, std::string_view name,
                              std::string_view display_name,
                              std::string_view role) const {
   Stmt stmt(conn,
@@ -93,7 +93,7 @@ void UserDao::update_profile(sqlite3* conn, std::string_view name,
   stmt.run();
 }
 
-void UserDao::set_password(sqlite3* conn, std::string_view name,
+void UserDao::set_password(Conn& conn, std::string_view name,
                            std::string_view password_hash,
                            bool must_change) const {
   Stmt stmt(conn,
@@ -107,7 +107,7 @@ void UserDao::set_password(sqlite3* conn, std::string_view name,
   stmt.run();
 }
 
-void UserDao::record_failed_login(sqlite3* conn, std::string_view name,
+void UserDao::record_failed_login(Conn& conn, std::string_view name,
                                   int failed_count,
                                   std::string_view locked_until) const {
   Stmt stmt(conn,
@@ -123,7 +123,7 @@ void UserDao::record_failed_login(sqlite3* conn, std::string_view name,
   stmt.run();
 }
 
-void UserDao::clear_failed_login(sqlite3* conn, std::string_view name) const {
+void UserDao::clear_failed_login(Conn& conn, std::string_view name) const {
   Stmt stmt(conn,
             "UPDATE app_user SET failed_count = 0, locked_until = NULL,"
             " updated_at = ? WHERE user_name = ?");
@@ -131,13 +131,13 @@ void UserDao::clear_failed_login(sqlite3* conn, std::string_view name) const {
   stmt.run();
 }
 
-void UserDao::erase(sqlite3* conn, std::string_view name) const {
+void UserDao::erase(Conn& conn, std::string_view name) const {
   Stmt stmt(conn, "DELETE FROM app_user WHERE user_name = ?");
   stmt.bind(1, name);
   stmt.run();
 }
 
-std::int64_t UserDao::count_admins(sqlite3* conn) const {
+std::int64_t UserDao::count_admins(Conn& conn) const {
   std::int64_t total = 0;
   Stmt stmt(conn, "SELECT COUNT(*) FROM app_user WHERE role = 'admin'");
   if (stmt.step()) total = stmt.i64(0);
@@ -146,7 +146,7 @@ std::int64_t UserDao::count_admins(sqlite3* conn) const {
 
 bool UserDao::any_must_change(const Db& db) const {
   bool found = false;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT 1 FROM app_user WHERE must_change_password = 1 LIMIT 1");
     found = stmt.step();
@@ -156,7 +156,7 @@ bool UserDao::any_must_change(const Db& db) const {
 
 std::string UserDao::first_user_name(const Db& db) const {
   std::string name;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT user_name FROM app_user"
               " ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, user_name"
