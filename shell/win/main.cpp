@@ -35,6 +35,7 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 #include "win_encoding/encoding.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
@@ -56,6 +57,16 @@ using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
 namespace {
+
+// 启动耗时打点：从 wWinMain 入口起算的累计毫秒，与 server 侧 [startup] 日志同格式。
+// GUI 启动无控制台时 fprintf 是空操作，不影响正常用户。
+std::chrono::steady_clock::time_point g_startup_t0;
+void StartupLog(const char* name) {
+  const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - g_startup_t0)
+                        .count();
+  std::fprintf(stderr, "[startup] %s = %.1fms(cum)\n", name, ms);
+}
 
 constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
 constexpr wchar_t kWindowTitle[] = L"设备管理卡";
@@ -879,6 +890,17 @@ bool CreateWebView() {
                   InjectShim();
 
                   const std::wstring url = g.origin + L"/";
+                  EventRegistrationToken nav_token;
+                  g.webview->add_NavigationCompleted(
+                      Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                          [](ICoreWebView2*,
+                             ICoreWebView2NavigationCompletedEventArgs*)
+                              -> HRESULT {
+                            StartupLog("webview_navigation_completed");
+                            return S_OK;
+                          })
+                          .Get(),
+                      &nav_token);
                   g.webview->Navigate(url.c_str());
                   return S_OK;
                 });
@@ -901,6 +923,7 @@ bool CreateWebView() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
+  g_startup_t0 = std::chrono::steady_clock::now();
   // 从 cmd 启动或重定向时，stderr 里的中文按 UTF-8 写出，需要把控制台代码页切到 UTF-8；
   // 纯 GUI 启动（无控制台）时本调用是空操作。
   win_encoding::init_console();
@@ -947,6 +970,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     options.port = 18080;
     g_server = devcard::start_server(options);
     g.data_dir = options.data_dir;
+    StartupLog("shell_start_server");
   } catch (const std::exception& error) {
     Fatal(Widen(error.what()));
     CoUninitialize();
@@ -1006,6 +1030,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
   }
   ShowWindow(g.hwnd, SW_SHOW);
   UpdateWindow(g.hwnd);
+  StartupLog("shell_window_visible");
 
   // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
   // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。

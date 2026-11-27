@@ -79,6 +79,18 @@ long long steady_seconds() {
       .count();
 }
 
+// 启动耗时打点：每过一个阶段调一次，向 stderr 输出一行
+// `[startup] 名称 = X.Xms`（距上次打点的间隔）并重置基准。
+// 常驻而非环境变量开关：总共十来行、只在启动路径，验收改前/改后直接对比。
+void log_startup(const char* name, std::chrono::steady_clock::time_point& t) {
+  const double ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - t)
+          .count();
+  std::cerr << "[startup] " << name << " = " << ms << "ms" << std::endl;
+  t = std::chrono::steady_clock::now();
+}
+
 struct Session {
   std::string user;
   std::int64_t last_seen_epoch;  // Unix epoch 秒，方便 JSON 持久化
@@ -926,6 +938,7 @@ bool ServerHandle::stop_requested() const {
 }
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
+  auto t_startup = std::chrono::steady_clock::now();
   // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
   // 这里比对的是「直读 web/ 源文件」的字节数与 SHA256，不是生成出来的 .cpp。
   // --web-dir 开发态不用内嵌资源，自然不查；但仍要求目录里有 index.html，
@@ -940,6 +953,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                    "--web-dir 下找不到 index.html：" +
                        path_to_utf8(options.web_dir));
   }
+  log_startup("web_assets_check", t_startup);
 
   auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
   ServerState& state = *handle->impl_;
@@ -958,6 +972,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
   cleanup_update_partials(options.data_dir / "updates");
+  log_startup("data_dir+cleanup", t_startup);
 
   // 编排层唯一状态机：地址与公钥用编译期内嵌值，通道固定 stable。
   // 状态落数据目录 update-state.json；prefetch/auto_check 开关先随状态持久化，
@@ -971,9 +986,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     state.update_service =
         std::make_unique<UpdateService>(std::move(update_config));
   }
+  log_startup("update_service_ctor", t_startup);
 
   // 恢复上次持久化的会话：进程重启后 WebView2 cookie 还在，server 进程内存空了。
   load_sessions(state);
+  log_startup("load_sessions", t_startup);
 
   // 多实例防护：同一数据目录（规范化后）只能有一个 server 持有写权。
   // 必须在打开数据库之前拿到锁，否则两个进程会先各自打开库再互相覆盖。
@@ -982,6 +999,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   if (!state.instance_guard) {
     throw AppError("instance_in_use", guard_error);
   }
+  log_startup("instance_guard", t_startup);
 
   state.db = std::make_unique<Db>(options.data_dir / "devicedb.db");
   migrate(*state.db);
@@ -1015,6 +1033,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.users = std::make_unique<UserService>(*state.db);
   state.local_token = random_token();
   state.server.set_payload_max_length(8 * 1024 * 1024);
+  log_startup("db_open_migrate_seed", t_startup);
 #ifdef _WIN32
   // Windows 的 SO_REUSEADDR 允许第二个进程绑同一端口，两边会随机抢连接；
   // 换成 SO_EXCLUSIVEADDRUSE，让端口冲突在 bind 阶段就明确失败。
@@ -1061,6 +1080,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
       std::cerr << "警告：解析子集字体 cmap 失败：" << state.coverage.error() << std::endl;
     }
   }
+  log_startup("fonts_verify", t_startup);
 
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;
@@ -2599,6 +2619,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   }
 
+  log_startup("routes_register", t_startup);
   if (!state.server.bind_to_port(options.host, options.port)) {
     throw AppError(
         "port_in_use",
@@ -2608,6 +2629,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
             "，或查看占用：netstat -ano | findstr :" +
             std::to_string(options.port));
   }
+  log_startup("bind", t_startup);
   handle->port_ = options.port;
   // 锁文件回写监听地址：第二个实例失败时能直接报出占用者在哪个地址上。
   state.instance_guard->set_owner_info(
@@ -2634,6 +2656,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
   // 监听起来后再起更新循环：首查延迟 30s，届时端口已就绪。
   if (state.update_service) state.update_service->start();
+  log_startup("listen_thread+update_start", t_startup);
   return handle;
 }
 

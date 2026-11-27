@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <chrono>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -20,6 +21,15 @@
 #include "devcard/server.h"
 
 namespace {
+
+// 启动耗时打点：从 main 入口起算的累计毫秒，与 server 侧 [startup] 日志同格式。
+std::chrono::steady_clock::time_point g_startup_t0;
+void StartupLog(const char* name) {
+  const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - g_startup_t0)
+                        .count();
+  NSLog(@"[startup] %s = %.1fms(cum)", name, ms);
+}
 
 // 单实例：锁文件放在数据目录，第二个进程拿不到锁就激活已有窗口后退出。
 // 用独立的 shell.lock，避免和服务端自己的实例锁互相影响。
@@ -643,6 +653,7 @@ API_AVAILABLE(macos(11.0))
 
 
 int main(int argc, const char* argv[]) {
+  g_startup_t0 = std::chrono::steady_clock::now();
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -671,6 +682,7 @@ int main(int argc, const char* argv[]) {
       show_error(error.what());
       return 1;
     }
+    StartupLog("shell_start_server");
 
     NSMenu* menu = [[NSMenu alloc] init];
     NSMenuItem* app_item = [[NSMenuItem alloc] init];
@@ -733,6 +745,7 @@ int main(int argc, const char* argv[]) {
     web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     DownloadHandler* download_handler = [[DownloadHandler alloc] init];
     download_handler.window = window;
+    download_handler.onDidFinish = ^{ StartupLog("webview_did_finish"); };
     web.navigationDelegate = download_handler;
     web.UIDelegate = download_handler;
     window.contentView = web;
@@ -854,6 +867,7 @@ int main(int argc, const char* argv[]) {
 
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    StartupLog("shell_window_visible");
     [NSApp run];
   }
   return 0;
