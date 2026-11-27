@@ -37,6 +37,7 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <cwchar>
 #include <cwctype>
 #include <exception>
@@ -65,7 +66,9 @@ void StartupLog(const char* name) {
   const double ms = std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - g_startup_t0)
                         .count();
-  std::fprintf(stderr, "[startup] %s = %.1fms(cum)\n", name, ms);
+  // 用 cerr+endl 而非 fprintf：MSVC 重定向到文件时 fprintf(stderr) 可能滞留
+  // 缓冲，验收脚本 taskkill 强杀会丢尾部日志。
+  std::cerr << "[startup] " << name << " = " << ms << "ms(cum)" << std::endl;
 }
 
 // 启动 splash：纯内联 HTML，不依赖 server 与网络。
@@ -831,6 +834,7 @@ struct ServerStartupResult {
 
 void NavigateToApp() {
   if (!g.webview) return;
+  StartupLog("webview_navigate_issued");
   const std::wstring url = g.origin + L"/";
   g.webview->Navigate(url.c_str());
 }
@@ -960,6 +964,7 @@ bool CreateWebView() {
                   if (g.server_ready) {
                     NavigateToApp();
                   } else {
+                    StartupLog("webview_splash_shown");
                     g.webview->NavigateToString(kSplashHtml);
                   }
                   return S_OK;
