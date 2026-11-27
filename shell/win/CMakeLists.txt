@@ -47,6 +47,7 @@ target_link_libraries(DevCard PRIVATE
     uuid
     shell32
     shlwapi
+    comctl32
     version
     user32
     gdi32

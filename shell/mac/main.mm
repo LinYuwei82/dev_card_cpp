@@ -21,6 +21,52 @@
 
 #include "devcard/paths.h"
 #include "devcard/server.h"
+#include "devcard/update_manifest.h"
+
+// 「关于」面板：版本/构建号来自编译期注入（VERSION.txt + tag 序号），
+// 与 server /api/version、更新链路同源。链接按钮打开 OSS 手册/更新记录与 GitHub 发布页。
+@interface DevCardAboutHelper : NSObject
+- (void)showAbout:(id)sender;
+@end
+
+@implementation DevCardAboutHelper
+- (void)showAbout:(id)sender {
+  (void)sender;
+  const std::string ver = devcard::current_product_version();
+  const uint64_t build = devcard::compiled_build_number();
+  NSString* version_line =
+      build > 0
+          ? [NSString stringWithFormat:@"版本 v%@（构建 %llu）",
+                                       [NSString stringWithUTF8String:ver.c_str()],
+                                       (unsigned long long)build]
+          : [NSString stringWithFormat:@"版本 v%@",
+                                        [NSString stringWithUTF8String:ver.c_str()]];
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.icon = NSApp.applicationIconImage;
+  alert.messageText = @"DevCard 设备管理卡";
+  alert.informativeText =
+      [NSString stringWithFormat:@"%@\n物业设备台账与设备管理卡打印工具\n\n© 2026 安业物业",
+                                 version_line];
+  [alert addButtonWithTitle:@"好"];
+  [alert addButtonWithTitle:@"更新记录"];
+  [alert addButtonWithTitle:@"用户手册"];
+  [alert addButtonWithTitle:@"发布页"];
+  NSModalResponse response = [alert runModal];
+  NSString* url = nil;
+  if (response == NSAlertSecondButtonReturn) {
+    url = [NSString stringWithFormat:
+               @"https://dl.xiaotu.online/devcard/release-notes-%@.html",
+               [NSString stringWithUTF8String:ver.c_str()]];
+  } else if (response == NSAlertThirdButtonReturn) {
+    url = @"https://dl.xiaotu.online/devcard/manual.pdf";
+  } else if (response == NSAlertFirstButtonReturn + 3) {  // 第 4 个按钮（SDK 无 Fourth 常量）
+    url = @"https://github.com/LinYuwei82/dev_card_cpp/releases";
+  }
+  if (url) {
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
+  }
+}
+@end
 
 namespace {
 
@@ -687,6 +733,15 @@ int main(int argc, const char* argv[]) {
     NSMenuItem* app_item = [[NSMenuItem alloc] init];
     [menu addItem:app_item];
     NSMenu* app_menu = [[NSMenu alloc] init];
+
+    // 关于 DevCard：系统惯例放应用菜单首位。target 用常驻实例，随进程存活。
+    static DevCardAboutHelper* g_about_handler = [DevCardAboutHelper new];
+    NSMenuItem* about_item =
+        [app_menu addItemWithTitle:@"关于 DevCard"
+                             action:@selector(showAbout:)
+                      keyEquivalent:@""];
+    about_item.target = g_about_handler;
+    [app_menu addItem:[NSMenuItem separatorItem]];
 
     // Sparkle 自动更新菜单项：target 先占位，updaterController 初始化后再绑定。
     // updaterController 为 nil 时（开发期无 SUFeedURL / SUPublicEDKey）把它隐藏。
