@@ -5,6 +5,7 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import <WebKit/WebKit.h>
 
 #include <string>
 
@@ -24,3 +25,7 @@ void DevCardShowFatalError(const std::string& message);
 // A4、零边距、100% 缩放；分页由页面里的 @page 控制。
 // 返回值是 autoreleased 的 copy，调用方不要额外 release。
 NSPrintInfo* DevCardA4PrintInfo(void);
+
+// 页面通知：调用 window.__devcardNotify(message, kind)，kind 为 nil 时表示普通信息。
+// 原先挂在 PrintBridge 上，打印与桥分发共用，M2 起提到 shell_state。
+void DevCardNotify(WKWebView* webView, NSString* message, NSString* kind);

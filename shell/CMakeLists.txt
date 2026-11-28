@@ -5,10 +5,13 @@ set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources")
 
 # M1：shell_state 承载启动期共享设施，about_panel 承载「关于」面板与常驻单例。
+# M2：download_handler 承载导航/下载/JS 面板，print_export 承载导出与打印通道。
 add_executable(DevCard MACOSX_BUNDLE
     mac/main.mm
     mac/shell_state.mm
     mac/about_panel.mm
+    mac/download_handler.mm
+    mac/print_export.mm
     mac/updater.mm
     ${DEVCARD_APP_ICON})
 target_include_directories(DevCard PRIVATE

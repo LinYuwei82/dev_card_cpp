@@ -76,3 +76,21 @@ NSPrintInfo* DevCardA4PrintInfo(void) {
   // 这里 autorelease 掉 copy 的所有权，避免每次打印/导出泄漏一份。
   return [info autorelease];
 }
+
+// 把字符串安全嵌进 JS 调用：借 JSON 序列化转义，再去掉外层方括号。
+// 与原先 PrintBridge 里的 jsLiteral: 完全一致（含 MRC 所有权语义）。
+static NSString* DevCardJsLiteral(NSString* value) {
+  NSData* data = [NSJSONSerialization dataWithJSONObject:@[ value ?: @"" ]
+                                                 options:0
+                                                   error:nil];
+  NSString* json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  return [json substringWithRange:NSMakeRange(1, json.length - 2)];
+}
+
+void DevCardNotify(WKWebView* webView, NSString* message, NSString* kind) {
+  if (!webView) return;
+  NSString* js = [NSString stringWithFormat:
+      @"window.__devcardNotify && window.__devcardNotify(%@, %@);",
+      kind ? DevCardJsLiteral(kind) : @"null", DevCardJsLiteral(message)];
+  [webView evaluateJavaScript:js completionHandler:nil];
+}

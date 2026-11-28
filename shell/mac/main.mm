@@ -23,160 +23,18 @@
 #include "devcard/update_manifest.h"
 
 #import "about_panel.h"
+#import "download_handler.h"
+#import "print_export.h"
 #import "shell_state.h"
 
-
-// WKWebView 默认不处理 <a download> / Content-Disposition 下载，导出会静默失败。
-// 这里把下载接到系统「下载」目录，中文文件名原样保留。
-API_AVAILABLE(macos(11.0))
-@interface DownloadHandler : NSObject <WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
-@property(nonatomic, copy) void (^onDidFinish)(void);
-// 文件选择面板挂在窗口上（sheet），没有窗口时退回应用级模态。
-@property(nonatomic, assign) NSWindow* window;
-@end
-
-@implementation DownloadHandler
-
-// JS 的 alert/confirm 只有实现这几个回调才会真的弹出；不实现时 WebKit 直接
-// 当作用户取消（confirm 返回 false、alert 什么都不显示），删除账号 / 恢复备份
-// 就会变成「点了没反应」。统一挂成窗口 sheet，modal 结束再回报结果。
-- (void)presentPanelAlert:(NSAlert*)alert
-               completion:(void (^)(NSModalResponse))completion {
-  if (self.window != nil) {
-    [alert beginSheetModalForWindow:self.window completionHandler:completion];
-  } else {
-    completion([alert runModal]);
-  }
-}
-
-// 确认按钮按调用点语义命名：页面里的 confirm 文案已写明动作，这里只做识别，
-// 认不出时退回「确定」。取消永远是默认按钮，回车不会误执行破坏性操作。
-static NSString* DevCardConfirmActionTitle(NSString* message) {
-  if ([message rangeOfString:@"删除"].location != NSNotFound) return @"删除";
-  if ([message rangeOfString:@"覆盖"].location != NSNotFound) return @"覆盖";
-  if ([message rangeOfString:@"恢复"].location != NSNotFound) return @"恢复";
-  return @"确定";
-}
-
-- (void)webView:(WKWebView*)webView
-    runJavaScriptAlertPanelWithMessage:(NSString*)message
-                      initiatedByFrame:(WKFrameInfo*)frame
-                     completionHandler:(void (^)(void))completionHandler
-    API_AVAILABLE(macos(10.12)) {
-  NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = @"设备管理卡";
-  alert.informativeText = message.length > 0 ? message : @"";
-  [alert addButtonWithTitle:@"好"];
-  [self presentPanelAlert:alert
-               completion:^(NSModalResponse response) { completionHandler(); }];
-}
-
-- (void)webView:(WKWebView*)webView
-    runJavaScriptConfirmPanelWithMessage:(NSString*)message
-                        initiatedByFrame:(WKFrameInfo*)frame
-                       completionHandler:(void (^)(BOOL))completionHandler
-    API_AVAILABLE(macos(10.12)) {
-  NSString* action = DevCardConfirmActionTitle(message);
-  NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = @"确认操作";
-  alert.informativeText = message.length > 0 ? message : @"";
-  [alert addButtonWithTitle:@"取消"];
-  [alert addButtonWithTitle:action];
-  [self presentPanelAlert:alert completion:^(NSModalResponse response) {
-    completionHandler(response == NSAlertSecondButtonReturn);
-  }];
-}
-
-// 导入用的文件选择：WKWebView 不实现这个方法时，点 <input type=file> 完全无反应
-// （既不弹面板也不报错）。面板由壳层出，选中后把 URL 交回 WebKit，页面照常收到
-// change 事件再上传给服务端；取消则回 nil，页面什么也不做。
-- (void)webView:(WKWebView*)webView
-    runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
-              initiatedByFrame:(WKFrameInfo*)frame
-             completionHandler:(void (^)(NSArray<NSURL*>* _Nullable))completionHandler
-    API_AVAILABLE(macos(10.12)) {
-  NSOpenPanel* panel = [NSOpenPanel openPanel];
-  panel.title = @"选择要导入的设备台账";
-  panel.message = @"仅支持 .xlsx（导入模板由「下载模板」生成）";
-  panel.prompt = @"导入";
-  panel.canChooseFiles = YES;
-  panel.canChooseDirectories = NO;
-  panel.allowsMultipleSelection = NO;
-  panel.allowsOtherFileTypes = NO;
-  // 服务端只解析 xlsx（xlsx::read），放 csv 进来只会选完再报错。
-  UTType* xlsx = [UTType typeWithFilenameExtension:@"xlsx"];
-  if (xlsx != nil) panel.allowedContentTypes = @[ xlsx ];
-
-  void (^done)(NSModalResponse) = ^(NSModalResponse result) {
-    NSURL* url = (result == NSModalResponseOK) ? panel.URL : nil;
-    if (url != nil && url.path.length > 0) {
-      completionHandler(@[ url ]);
-    } else {
-      completionHandler(nil);
-    }
-  };
-  if (self.window != nil) {
-    [panel beginSheetModalForWindow:self.window completionHandler:done];
-  } else {
-    done([panel runModal]);
-  }
-}
-
-- (void)webView:(WKWebView*)webView
-    decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
-                    preferences:(WKWebpagePreferences*)preferences
-            decisionHandler:(void (^)(WKNavigationActionPolicy,
-                                      WKWebpagePreferences*))decisionHandler {
-  if (navigationAction.shouldPerformDownload) {
-    decisionHandler(WKNavigationActionPolicyDownload, preferences);
-    return;
-  }
-  decisionHandler(WKNavigationActionPolicyAllow, preferences);
-}
-
-- (void)webView:(WKWebView*)webView
-    navigationAction:(WKNavigationAction*)navigationAction
-    didBecomeDownload:(WKDownload*)download API_AVAILABLE(macos(11.3)) {
-  download.delegate = self;
-}
-
-- (void)webView:(WKWebView*)webView
-    navigationResponse:(WKNavigationResponse*)navigationResponse
-     didBecomeDownload:(WKDownload*)download API_AVAILABLE(macos(11.3)) {
-  download.delegate = self;
-}
-
-- (void)download:(WKDownload*)download
-    decideDestinationUsingResponse:(NSURLResponse*)response
-                 suggestedFilename:(NSString*)suggestedFilename
-              completionHandler:(void (^)(NSURL* _Nullable))completionHandler
-    API_AVAILABLE(macos(11.3)) {
-  NSString* name = suggestedFilename.length > 0 ? suggestedFilename : @"download.xlsx";
-  NSURL* directory = [[NSFileManager defaultManager]
-      URLForDirectory:NSDownloadsDirectory
-             inDomain:NSUserDomainMask
-    appropriateForURL:nil
-               create:YES
-                error:nil];
-  completionHandler([directory URLByAppendingPathComponent:name]);
-}
-
-- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation {
-  if (self.onDidFinish) self.onDidFinish();
-}
-
-@end
 
 // 打印双通道：导出 PDF 与直接打印共用同一份打印 DOM，只改变输出目标。
 API_AVAILABLE(macos(11.0))
 @interface PrintBridge : NSObject <WKScriptMessageHandler, NSWindowDelegate, NSApplicationDelegate>
 @property(nonatomic, assign) WKWebView* webView;
 @property(nonatomic, assign) NSWindow* window;
-// 自动化验证：设置后跳过保存面板，直接把 PDF 写到该路径。
-@property(nonatomic, copy) NSString* automaticPdfPath;
-@property(nonatomic, copy) void (^onExportResult)(BOOL ok, NSString* message);
-// 打印期间持有 PDFDocument，避免任务释放后文档被回收。
-@property(nonatomic, retain) PDFDocument* printDocument;
+// 导出/打印通道（M2 起拆到 print_export.mm，桥只做转发）。
+@property(nonatomic, assign) DevCardPrintBridge* printBridge;
 // Sparkle 自更新桥（从 shell/mac/updater.h 引入；桥内部持有 controller + delegate）。
 @property(nonatomic, strong) DevCardUpdaterBridge* updaterBridge;
 // 「关于 DevCard」面板处理器（状态栏版本号点击走 showAbout 时复用）。
@@ -205,9 +63,9 @@ API_AVAILABLE(macos(11.0))
   NSDictionary* body = (NSDictionary*)message.body;
   NSString* action = body[@"action"];
   if ([action isEqualToString:@"exportPdf"]) {
-    [self exportPdfNamed:body[@"filename"]];
+    [self.printBridge exportPdfNamed:body[@"filename"]];
   } else if ([action isEqualToString:@"print"]) {
-    [self printCards];
+    [self.printBridge printCards];
   } else if ([action isEqualToString:@"saveFile"]) {
     [self saveFileNamed:body[@"filename"]
                   title:body[@"title"]
@@ -362,236 +220,8 @@ API_AVAILABLE(macos(11.0))
   [self.webView evaluateJavaScript:js completionHandler:nil];
 }
 
-- (void)exportPdfNamed:(NSString*)suggestedName {  NSString* name = suggestedName.length > 0 ? suggestedName : @"设备管理卡.pdf";
-  // 先把页面切成 1:1、无工具栏的导出布局，再逐张 A4 截取。
-  [self.webView
-      evaluateJavaScript:@"window.__devcardExportLayout ? window.__devcardExportLayout() : null"
-       completionHandler:^(id result, NSError* error) {
-         NSDictionary* layout =
-             [result isKindOfClass:[NSDictionary class]] ? result : nil;
-         // 页面侧字体没就绪时只回一个 error，不返回 rects：这里必须中止，不能落到系统字体。
-         if ([layout[@"error"] length] > 0) {
-           [self finishExport:NO message:layout[@"error"]];
-           return;
-         }
-         NSArray* rects = layout[@"rects"];
-         if (rects.count == 0) {
-           [self finishExport:NO message:@"没有可导出的卡片"];
-           return;
-         }
-
-         NSURL* url = nil;
-         if (self.automaticPdfPath.length > 0) {
-           url = [NSURL fileURLWithPath:self.automaticPdfPath];
-         } else {
-           NSSavePanel* panel = [NSSavePanel savePanel];
-           panel.title = @"导出卡片 PDF";
-           panel.nameFieldStringValue = name;
-           panel.allowedContentTypes = @[ UTTypePDF ];
-           panel.canCreateDirectories = YES;
-           if ([panel runModal] != NSModalResponseOK) {
-             [self.webView evaluateJavaScript:@"window.__devcardExportDone && window.__devcardExportDone()"
-                                   completionHandler:nil];
-             [self finishExport:NO message:@"已取消导出"];
-             return;
-           }
-           url = panel.URL;
-         }
-
-         NSLog(@"[print] 导出布局 sheets=%lu", (unsigned long)rects.count);
-         [self buildPdfFromRects:rects
-                      completion:^(NSData* pdf, NSInteger pages, NSString* error) {
-                        if (pdf.length == 0) {
-                          [self finishExport:NO message:error ?: @"导出 PDF 失败"];
-                          return;
-                        }
-                        if (![pdf writeToURL:url atomically:YES]) {
-                          [self finishExport:NO message:@"导出 PDF 失败（无法写入目标文件）"];
-                          return;
-                        }
-                        [self finishExport:YES
-                                   message:[NSString
-                                               stringWithFormat:@"已导出 %ld 页 PDF：%@",
-                                                                (long)pages, url.path]];
-                      }];
-       }];
-}
-
-// 逐张截取打印页，再合成一个 A4 PDF；导出与直接打印复用同一份数据。
-- (void)buildPdfFromRects:(NSArray*)rects
-               completion:(void (^)(NSData* pdf, NSInteger pages, NSString* error))completion {
-  [self captureRects:rects index:0 collected:[NSMutableArray array] completion:completion];
-}
-
-- (void)captureRects:(NSArray*)rects
-               index:(NSInteger)index
-           collected:(NSMutableArray*)collected
-          completion:(void (^)(NSData* pdf, NSInteger pages, NSString* error))completion {
-  if (index >= (NSInteger)rects.count) {
-    [self.webView evaluateJavaScript:@"window.__devcardExportDone && window.__devcardExportDone()"
-                          completionHandler:nil];
-    NSString* failure = nil;
-    NSData* pdf = [self pdfDataFromPages:collected error:&failure];
-    completion(pdf, (NSInteger)collected.count, failure);
-    return;
-  }
-
-  NSDictionary* rect = rects[index];
-  WKPDFConfiguration* config = [[WKPDFConfiguration alloc] init];
-  config.rect = CGRectMake([rect[@"x"] doubleValue], [rect[@"y"] doubleValue],
-                           [rect[@"width"] doubleValue],
-                           [rect[@"height"] doubleValue]);
-  [self.webView
-      createPDFWithConfiguration:config
-               completionHandler:^(NSData* data, NSError* error) {
-                 if (data.length == 0) {
-                   [self.webView
-                       evaluateJavaScript:@"window.__devcardExportDone && window.__devcardExportDone()"
-                            completionHandler:nil];
-                   completion(nil, 0, error.localizedDescription ?: @"导出 PDF 失败（无数据）");
-                   return;
-                 }
-                 [collected addObject:data];
-                 [self captureRects:rects
-                              index:index + 1
-                          collected:collected
-                         completion:completion];
-               }];
-  [config release];
-}
-
-// 每张截取结果是 210mm × 297mm（CSS px），按 A4 点尺寸缩放后逐页写入内存。
-- (NSData*)pdfDataFromPages:(NSArray*)pages error:(NSString**)error {
-  const CGFloat a4Width = 595.276;
-  const CGFloat a4Height = 841.89;
-  CGRect media_box = CGRectMake(0, 0, a4Width, a4Height);
-
-  CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
-  CGDataConsumerRef consumer = CGDataConsumerCreateWithCFData(data);
-  CGContextRef context = CGPDFContextCreate(consumer, &media_box, NULL);
-  CGDataConsumerRelease(consumer);
-  if (!context) {
-    CFRelease(data);
-    if (error) *error = @"导出 PDF 失败（无法创建 PDF 上下文）";
-    return nil;
-  }
-
-  for (NSData* page_data in pages) {
-    CGDataProviderRef provider =
-        CGDataProviderCreateWithCFData((__bridge CFDataRef)page_data);
-    CGPDFDocumentRef document = CGPDFDocumentCreateWithProvider(provider);
-    CGDataProviderRelease(provider);
-    CGPDFPageRef page = document ? CGPDFDocumentGetPage(document, 1) : NULL;
-    if (!page) {
-      if (document) CGPDFDocumentRelease(document);
-      CGPDFContextClose(context);
-      CGContextRelease(context);
-      CFRelease(data);
-      if (error) *error = @"导出 PDF 失败（无法解析 PDF 数据）";
-      return nil;
-    }
-
-    const CGRect capture = CGPDFPageGetBoxRect(page, kCGPDFMediaBox);
-    const CGFloat scale = a4Width / capture.size.width;
-    CGPDFContextBeginPage(context, NULL);
-    CGContextSaveGState(context);
-    CGContextScaleCTM(context, scale, scale);
-    CGContextDrawPDFPage(context, page);
-    CGContextRestoreGState(context);
-    CGPDFContextEndPage(context);
-
-    CGPDFDocumentRelease(document);
-  }
-
-  CGPDFContextClose(context);
-  CGContextRelease(context);
-  return [(__bridge NSData*)data autorelease];
-}
-
-- (void)finishExport:(BOOL)ok message:(NSString*)message {
-  NSLog(@"[print] %@", message);
-  [self notify:message kind:ok ? nil : @"error"];
-  if (self.onExportResult) self.onExportResult(ok, message);
-}
-
-- (void)printCards {
-  // 没装打印机时打印面板会一直等不到纸张尺寸，先给出明确提示。
-  NSString* printer_name = [NSPrintInfo.sharedPrintInfo.printer.name
-      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-  if (printer_name.length == 0) {
-    [self notify:@"系统未添加打印机，请先在「系统设置 › 打印机与扫描仪」中添加，或改用导出 PDF"
-            kind:@"error"];
-    return;
-  }
-
-  // 直接打印复用导出 PDF 的同一份 A4 数据，避免 WebKit 打印会话的版式差异。
-  [self.webView
-      evaluateJavaScript:@"window.__devcardExportLayout ? window.__devcardExportLayout() : null"
-       completionHandler:^(id result, NSError* error) {
-         NSDictionary* layout =
-             [result isKindOfClass:[NSDictionary class]] ? result : nil;
-         if ([layout[@"error"] length] > 0) {
-           [self notify:layout[@"error"] kind:@"error"];
-           return;
-         }
-         NSArray* rects = layout[@"rects"];
-         if (rects.count == 0) {
-           [self notify:@"没有可打印的卡片" kind:@"error"];
-           return;
-         }
-         [self buildPdfFromRects:rects
-                      completion:^(NSData* pdf, NSInteger pages, NSString* error) {
-                        if (pdf.length == 0) {
-                          [self notify:error ?: @"无法生成打印数据" kind:@"error"];
-                          return;
-                        }
-                        PDFDocument* document = [[PDFDocument alloc] initWithData:pdf];
-                        if (!document) {
-                          [self notify:@"无法生成打印数据" kind:@"error"];
-                          return;
-                        }
-                        NSPrintOperation* operation =
-                            [document printOperationForPrintInfo:DevCardA4PrintInfo()
-                                                    scalingMode:kPDFPrintPageScaleNone
-                                                     autoRotate:NO];
-                        if (!operation) {
-                          [self notify:@"无法创建打印任务" kind:@"error"];
-                          return;
-                        }
-                        self.printDocument = document;
-                        operation.showsPrintPanel = YES;
-                        operation.showsProgressPanel = YES;
-                        [operation
-                            runOperationModalForWindow:self.window
-                                              delegate:self
-                                        didRunSelector:
-                                            @selector(printOperationDidRun:success:contextInfo:)
-                                           contextInfo:NULL];
-                      }];
-       }];
-}
-
-- (void)printOperationDidRun:(NSPrintOperation*)operation
-                     success:(BOOL)success
-                 contextInfo:(void*)contextInfo {
-  self.printDocument = nil;
-  if (!success) [self notify:@"打印已取消或失败" kind:nil];
-}
-
-- (NSString*)jsLiteral:(NSString*)value {
-  NSData* data = [NSJSONSerialization dataWithJSONObject:@[ value ?: @"" ]
-                                                 options:0
-                                                   error:nil];
-  NSString* json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-  return [json substringWithRange:NSMakeRange(1, json.length - 2)];
-}
-
 - (void)notify:(NSString*)message kind:(NSString*)kind {
-  if (!self.webView) return;
-  NSString* js = [NSString stringWithFormat:
-      @"window.__devcardNotify && window.__devcardNotify(%@, %@);",
-      kind ? [self jsLiteral:kind] : @"null", [self jsLiteral:message]];
-  [self.webView evaluateJavaScript:js completionHandler:nil];
+  DevCardNotify(self.webView, message, kind);
 }
 
 @end
@@ -690,7 +320,8 @@ int main(int argc, const char* argv[]) {
 
     WKWebView* web = [[WKWebView alloc] initWithFrame:frame configuration:config];
     web.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    DownloadHandler* download_handler = [[DownloadHandler alloc] init];
+    DevCardDownloadHandler* download_handler =
+        [[DevCardDownloadHandler alloc] init];
     download_handler.window = window;
     // 打印自检启动钩子：必须等真实页（http://）didFinish 之后再发起 JS——
     // splash→真实页导航进行中时 evaluateJavaScript 会被 WebKit 竞态吞掉。
@@ -715,6 +346,11 @@ int main(int argc, const char* argv[]) {
     window.contentView = web;
     bridge.webView = web;
     bridge.window = window;
+    // 导出/打印通道独立持有 webView + window，桥只转发 action。
+    DevCardPrintBridge* print_bridge = [[DevCardPrintBridge alloc] init];
+    print_bridge.webView = web;
+    print_bridge.window = window;
+    bridge.printBridge = print_bridge;
     // 关键：设 window.delegate，否则 PrintBridge 的 NSWindowDelegate 方法
     // （比如 applicationShouldTerminateAfterLastWindowClosed）不会被调用。
     window.delegate = bridge;
@@ -727,7 +363,8 @@ int main(int argc, const char* argv[]) {
 
     // 自动化验证：把打印视图导出成 PDF 后退出，便于脚本核对页数与文字。
     NSString* selftest_pdf =
-        NSProcessInfo.processInfo.environment[@"DEVCARD_PRINT_SELFTEST_PDF"];    bridge.automaticPdfPath = selftest_pdf;
+        NSProcessInfo.processInfo.environment[@"DEVCARD_PRINT_SELFTEST_PDF"];
+    print_bridge.automaticPdfPath = selftest_pdf;
     // 负向自检：摘掉 crypto.subtle，验证「判据没跑起来」会被单独拦住。
     BOOL selftest_nosubtle =
         NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_NOSUBTLE"].length > 0;
@@ -740,7 +377,7 @@ int main(int argc, const char* argv[]) {
     // 打印自检轮询函数：定义留在主线程；启动时机由上面 onDidFinish 控制。
     if (selftest_pdf.length > 0) {
       auto poll_fn = print_poll_slot;
-      *poll_fn = [poll_fn, web, bridge, selftest_pdf,
+      *poll_fn = [poll_fn, web, print_bridge, selftest_pdf,
                   selftest_nosubtle](int attempts) {
         // 先取安全上下文与闸门的真实状态：不依赖数据，打印视图有没有卡片都能读到。
         [web evaluateJavaScript:@"window.__devcardFontGate ? JSON.stringify(window.__devcardFontGate()) : ''"
@@ -780,7 +417,7 @@ int main(int argc, const char* argv[]) {
                                        : 0;
                 if (sheets > 0) {
                   NSLog(@"DEVCARD_SELFTEST sheets=%ld", (long)sheets);
-                  bridge.onExportResult = ^(BOOL ok, NSString* message) {
+                  print_bridge.onExportResult = ^(BOOL ok, NSString* message) {
                     if (ok) {
                       // 直接打印通道：用同一份 PDF 构造打印任务（不弹面板）。
                       PDFDocument* document = [[PDFDocument alloc]
