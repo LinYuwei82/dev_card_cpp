@@ -7,6 +7,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <thread>
@@ -33,6 +35,7 @@
 #include "devcard/settings.h"
 #include "devcard/sha256.h"
 #include "devcard/update_manifest.h"
+#include "devcard/update_engine.h"
 #include "devcard/update_package.h"
 #include "devcard/xlsx.h"
 
@@ -699,47 +702,56 @@ void run_update_evaluate_case() {
   std::cout << "[update-evaluate] decision + deadline checks done\n";
 }
 
+// manifest_v2.py selftest 同源的 RFC 8032 向量密钥：seed 派生出 pk，
+// sk = seed || pk。测试用它在现场给改过的清单重签（签名有效才能走到
+// 解析/判定层），UpdateEngine 用例与验签用例共用。
+const unsigned char kVectorSeed[32] = {
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a,
+    0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32,
+    0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60};
+const unsigned char kVectorPub[32] = {
+    0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe,
+    0xd3, 0xc9, 0x64, 0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6,
+    0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
+const char kVectorPubHex[] =
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
+std::string base64_signature(const unsigned char* raw) {
+  static const char* kTable =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(88);
+  for (std::size_t i = 0; i < 64; i += 3) {
+    const int b0 = raw[i], b1 = i + 1 < 64 ? raw[i + 1] : 0,
+              b2 = i + 2 < 64 ? raw[i + 2] : 0;
+    out.push_back(kTable[b0 >> 2]);
+    out.push_back(kTable[((b0 & 3) << 4) | (b1 >> 4)]);
+    out.push_back(i + 1 < 64 ? kTable[((b1 & 15) << 2) | (b2 >> 6)] : '=');
+    out.push_back(i + 2 < 64 ? kTable[b2 & 63] : '=');
+  }
+  return out;
+}
+
+// 用向量密钥给清单签名：去掉 signature → canonical（nlohmann 键序即
+// 字节序，与发布端一致）→ 签名 → 塞回 signature 字段，返回清单全文。
+std::string sign_manifest_json(nlohmann::json doc) {
+  doc.erase("signature");
+  const std::string canonical = doc.dump();
+  unsigned char sk[64];
+  std::memcpy(sk, kVectorSeed, 32);
+  std::memcpy(sk + 32, kVectorPub, 32);
+  std::vector<unsigned char> sm(64 + canonical.size());
+  unsigned long long smlen = 0;
+  crypto_sign(sm.data(), &smlen,
+              reinterpret_cast<const unsigned char*>(canonical.data()),
+              canonical.size(), sk);
+  doc["signature"] = base64_signature(sm.data());  // 签名就是 sm 的前 64 字节
+  return doc.dump();
+}
+
 void run_update_manifest_case() {
   using namespace devcard;
   using nlohmann::json;
-
-  // manifest_v2.py selftest 同源的 RFC 8032 向量密钥：seed 派生出 pk，
-  // 测试里用 sk = seed || pk 现场给改过的清单重签。
-  const unsigned char kVectorSeed[32] = {
-      0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a,
-      0xf4, 0x92, 0xec, 0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32,
-      0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae, 0x7f, 0x60};
-  const unsigned char kVectorPub[32] = {
-      0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe,
-      0xd3, 0xc9, 0x64, 0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6,
-      0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a};
-  auto base64_of_64 = [](const unsigned char* raw) {
-    static const char* kTable =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(88);
-    for (std::size_t i = 0; i < 64; i += 3) {
-      const int b0 = raw[i], b1 = i + 1 < 64 ? raw[i + 1] : 0,
-                b2 = i + 2 < 64 ? raw[i + 2] : 0;
-      out.push_back(kTable[b0 >> 2]);
-      out.push_back(kTable[((b0 & 3) << 4) | (b1 >> 4)]);
-      out.push_back(i + 1 < 64 ? kTable[((b1 & 15) << 2) | (b2 >> 6)] : '=');
-      out.push_back(i + 2 < 64 ? kTable[b2 & 63] : '=');
-    }
-    return out;
-  };
-  // 用向量密钥对「去掉 signature 后的 canonical」签名，返回 base64 文本。
-  auto sign_with_vector_key = [&](const std::string& canonical) {
-    unsigned char sk[64];
-    std::memcpy(sk, kVectorSeed, 32);
-    std::memcpy(sk + 32, kVectorPub, 32);
-    std::vector<unsigned char> sm(64 + canonical.size());
-    unsigned long long smlen = 0;
-    crypto_sign(sm.data(), &smlen,
-                reinterpret_cast<const unsigned char*>(canonical.data()),
-                canonical.size(), sk);
-    return base64_of_64(sm.data());  // 签名就是 sm 的前 64 字节
-  };
 
   // TweetNaCl 层先用 manifest_v2.py selftest 同源的 RFC 8032 固定向量：
   // 两边（Python 与 C）必须对同一 (msg, sig, pk) 给出同一结论。
@@ -834,12 +846,8 @@ void run_update_manifest_case() {
   // 能走到解析层，否则错误会停在验签上）。验签也用同一把向量公钥。
   json emptied = json::parse(kV2ManifestVector);
   emptied["platforms"] = json::object();
-  emptied.erase("signature");
-  const std::string emptied_canonical = emptied.dump();
-  emptied["signature"] = sign_with_vector_key(emptied_canonical);
-  const SignedManifest no_platform = parse_signed_manifest(
-      emptied.dump(),
-      "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+  const SignedManifest no_platform =
+      parse_signed_manifest(sign_manifest_json(emptied), kVectorPubHex);
   CHECK(!no_platform.ok);
   CHECK(no_platform.error.find("本平台") != std::string::npos);
 
@@ -853,6 +861,354 @@ void run_update_manifest_case() {
 #else
   CHECK(devcard::compiled_build_number() == 0);
 #endif
+}
+
+// —— 编排层 UpdateEngine：假接口注入，覆盖节流/跳过/强制/失败/防重全状态机 ——
+namespace {
+
+struct FakeFetcher : devcard::ManifestFetcher {
+  devcard::ManifestFetcher::Callback pending;
+  int fetches = 0;
+  std::string last_url;
+  void asyncGet(const std::string& url, Callback done) override {
+    ++fetches;
+    last_url = url;
+    pending = std::move(done);
+  }
+  void deliver(int status, const std::string& body, const std::string& error = "") {
+    devcard::ManifestFetcher::Callback cb = std::move(pending);
+    pending = nullptr;
+    if (cb) cb(status, body, error);
+  }
+};
+
+struct FakeStore : devcard::SettingsStore {
+  std::map<std::string, std::string> values;
+  std::string getString(const std::string& key) override {
+    const auto it = values.find(key);
+    return it == values.end() ? std::string() : it->second;
+  }
+  void setString(const std::string& key, const std::string& value) override {
+    values[key] = value;
+  }
+  void clearString(const std::string& key) override { values.erase(key); }
+  std::string newInstallId() override { return "test-install-id"; }
+};
+
+struct FakeUi : devcard::UpdateUi {
+  std::vector<std::pair<std::string, std::string>> alerts;
+  std::vector<devcard::PromptSpec> prompts;
+  Choice next_choice = Choice::Install;
+  void showAlert(const std::string& title, const std::string& body) override {
+    alerts.emplace_back(title, body);
+  }
+  Choice showPrompt(const devcard::PromptSpec& spec) override {
+    prompts.push_back(spec);
+    return next_choice;
+  }
+};
+
+struct FakeInstaller : devcard::PlatformInstaller {
+  bool preflight_ok = true;
+  std::string block_title, block_body;
+  long long size = 0;
+  int installs = 0;
+  std::string last_manifest_text;
+  bool preflight(std::string* title, std::string* body) override {
+    if (!preflight_ok) {
+      *title = block_title;
+      *body = block_body;
+    }
+    return preflight_ok;
+  }
+  long long preferredArtifactSize(const devcard::SignedManifest&) override {
+    return size;
+  }
+  void install(const devcard::SignedManifest&, const devcard::UpdateDecision&,
+               const std::string& manifest_text) override {
+    ++installs;
+    last_manifest_text = manifest_text;
+  }
+};
+
+struct EngineHarness {
+  FakeFetcher fetcher;
+  FakeStore store;
+  FakeUi ui;
+  FakeInstaller installer;
+  devcard::UpdateEngineConfig config;
+  std::unique_ptr<devcard::UpdateEngine> engine;
+  EngineHarness() {
+    config.manifest_url = "https://example.test/manifest.json";
+    config.pubkey_hex = kVectorPubHex;
+    config.current_version = "9.9.8";
+    config.current_build = 10;
+    config.channel = "stable";
+    config.os_label = "TestOS";
+    config.install_note = "测试安装说明。";
+  }
+  // config/fakes 全部就位后再建引擎（引擎按值拷贝 config、按引用绑 fakes）
+  void build() {
+    engine = std::make_unique<devcard::UpdateEngine>(config, fetcher, store, ui, installer);
+  }
+};
+
+// 现场签一份两平台齐全的清单（引擎按编译平台取段，两端跑同一用例）。
+std::string make_signed_manifest(const std::string& version, std::uint64_t build = 20,
+                                 int rollout = 100, bool mandatory = false,
+                                 const std::string& deadline = "",
+                                 const std::string& reason = "",
+                                 const std::string& channel = "stable") {
+  using nlohmann::json;
+  json artifact = {{"url", "https://dl.xiaotu.online/devcard/pkg"},
+                   {"size", 3 * 1024 * 1024},
+                   {"sha256", std::string(64, 'a')}};
+  json section = {{"version", version},
+                  {"build", build},
+                  {"rollout_percent", rollout},
+                  {"artifacts", {{"setup", artifact}, {"portable", artifact}, {"dmg", artifact}}}};
+  if (mandatory) {
+    section["mandatory"] = true;
+    if (!reason.empty()) section["mandatory_reason"] = reason;
+    if (!deadline.empty()) section["mandatory_deadline"] = deadline;
+  }
+  json doc = {{"manifest_version", 2},
+              {"channel", channel},
+              {"platforms", {{"windows", section}, {"macos", section}}}};
+  return sign_manifest_json(doc);
+}
+
+bool has_alert(const FakeUi& ui, const std::string& title, const std::string& body_part) {
+  for (const auto& alert : ui.alerts) {
+    if (alert.first == title && alert.second.find(body_part) != std::string::npos) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+void run_update_engine_case() {
+  using namespace devcard;
+  const std::time_t now = std::time(nullptr);
+
+  // formatSize 人性化口径
+  CHECK(UpdateEngine::formatSize(0).empty());
+  CHECK(UpdateEngine::formatSize(512 * 1024) == "512 KB");
+  CHECK(UpdateEngine::formatSize(3 * 1024 * 1024) == "3.0 MB");
+
+  // 1) 发现新版本 → 弹窗文案 → 用户点「安装」：install 收到原始清单文本
+  {
+    EngineHarness h;
+    h.installer.size = 3 * 1024 * 1024;
+    h.build();
+    const std::string text = make_signed_manifest("9.9.9");
+    h.engine->checkNow(now);
+    CHECK(h.fetcher.fetches == 1 && h.fetcher.last_url == h.config.manifest_url);
+    h.fetcher.deliver(200, text);
+    CHECK(h.ui.prompts.size() == 1);
+    if (h.ui.prompts.size() == 1) {
+      const PromptSpec& spec = h.ui.prompts[0];
+      CHECK(spec.title == "发现新版本 9.9.9");
+      CHECK(spec.body.find("当前版本 9.9.8") != std::string::npos);
+      CHECK(spec.body.find("安装包大小：3.0 MB") != std::string::npos);
+      CHECK(spec.body.find("测试安装说明。") != std::string::npos);
+      CHECK(!spec.force && spec.allow_later);
+    }
+    CHECK(h.installer.installs == 1);
+    CHECK(h.installer.last_manifest_text == text);
+    CHECK(h.store.values.count(update_keys::kInstallId));
+    CHECK(!h.store.values.count(update_keys::kSkippedVersion));
+    CHECK(h.store.values.count(update_keys::kLastCheckAt));
+  }
+
+  // 2) 点「稍后」：记录跳过窗口，不安装
+  {
+    EngineHarness h;
+    h.ui.next_choice = UpdateUi::Choice::Later;
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9"));
+    CHECK(h.installer.installs == 0);
+    CHECK(h.store.values[update_keys::kSkippedVersion] == "9.9.9");
+    const long long until =
+        std::strtoll(h.store.values[update_keys::kSkipUntilEpoch].c_str(), nullptr, 10);
+    CHECK(until >= static_cast<long long>(now) + 23 * 3600);
+  }
+
+  // 3) 后台检查命中「稍后」窗口：静默，不再弹
+  {
+    EngineHarness h;
+    h.config.check_interval = 0;  // 关节流，专注跳过规则
+    h.ui.next_choice = UpdateUi::Choice::Later;
+    h.build();
+    const std::string text = make_signed_manifest("9.9.9");
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, text);
+    CHECK(h.ui.prompts.size() == 1);
+    h.engine->tick(now);  // 后台
+    h.fetcher.deliver(200, text);
+    CHECK(h.ui.prompts.size() == 1);
+    CHECK(h.installer.installs == 0);
+    CHECK(h.ui.alerts.empty());
+  }
+
+  // 4) 强制更新豁免「稍后」窗口：后台检查到期前也照常提示
+  {
+    EngineHarness h;
+    h.config.check_interval = 0;
+    h.ui.next_choice = UpdateUi::Choice::Later;
+    h.build();
+    const std::string text =
+        make_signed_manifest("9.9.9", 20, 100, true, "2035-01-01T00:00:00Z", "SECURITY");
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, text);
+    h.engine->tick(now);
+    h.fetcher.deliver(200, text);
+    CHECK(h.ui.prompts.size() == 2);
+  }
+
+  // 5) 强制已到期：弹窗不可跳过（force），标题「必须更新到」，原因文案映射
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9", 20, 100, true,
+                                                "2001-01-01T00:00:00Z", "SECURITY"));
+    CHECK(h.ui.prompts.size() == 1);
+    if (h.ui.prompts.size() == 1) {
+      const PromptSpec& spec = h.ui.prompts[0];
+      CHECK(spec.title == "必须更新到 9.9.9");
+      CHECK(spec.force);
+      CHECK(!spec.allow_later);
+      CHECK(spec.body.find("安全漏洞修复") != std::string::npos);
+      CHECK(spec.body.find("已到截止时间") != std::string::npos);
+    }
+    CHECK(h.installer.installs == 1);
+  }
+
+  // 6) 后台节流：last_check_at 未过期不发起；过期后恢复
+  {
+    EngineHarness h;
+    h.build();
+    const std::string text = make_signed_manifest("9.9.9");
+    h.engine->tick(now);
+    h.fetcher.deliver(200, text);
+    CHECK(h.fetcher.fetches == 1);
+    h.engine->tick(static_cast<std::time_t>(now) + 3600);  // 1h < 24h
+    CHECK(h.fetcher.fetches == 1);
+    h.engine->tick(static_cast<std::time_t>(now) + 25 * 3600);
+    CHECK(h.fetcher.fetches == 2);
+  }
+
+  // 7) 拉取失败：手动检查给明确提示；后台静默；last_check_at 仍写入（失败也节流）
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(0, "", "无法连接更新服务器");
+    CHECK(has_alert(h.ui, "检查更新失败", "无法连接更新服务器"));
+    CHECK(h.store.values.count(update_keys::kLastCheckAt));
+    h.ui.alerts.clear();
+    // 清掉节流时间戳，模拟下一轮后台检查
+    h.store.values[update_keys::kLastCheckAt] = "0";
+    h.engine->tick(now);
+    h.fetcher.deliver(500, "");
+    CHECK(h.ui.alerts.empty());
+  }
+
+  // 8) 验签失败：清单被篡改 → 失败提示，绝不进判定
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    std::string text = make_signed_manifest("9.9.9");
+    const std::size_t at = text.find("9.9.9");
+    CHECK(at != std::string::npos);
+    text.replace(at, 5, "8.8.8");
+    h.fetcher.deliver(200, text);
+    CHECK(has_alert(h.ui, "检查更新失败", "更新清单校验失败"));
+    CHECK(h.ui.prompts.empty() && h.installer.installs == 0);
+  }
+
+  // 9) 在途防重：检查进行中再点菜单只提示不并发
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    h.engine->checkNow(now);
+    CHECK(h.fetcher.fetches == 1);
+    CHECK(has_alert(h.ui, "检查更新失败", "已有一次更新检查正在进行"));
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9"));
+    CHECK(h.ui.prompts.size() == 1);
+  }
+
+  // 10) 带外回流（无在途检查）一律忽略
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->onManifest(200, make_signed_manifest("9.9.9"), "");
+    CHECK(h.ui.prompts.empty() && h.ui.alerts.empty() && h.installer.installs == 0);
+    CHECK(!h.store.values.count(update_keys::kLastCheckAt));
+  }
+
+  // 11) 已是最新 / 通道不符：手动检查给「已是最新版本」，后台静默
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.8", 10));
+    CHECK(has_alert(h.ui, "已是最新版本", "9.9.8"));
+    CHECK(h.ui.prompts.empty());
+    h.ui.alerts.clear();
+    h.store.values[update_keys::kLastCheckAt] = "0";
+    h.engine->tick(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.8", 10));
+    CHECK(h.ui.alerts.empty());
+    // 通道不符同样按「无更新」处理，不算错误
+    h.store.values[update_keys::kLastCheckAt] = "0";
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9", 20, 100, false, "", "", "beta"));
+    CHECK(has_alert(h.ui, "已是最新版本", ""));
+  }
+
+  // 12) 灰度未命中：手动「暂无可用更新」，后台静默
+  {
+    EngineHarness h;
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9", 20, 0));
+    CHECK(has_alert(h.ui, "暂无可用更新", "分批推送"));
+    h.ui.alerts.clear();
+    h.store.values[update_keys::kLastCheckAt] = "0";
+    h.engine->tick(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9", 20, 0));
+    CHECK(h.ui.alerts.empty() && h.ui.prompts.empty());
+  }
+
+  // 13) preflight 拦截（如 mac App Translocation）：只给引导提示，不弹更新窗
+  {
+    EngineHarness h;
+    h.installer.preflight_ok = false;
+    h.installer.block_title = "需要先移动到“应用程序”";
+    h.installer.block_body = "请拖到应用程序文件夹后重试。";
+    h.build();
+    h.engine->checkNow(now);
+    h.fetcher.deliver(200, make_signed_manifest("9.9.9"));
+    CHECK(has_alert(h.ui, "需要先移动到“应用程序”", "拖到应用程序"));
+    CHECK(h.ui.prompts.empty() && h.installer.installs == 0);
+  }
+
+  // 14) 未配置清单地址：手动明确提示，后台静默
+  {
+    EngineHarness h;
+    h.config.manifest_url.clear();
+    h.build();
+    h.engine->checkNow(now);
+    CHECK(has_alert(h.ui, "检查更新失败", "未配置更新地址"));
+    CHECK(h.fetcher.fetches == 0);
+  }
+
+  std::cout << "[update-engine] orchestration state machine checks done\n";
 }
 
 // 场景函数：Db 是局部对象，函数返回即析构，调用方随后删目录才不会撞上打开的库。
@@ -1766,6 +2122,8 @@ int run_all_tests() {
     run_rollout_decision_case();
     // 检测层唯一判据源 evaluate_update：双键向量 + 灰度/跳过/强制/期限。
     run_update_evaluate_case();
+    // 编排层唯一状态机 UpdateEngine：节流/跳过/强制/失败/防重/preflight。
+    run_update_engine_case();
   }
 
   {

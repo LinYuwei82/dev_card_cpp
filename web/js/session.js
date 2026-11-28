@@ -4,7 +4,6 @@ import { loadFontCoverage } from './fonts.js';
 import { closeDelete, closeDrawer, load, loadOptions } from './devices.js';
 import { updateCompanyHint, updateLogoTime } from './settings.js';
 import { loadBackups, loadUsers } from './users.js';
-import { checkUpdate, closeUpdateModal } from './update.js';
 import { loadPrint } from './print.js';
 
   setAuthHooks({ showLogin: showLogin, openPasswordModal: openPasswordModal });
@@ -98,10 +97,6 @@ import { loadPrint } from './print.js';
     loadOptions();
     loadFontCoverage();
     load();
-    // 三端统一走服务端编排层：启动时只读 /api/update/state 快照（不触网），
-    // 强制更新到期时由这份快照弹窗阻塞。macOS 不再依赖 Sparkle 后台自查
-    // （它只当安装执行器），避免同一台机器出现第二个检测源。
-    checkUpdate();
     if (appState.view === 'users') {
       loadUsers();
       loadBackups();
@@ -241,7 +236,6 @@ import { loadPrint } from './print.js';
     else if (el.drawer.classList.contains('is-open')) closeDrawer();
     else if (!el.userModal.hidden) el.userModal.hidden = true;
     else if (!el.resetModal.hidden) el.resetModal.hidden = true;
-    else if (!el.updateModal.hidden) closeUpdateModal();
   });
 
   el.gotoPrint.addEventListener('click', function () {

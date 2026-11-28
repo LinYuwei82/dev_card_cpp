@@ -60,38 +60,10 @@
     ids: []
   };
 
-  // 自更新：唯一数据源是服务端编排层的 /api/update/state 快照。
-  // 分层重构后页面不再有远端检查结论/资产/版本比较等中间状态——
-  // 出现新的判定字段说明有人把逻辑搬回了前端，会被防回潮自检拦下。
-  var updateState = {
-    // 最近一次 /api/update/state（含判定快照与下载页地址）。
-    state: null,
-    url: '',
-    timer: null,
-    downloading: false,
-    force: false,
-    installing: false,
-    lastCheckSilent: true
-  };
-
   var el = {
     app: document.getElementById('app'),
     health: document.getElementById('health'),
     version: document.getElementById('version-pill'),
-    updatePill: document.getElementById('update-pill'),
-    updateCheckBtn: document.getElementById('update-check-btn'),
-    updateModal: document.getElementById('update-modal'),
-    updateVersion: document.getElementById('update-version'),
-    updateNotes: document.getElementById('update-notes'),
-    updateSteps: document.getElementById('update-steps'),
-    updateDownload: document.getElementById('update-download'),
-    updateDownloadPackage: document.getElementById('update-download-package'),
-    updateProgress: document.getElementById('update-progress'),
-    updateInstall: document.getElementById('update-install'),
-    updateInstallResult: document.getElementById('update-install-result'),
-    updateLater: document.getElementById('update-later'),
-    updateTitle: document.getElementById('update-title'),
-    updateMandatory: document.getElementById('update-mandatory'),
     userChip: document.getElementById('user-chip'),
     logout: document.getElementById('logout'),
     navUsers: document.getElementById('nav-users'),
@@ -351,4 +323,4 @@
       window.webkit.messageHandlers.devcard);
   }
 
-export { PAGE_SIZE, api, appState, authHooks, devicesState, el, escapeHtml, filtersActive, formatBytes, handleAuthFailure, hasNativeBridge, printState, setAuthHooks, setStatusError, setStatusOk, systemState, toast, toastTimer, updateState, updateStatusCount, updateStatusIdentity, usersState };
+export { PAGE_SIZE, api, appState, authHooks, devicesState, el, escapeHtml, filtersActive, formatBytes, handleAuthFailure, hasNativeBridge, printState, setAuthHooks, setStatusError, setStatusOk, systemState, toast, toastTimer, updateStatusCount, updateStatusIdentity, usersState };

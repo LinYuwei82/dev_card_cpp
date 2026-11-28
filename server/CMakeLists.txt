@@ -44,8 +44,6 @@ add_custom_command(
 
 add_library(devcard_server STATIC
     src/server.cpp
-    src/apply_update.cpp
-    src/update_service.cpp
     src/platform_paths.cpp
     src/config.cpp
     src/instance_lock.cpp

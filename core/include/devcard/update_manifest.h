@@ -17,6 +17,11 @@
 
 namespace devcard {
 
+// 清单验签公钥（Ed25519，32 字节 hex）：全仓唯一一份（门禁 check_update_layering
+// 盯住单点）。私钥只存在于发布端签名流程（tools/release），任何客户端只配验签。
+inline constexpr const char* kUpdateManifestPubkeyHex =
+    "3f4d9fabc122113e426b98a8f8b2312cb194e406f770de61285e41c607d22403";
+
 // ---- 版本号工具 ----
 
 // 三段式版本号（SemVer 子集，major.minor.patch）。

@@ -19,6 +19,7 @@ add_library(devcard_core STATIC
     src/sha256.cpp
     src/update_manifest.cpp
     src/update_package.cpp
+    src/update_engine.cpp
     src/xlsx.cpp
     "${CMAKE_SOURCE_DIR}/third_party/argon2/src/argon2.c"
     "${CMAKE_SOURCE_DIR}/third_party/tweetnacl/tweetnacl.c"

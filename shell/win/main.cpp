@@ -35,6 +35,7 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 
 #include "win_encoding/encoding.h"
 #include "devcard/update_manifest.h"
+#include "updater_win.h"
 
 #include <atomic>
 #include <chrono>
@@ -99,11 +100,8 @@ struct ShellState {
   HWND hwnd = nullptr;
   bool devtools = false;
   bool print_busy = false;
-  // 由 server_exit_watcher 线程写入、UI 线程在 WM_CLOSE 读取，必须是原子量。
+  // 由更新引擎退出钩子写入、UI 线程在 WM_CLOSE 读取，必须是原子量。
   std::atomic<bool> server_exit_requested{false};
-  // 退出流程的停机信号：server_exit_watcher 靠它跳出轮询，
-  // 否则正常关窗时 join() 会永久阻塞（进程活着、18080 端口不释放）。
-  std::atomic<bool> shutdown{false};
   std::wstring origin;
   // server 后台启动完成后由 WM_APP_SERVER_READY 置位；webview 就绪时据此
   // 决定直接导航真实页面还是先显示内联 splash。
@@ -165,16 +163,6 @@ void Notify(const wchar_t* kind, const std::wstring& message) {
   auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
       [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
   g.webview->ExecuteScript(wide_js.c_str(), handler.Get());
-}
-
-// 从壳层菜单栏触发前端检查更新。前端必须已加载（window.devcard.checkUpdate）。
-void TriggerFrontendCheckUpdate() {
-  if (!g.webview) return;
-  const std::wstring js =
-      L"window.devcard && window.devcard.checkUpdate && window.devcard.checkUpdate();";
-  auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-      [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
-  g.webview->ExecuteScript(js.c_str(), handler.Get());
 }
 
 std::wstring HResultText(HRESULT hr) {
@@ -1026,6 +1014,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       ResizeWebView();
       return 0;
     case WM_TIMER:
+      if (wparam == devcard::win::kUpdateTimer) {
+        devcard::win::run_update_timer(hwnd);
+        return 0;
+      }
       if (wparam == kPrintFallbackTimer) {
         KillTimer(hwnd, kPrintFallbackTimer);
         // 兜底释放：只放锁不清 is-export 布局（无法区分「已取消」与「仍开着」，
@@ -1037,7 +1029,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
     case WM_COMMAND: {
       switch (LOWORD(wparam)) {
         case IDM_HELP_CHECKUPDATE:
-          TriggerFrontendCheckUpdate();
+          // 原生更新引擎（core UpdateEngine），不再绕道前端横幅
+          devcard::win::check_for_updates_now(hwnd);
           break;
         case IDM_HELP_ABOUT:
           ShowAboutDialog(hwnd);
@@ -1045,6 +1038,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
       }
       return 0;
     }
+    case devcard::win::kUpdateResultMessage:
+      // 后台 fetch 结果回流：交回引擎 onManifest（已在 UI 线程）
+      if (devcard::win::handle_update_message(hwnd, lparam)) return 0;
+      return DefWindowProcW(hwnd, message, wparam, lparam);
     case WM_APP_SERVER_READY: {
       std::unique_ptr<ServerStartupResult> res(
           reinterpret_cast<ServerStartupResult*>(lparam));
@@ -1245,6 +1242,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     DrawMenuBar(g.hwnd);
   }
 
+  // 原生更新引擎：安装程序拉起后经正常关闭流程退出（停 server、释放端口）；
+  // 启动 10 秒后首次后台检查，之后每 24 小时一次（节流与判定全在 core 引擎）。
+  devcard::win::set_update_quit_hook([] {
+    g.server_exit_requested = true;
+    PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
+  });
+  devcard::win::start_update_checker(g.hwnd);
+
   if (!CreateWebView()) {
     CoUninitialize();
     return 1;
@@ -1265,30 +1270,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
                  reinterpret_cast<LPARAM>(result));
   }).detach();
 
-  // server 线程在 auto-update install 流程里会设 stop_requested=true + server.stop()。
-  // shell 消息循环只在 WM_DESTROY 时退出，没人轮询这个 flag。
-  // 这里启动一个后台线程，每 200ms 检查一次：如果 server 想退出，就 PostMessageW(WM_CLOSE)
-  // 让主窗口走正常销毁流程，进程随之干净退出。
-  std::thread server_exit_watcher([&]() {
-    while (!g.shutdown.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
-      // 正常关窗时 g.hwnd 已销毁，这里不再 PostMessage；循环靠 g.shutdown 退出。
-      if (g_server && g_server->stop_requested()) {
-        g.server_exit_requested = true;
-        PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
-        break;
-      }
-    }
-  });
-
   MSG message = {};
   while (GetMessageW(&message, nullptr, 0, 0)) {
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
-  // 先让 watcher 退出轮询，再 join；顺序反了就是之前那个「关窗后进程不退」的死锁。
-  g.shutdown.store(true);
-  if (server_exit_watcher.joinable()) server_exit_watcher.join();
 
   if (g.controller) g.controller->Close();
   g.webview.Reset();

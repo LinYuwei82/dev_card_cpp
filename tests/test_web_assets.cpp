@@ -269,164 +269,6 @@ std::string seed_password(const std::filesystem::path& data_dir,
   return {};
 }
 
-// 服务端闸门（v2）：清单签名无效 → 检查整体关闭，下载 403 update_disabled；
-// 请求的版本不比当前新 → 400 no_update。
-// 两条都在下载线程启动前返回，因此不需要 curl，也不会联网。
-int check_update_guards() {
-  namespace fs = std::filesystem;
-  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  const fs::path data_dir =
-      fs::temp_directory_path() / ("devcard_guard_" + std::to_string(stamp));
-  std::unique_ptr<devcard::ServerHandle> server;
-  std::string last_error;
-  for (int port = 18340; port <= 18360 && !server; ++port) {
-    devcard::ServerOptions options;
-    options.data_dir = data_dir;
-    options.port = port;
-    try {
-      server = devcard::start_server(options);
-    } catch (const std::exception& error) {
-      last_error = error.what();
-    }
-  }
-  if (!server) {
-    std::cerr << "[失败] 起服务失败，无法校验更新闸门：" << last_error << std::endl;
-    fs::remove_all(data_dir);
-    return 1;
-  }
-
-  int failures = 0;
-  {
-    httplib::Client client("127.0.0.1", server->port());
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(10, 0);
-    const std::string password = seed_password(data_dir, "root");
-    if (password.empty()) {
-      std::cerr << "[失败] 找不到 root 初始密码，无法建立会话" << std::endl;
-      failures = 1;
-    } else {
-      const std::string login_body =
-          "{\"username\":\"root\",\"password\":\"" + password + "\"}";
-      const auto login = client.Post("/api/session/login", login_body,
-                                     "application/json");
-      std::string cookie;
-      if (login && login->status == 200) {
-        cookie = login->get_header_value("Set-Cookie");
-        cookie = cookie.substr(0, cookie.find(';'));
-      }
-      if (cookie.empty()) {
-        std::cerr << "[失败] 登录失败，取不到会话 cookie" << std::endl;
-        failures = 1;
-      } else {
-        client.set_default_headers({{"Cookie", cookie},
-                                    {"X-Requested-With", "DevCard"}});
-        const auto change = client.Post(
-            "/api/users/password", R"({"new_password":"GuardTest123"})",
-            "application/json");
-        if (!change || change->status != 200) {
-          std::cerr << "[失败] 首次改密失败，无法继续校验下载闸门" << std::endl;
-          failures = 1;
-        }
-        const std::string sha(64, 'a');
-        auto payload = [&sha](const std::string& version) {
-          return "{\"version\":\"" + version +
-                 "\",\"file_name\":\"pkg.bin\",\"url\":"
-                 "\"https://github.com/example/pkg.bin\",\"sha256\":\"" + sha +
-                 "\",\"size\":10}";
-        };
-
-        const auto no_update = client.Post("/api/update/download",
-                                           payload("0.0.1"), "application/json");
-        if (!no_update || no_update->status != 400 ||
-            no_update->body.find("no_update") == std::string::npos) {
-          std::cerr << "[失败] 旧版本下载未被拒（期望 400 no_update）："
-                    << (no_update ? no_update->status : -1) << " "
-                    << (no_update ? no_update->body : "") << std::endl;
-          failures = 1;
-        }
-
-        {
-          // v2：清单必须通过 Ed25519 验签。坏签名时检查整体关闭——
-          // 下载闸门（403 update_disabled）必须在下载线程启动前挡住。
-          std::ofstream out(data_dir / "manifest.json", std::ios::binary);
-          out << R"({"manifest_version":2,"product":"devcard",)"
-                 R"("channel":"stable","key_id":"2026-11",)"
-                 R"("updated_at":"2026-11-18T00:00:00Z",)"
-                 R"("platforms":{"windows":{"version":"9.9.9","build":202611180930,)"
-                 R"("min_os":"10.0","artifacts":{"setup":{"url":)"
-                 R"("https://dl.xiaotu.online/devcard/devcard-9.9.9-win64-setup.exe",)"
-                 R"("size":1,"sha256":")" << std::string(64, 'a') << R"("}}}},)"
-                 R"("signature":"AAAA"})";
-        }
-        const auto disabled = client.Post("/api/update/download",
-                                          payload("9.9.9"), "application/json");
-        if (!disabled || disabled->status != 403 ||
-            disabled->body.find("update_disabled") == std::string::npos) {
-          std::cerr << "[失败] 验签失败的清单仍可下载（期望 403 update_disabled）："
-                    << (disabled ? disabled->status : -1) << " "
-                    << (disabled ? disabled->body : "") << std::endl;
-          failures = 1;
-        }
-
-        if (fs::exists(data_dir / "updates")) {
-          std::cerr << "[失败] 被拒绝的下载请求仍然创建了 updates 目录" << std::endl;
-          failures = 1;
-        }
-
-        // v2 清单解析走验签后的 platforms.<本平台>：签名无效时 latest 必须为
-        // null、update_available 必须为 false，错误信息要点名签名——
-        // 宁可没有更新提示，也不能把被篡改的清单当真。
-        {
-          std::ofstream out(data_dir / "manifest.json", std::ios::binary);
-          out << R"({"manifest_version":2,"product":"devcard",)"
-                 R"("channel":"stable","key_id":"2026-11",)"
-                 R"("updated_at":"2026-11-18T00:00:00Z",)"
-                 R"("platforms":{"macos":{"version":"9.9.9","build":0,)"
-                 R"("min_os":"14.0","artifacts":{"dmg":{"url":)"
-                 R"("https://dl.xiaotu.online/devcard/devcard-9.9.9-macos-arm64.dmg",)"
-                 R"("size":1,"sha256":")" << std::string(64, 'b') << R"("}}},)"
-                 R"("windows":{"version":"1.2.2","build":202611180930,)"
-                 R"("min_os":"10.0","artifacts":{"setup":{"url":)"
-                 R"("https://dl.xiaotu.online/devcard/devcard-1.2.2-win64-setup.exe",)"
-                 R"("size":1,"sha256":")" << std::string(64, 'c') << R"("}}}},)"
-                 R"("signature":"e30="})";
-        }
-        const auto version_info = client.Get("/api/version");
-        const std::string version_body =
-            version_info ? version_info->body : std::string{};
-        if (!version_info || version_info->status != 200 ||
-            version_body.find("\"latest\":null") == std::string::npos ||
-            version_body.find("\"update_available\":false") ==
-                std::string::npos ||
-            version_body.find("签名") == std::string::npos) {
-          std::cerr << "[失败] 无效签名清单未被拒绝（期望 latest=null、"
-                       "update_available=false、error 提及签名）："
-                    << (version_info ? version_info->status : -1) << " "
-                    << version_body << std::endl;
-          failures = 1;
-        }
-        const auto disabled_after = client.Post("/api/update/download",
-                                                payload("9.9.9"),
-                                                "application/json");
-        if (!disabled_after || disabled_after->status != 403 ||
-            disabled_after->body.find("update_disabled") == std::string::npos) {
-          std::cerr << "[失败] 无效签名清单下仍可下载（期望 403 update_disabled）："
-                    << (disabled_after ? disabled_after->status : -1) << " "
-                    << (disabled_after ? disabled_after->body : "") << std::endl;
-          failures = 1;
-        }
-      }
-    }
-  }
-  server.reset();
-  fs::remove_all(data_dir);
-  if (failures == 0) {
-    std::cout << "更新闸门自检通过：更新检查关闭返回 403、无新版本返回 400"
-              << std::endl;
-  }
-  return failures;
-}
-
 // 登录/改密失败限流：真起服务、真走 HTTP。
 // 回环地址按要求整体不受限，所以限流那几段必须从非回环来源打——把服务绑在
 // 本机私有 IP 上（网络模式），否则测出来的永远是不受限的那条路径。
@@ -622,152 +464,6 @@ int check_rate_limit() {
   return failures;
 }
 
-// 阶段二判据：app-started.marker 必须真落地；apply-state.json 停在 installing
-// 且超过阈值时，重启后的接口必须报 interrupted——「协助器被杀」在磁盘上留下的
-// 正是这两样证据（state=installing、没有 install-result.json），所以这条用例
-// 复现的是可复现的持久化条件，而不是手点一次。
-int check_apply_state() {
-  namespace fs = std::filesystem;
-#ifdef _WIN32
-  _putenv_s("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR);
-#else
-  setenv("DEVCARD_FONT_DIR", DEVCARD_WEB_FONTS_DIR, 1);
-#endif
-  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  const fs::path data_dir =
-      fs::temp_directory_path() / ("devcard_applystate_" + std::to_string(stamp));
-
-  auto start = [&data_dir](int base) {
-    std::unique_ptr<devcard::ServerHandle> server;
-    for (int port = base; port <= base + 20 && !server; ++port) {
-      devcard::ServerOptions options;
-      options.data_dir = data_dir;
-      options.port = port;
-      try {
-        server = devcard::start_server(options);
-      } catch (const std::exception&) {
-      }
-    }
-    return server;
-  };
-
-  int failures = 0;
-  auto server = start(18440);
-  if (!server) {
-    std::cerr << "[失败] 起服务失败，无法校验阶段二判据" << std::endl;
-    fs::remove_all(data_dir);
-    return 1;
-  }
-  if (!fs::exists(data_dir / "app-started.marker")) {
-    std::cerr << "[失败] app-started.marker 未落盘：启动握手判据无法成立"
-              << std::endl;
-    ++failures;
-  }
-
-  // 登录并完成强制改密，后续接口才可达。
-  std::string password = seed_password(data_dir, "root");
-  auto login = [&](httplib::Client& client, const std::string& pwd,
-                   std::string* cookie) {
-    const auto response = client.Post(
-        "/api/session/login",
-        "{\"username\":\"root\",\"password\":\"" + pwd + "\"}", "application/json");
-    if (!response || response->status != 200) return false;
-    const std::string raw = response->get_header_value("Set-Cookie");
-    *cookie = raw.substr(0, raw.find(';'));
-    return !cookie->empty();
-  };
-
-  {
-    httplib::Client client("127.0.0.1", server->port());
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(5, 0);
-    std::string cookie;
-    if (!login(client, password, &cookie)) {
-      std::cerr << "[失败] 初始账号登录失败" << std::endl;
-      ++failures;
-    } else {
-      client.set_default_headers(
-          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
-      const auto change = client.Post(
-          "/api/users/password", R"({"new_password":"ApplyState123"})",
-          "application/json");
-      if (!change || change->status != 200) {
-        std::cerr << "[失败] 首次改密失败，无法继续校验安装状态" << std::endl;
-        ++failures;
-      }
-      password = "ApplyState123";
-
-      // 刚写入的 installing：不该被当成中断。
-      fs::create_directories(data_dir / "updates");
-      {
-        std::ofstream out(data_dir / "updates" / "apply-state.json",
-                          std::ios::binary | std::ios::trunc);
-        out << R"({"state":"installing","detail":"用例写入","updated_at":""})";
-      }
-      const auto fresh = client.Get("/api/update/install-result");
-      if (!fresh || fresh->status != 200 ||
-          fresh->body.find("\"installing\"") == std::string::npos) {
-        std::cerr << "[失败] 刚写入的 installing 未被识别为进行中："
-                  << (fresh ? fresh->status : -1) << " "
-                  << (fresh ? fresh->body : "") << std::endl;
-        ++failures;
-      }
-    }
-  }
-
-  // 把状态文件时间拨回 1 小时，模拟「协助器被杀、机器重启过后才起来」。
-  {
-    std::error_code ec;
-    const fs::path state_file = data_dir / "updates" / "apply-state.json";
-    fs::last_write_time(state_file,
-                        fs::file_time_type::clock::now() - std::chrono::hours(1),
-                        ec);
-    if (ec) {
-      std::cerr << "[失败] 无法回拨状态文件时间：" << ec.message() << std::endl;
-      ++failures;
-    }
-  }
-  server.reset();
-  server = start(18470);
-  if (!server) {
-    std::cerr << "[失败] 重启服务失败，无法校验中断判据" << std::endl;
-    fs::remove_all(data_dir);
-    return failures + 1;
-  }
-  {
-    httplib::Client client("127.0.0.1", server->port());
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(5, 0);
-    std::string cookie;
-    if (!login(client, password, &cookie)) {
-      std::cerr << "[失败] 重启后登录失败" << std::endl;
-      ++failures;
-    } else {
-      client.set_default_headers(
-          {{"Cookie", cookie}, {"X-Requested-With", "DevCard"}});
-      const auto result = client.Get("/api/update/install-result");
-      const bool interrupted =
-          result && result->status == 200 &&
-          result->body.find("\"interrupted\"") != std::string::npos;
-      if (!interrupted) {
-        std::cerr << "[失败] 停在 installing 且超阈值时未报 interrupted："
-                  << (result ? result->status : -1) << " "
-                  << (result ? result->body : "") << std::endl;
-        ++failures;
-      }
-    }
-  }
-  server.reset();
-  fs::remove_all(data_dir);
-
-  if (failures == 0) {
-    std::cout << "阶段二判据自检通过：app-started.marker 已落盘；"
-                 "installing 超阈值经重启后报 interrupted"
-              << std::endl;
-  }
-  return failures;
-}
-
 // 状态码表：路由会抛的每个错误码都必须有对应 HTTP 状态。
 // 缺一条的后果是 4xx 被渲染成 500（「打开数据目录」失败那次就是这么藏的），
 // 所以这里不只查表，还把 server.cpp 里真实的 AppError 字面量扫一遍——
@@ -809,11 +505,6 @@ int check_status_map() {
     int status;
   };
   const Expected expected[] = {
-      // 重写历史前的提交（已不可引用）的七项 + 下载路由
-      {"endpoint_not_allowed", 400}, {"no_update", 400},
-      {"update_disabled", 403},      {"update_busy", 409},
-      {"manifest_invalid", 502},     {"download_failed", 502},
-      {"checksum_mismatch", 502},
       // 同类洞：未登录不是服务端错误
       {"unauthorized", 401},
       // 限流单独一项：不能与 401/403 混在一起，客户端要靠 429 + Retry-After 等待
@@ -829,10 +520,10 @@ int check_status_map() {
   }
 
   // 源码扫描：server/src 与 core/src 里直接 throw 的码，要么在清单里，要么是启动期错误。
-  // 扫整个目录而不是单个 server.cpp：config.cpp / platform_paths.cpp / apply_update.cpp
+  // 扫整个目录而不是单个 server.cpp：config.cpp / platform_paths.cpp
   // 也会抛 AppError，只扫一个文件等于给它们开免责通道。
   // 扫描 AppError(<空白>"code" ...)：括号与引号之间允许换行。
-  // 之前固定匹配 AppError(" 会漏掉换行写法（port_in_use、install_unsupported、
+  // 之前固定匹配 AppError(" 会漏掉换行写法（port_in_use、
   // bad_version、bad_company_name 都这么写），等于给这类码开了后门。
   const std::string needle = "AppError(";
   const auto scan_codes = [&](const std::string& text, const std::string& label,
@@ -926,13 +617,7 @@ int main() {
   if (check_csp() != 0) {
     code = 1;
   }
-  if (check_update_guards() != 0) {
-    code = 1;
-  }
   if (check_rate_limit() != 0) {
-    code = 1;
-  }
-  if (check_apply_state() != 0) {
     code = 1;
   }
   if (check_status_map() != 0) {

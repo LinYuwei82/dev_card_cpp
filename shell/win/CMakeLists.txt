@@ -20,9 +20,9 @@ if(NOT EXISTS "${DEVCARD_WEBVIEW2_INCLUDE}/WebView2.h"
         "无网环境：给该脚本传 -LocalPackage <nupkg 路径>。")
 endif()
 
-# 分层重构后 win 壳不再自带更新状态机（旧更新桥已退役）：
-# 检测/编排全在 server，win 安装走 server→apply_update 协助器。
-add_executable(DevCard WIN32 main.cpp app.manifest app.rc)
+# v1.4.0 起更新完全壳侧化：判定与编排在 core（devcard::UpdateEngine），
+# 本壳只做平台适配器（WinHTTP 网络、注册表、TaskDialog、下载与静默安装）。
+add_executable(DevCard WIN32 main.cpp updater_win.cpp app.manifest app.rc)
 devcard_add_version_rc(DevCard)
 devcard_add_build_stamp(DevCard)
 
@@ -38,7 +38,7 @@ target_include_directories(DevCard PRIVATE
 
 # WebView2LoaderStatic 自身要求 version.lib 与 shlwapi.lib；
 # 其余是 ShellExecute / 文件对话框 / 下载目录 / 打印机枚举所需。
-# HTTP 与哈希库已随旧更新桥退役：win 壳不再自己拉清单与校验下载包。
+# winhttp/bcrypt 供更新适配器使用（拉清单/下载、SHA256 与 CSPRNG）。
 target_link_libraries(DevCard PRIVATE
     devcard_server
     "${DEVCARD_WEBVIEW2_LIB}"
@@ -53,6 +53,8 @@ target_link_libraries(DevCard PRIVATE
     gdi32
     advapi32
     winspool
+    winhttp
+    bcrypt
 )
 
 # 子集字体放到 exe 旁的 fonts\：server 的 default_font_dir() 在 Windows 上

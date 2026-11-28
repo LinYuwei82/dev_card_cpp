@@ -41,14 +41,10 @@
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
 #include "devcard/settings.h"
-#include "devcard/update_manifest.h"
-#include "devcard/update_package.h"
 #include "devcard/xlsx.h"
-#include "apply_update.h"
 #include "config.h"
 #include "heartbeat.h"
 #include "instance_lock.h"
-#include "update_service.h"
 #include "web_assets.h"
 #include "font_coverage.h"
 
@@ -132,29 +128,6 @@ struct ServerState {
   std::map<std::string, RateLimitEntry> rate_limit_by_ip;
   std::map<std::string, RateLimitEntry> rate_limit_by_user;
 
-  // 自更新阶段一：同一时间只允许一个下载任务；状态由后台线程更新。
-  struct UpdateDownload {
-    std::mutex mutex;
-    std::string state = "idle";  // idle / running / done / failed
-    bool installing = false;
-    std::uint64_t total = 0;
-    std::uint64_t received = 0;
-    std::filesystem::path part_path;
-    std::string path;
-    std::string sha256;
-    std::string code;
-    std::string error;
-  };
-  std::shared_ptr<UpdateDownload> update = std::make_shared<UpdateDownload>();
-
-  // 编排层唯一状态机（定时检查/退避/跳过/判定快照）。
-  // 检测判据全部来自 core evaluate_update，这里只编排「何时查、查完存什么」。
-  std::unique_ptr<UpdateService> update_service;
-
-  // 自更新阶段二：安装接口回完 202 后置位，main 轮询到就退出，交由安装器接管。
-  // 用 shared_ptr 是因为置位发生在 detached 线程里，不能碰已析构的 ServerState。
-  std::shared_ptr<std::atomic<bool>> stop_requested =
-      std::make_shared<std::atomic<bool>>(false);
 };
 
 std::string json_body(const json& value) { return value.dump(); }
@@ -271,130 +244,6 @@ std::size_t utf8_length(const std::string& value) {
   return count;
 }
 
-// 版本检查（M5/M6）：只读取数据目录里的更新清单并比较版本，不下载、不替换。
-// 清单由发布方投放；缺失或非法时接口照常返回，只是不给「有新版本」。
-// v2 起统一为带 Ed25519 签名的 manifest.json（两平台同一份，只取本平台段）；
-// 远端检查地址随之内嵌，间隔走默认配置——清单里不再有 check_* 字段。
-constexpr std::string_view kUpdateManifestName = "manifest.json";
-constexpr std::string_view kDefaultDownloadPage =
-    "https://dl.xiaotu.online/";
-// 清单 Ed25519 公钥（32 字节的 hex），与 key_id（2026-11）一起随客户端发布；
-// 轮换密钥 = 新 key_id + 新公钥随下一个客户端版本编译进来。
-constexpr std::string_view kUpdateSignPubkeyHex =
-    "3f4d9fabc122113e426b98a8f8b2312cb194e406f770de61285e41c607d22403";
-constexpr std::string_view kDefaultUpdateEndpoint =
-    "https://dl.xiaotu.online/devcard/updates/stable/manifest.json";
-constexpr long kDefaultUpdateIntervalHours = 24;
-
-bool parse_version(const std::string& text, std::vector<long>* parts) {
-  if (text.empty()) return false;
-  std::vector<long> out;
-  long value = 0;
-  bool has_digit = false;
-  for (const char ch : text) {
-    if (ch >= '0' && ch <= '9') {
-      value = value * 10 + (ch - '0');
-      if (value > 100000000L) return false;
-      has_digit = true;
-    } else if (ch == '.') {
-      if (!has_digit) return false;
-      out.push_back(value);
-      value = 0;
-      has_digit = false;
-    } else {
-      return false;
-    }
-  }
-  if (!has_digit) return false;
-  out.push_back(value);
-  *parts = out;
-  return true;
-}
-
-// 逐段按数值比较，缺的段按 0 处理（1.2 == 1.2.0）。非法版本号视为相等。
-int compare_version(const std::string& left, const std::string& right) {
-  std::vector<long> a;
-  std::vector<long> b;
-  if (!parse_version(left, &a) || !parse_version(right, &b)) return 0;
-  const std::size_t count = std::max(a.size(), b.size());
-  for (std::size_t i = 0; i < count; ++i) {
-    const long l = i < a.size() ? a[i] : 0;
-    const long r = i < b.size() ? b[i] : 0;
-    if (l != r) return l > r ? 1 : -1;
-  }
-  return 0;
-}
-
-struct UpdateManifest {
-  bool found = false;
-  // 验签通过后本平台（Windows / macOS）的版本与构建号；验签失败时保持为空。
-  std::string latest;
-  std::uint64_t latest_build = 0;  // Windows 构建号；macOS 恒 0
-  // 验签通过的完整解析结果：/api/version 走 core evaluate_update 判定时用，
-  // 不再内联第二份双键比较（分层重构的收口点之一）。
-  SignedManifest parsed;
-  // v2 清单没有 download_url/notes 字段；保留输出结构，前端有 download_page 兜底。
-  std::string download_url;
-  std::string notes;
-  std::string error;
-  // v2 artifacts 转成 v1 资产表的形状（browser_download_url + digest
-  // "sha256:<hex>"）原样透传前端：前端的资产解析与按钮逻辑不用动。
-  // 命中本地清单时前端不会再拉远端，没有这份资产就无法判断
-  // 「能不能下载 / 能不能安装」，按钮只能全灰。
-  json assets = json::array();
-  // M6：远端检查的开关、地址与频率。地址内嵌、间隔用默认值；
-  // 清单验签失败时整体关闭检查——清单可能被篡改，宁可查不了也不冒进。
-  bool check_enabled = true;
-  std::string check_endpoint{std::string(kDefaultUpdateEndpoint)};
-  long check_interval_hours = kDefaultUpdateIntervalHours;
-};
-
-UpdateManifest read_update_manifest(const std::filesystem::path& data_dir) {
-  UpdateManifest result;
-  std::ifstream in(data_dir / kUpdateManifestName, std::ios::binary);
-  if (!in) return result;
-  result.found = true;
-  const std::string text((std::istreambuf_iterator<char>(in)),
-                         std::istreambuf_iterator<char>());
-  // v2：先验 Ed25519 签名，再解析。签名不过就放弃更新（不提示版本、
-  // 不透传资产、关闭远端检查）——这是「先验清单签名（失败放弃更新），
-  // 再校验产物 SHA256」链路的第一道闸。
-  const SignedManifest parsed = parse_signed_manifest(text, kUpdateSignPubkeyHex);
-  if (!parsed.ok) {
-    result.error = parsed.error;
-    result.check_enabled = false;
-    return result;
-  }
-  result.parsed = parsed;
-  result.latest = parsed.platform.version;
-  result.latest_build = parsed.platform.build;
-  for (const ManifestArtifact& artifact : parsed.platform.artifacts) {
-    result.assets.push_back(json{
-        {"name", artifact.name},
-        {"browser_download_url", artifact.url},
-        {"digest", "sha256:" + artifact.sha256},
-        {"size", artifact.size},
-        {"version", result.latest},
-    });
-  }
-  std::vector<long> parts;
-  if (result.latest.empty()) {
-    result.error = "更新清单缺少本平台条目";
-  } else if (!parse_version(result.latest, &parts)) {
-    result.error = "更新清单中的版本号不合法";
-    result.latest.clear();
-    result.assets = json::array();
-  }
-  return result;
-}
-
-std::string download_page() {
-  if (const char* env = std::getenv("DEVCARD_DOWNLOAD_PAGE"); env && *env) {
-    return env;
-  }
-  return std::string(kDefaultDownloadPage);
-}
-
 constexpr std::string_view kLogoSettingKey = "company_logo_path";
 
 // 只接受服务端自己写的相对路径，防路径穿越。
@@ -478,23 +327,6 @@ const StatusTable& error_status_table() {
       {"logo_too_large", 400},
       {"bad_company_name", 400},
       {"logo_write", 400},
-      // 更新（macOS 阶段一）
-      {"endpoint_not_allowed", 400},
-      {"no_update", 400},
-      {"update_disabled", 403},
-      {"update_busy", 409},
-      // 下载 spec 与验签清单对不上：不是客户端的锅也不是远端的锅，
-      // 400 让前端把「重新检查更新」的提示亮出来。
-      {"not_in_manifest", 400},
-      {"manifest_invalid", 502},
-      {"download_failed", 502},
-      {"checksum_mismatch", 502},
-      // 自更新阶段二（仅 Windows 安装版）
-      {"update_package_missing", 400},
-      {"install_package_invalid", 400},
-      {"install_busy", 409},
-      {"install_failed", 500},
-      {"install_unsupported", 501},
       // 路由可达，但属于服务端 / 磁盘故障：显式写出来，别靠「没登记就 500」兜着。
       {"backup_failed", 500},
       {"io_error", 500},
@@ -885,12 +717,7 @@ const std::vector<std::string>& route_error_codes() {
       "bad_xlsx",         "bad_backup",
       "backup_invalid",   "old_password_required",
       "bad_logo",         "logo_too_large",   "bad_company_name",
-      "logo_write",       "endpoint_not_allowed",
-      "no_update",        "update_disabled",  "update_busy",
-      "not_in_manifest",
-      "manifest_invalid", "download_failed",  "checksum_mismatch",
-      "update_package_missing", "install_package_invalid",
-      "install_busy",     "install_failed",   "install_unsupported",
+      "logo_write",
       "backup_failed",    "io_error",         "db_error",
       "db_exec",          "db_unexpected_row", "password_hash",
       "xlsx_write_failed", "bad_version",
@@ -916,8 +743,6 @@ struct ServerHandle::Impl : ServerState {};
 ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
 ServerHandle::~ServerHandle() {
   if (!impl_) return;
-  // 更新服务线程先停：它的 run_check 会写数据目录，必须早于其余资源释放。
-  if (impl_->update_service) impl_->update_service->stop();
   impl_->heartbeat_stop = true;
   if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
   if (impl_->server.is_running()) impl_->server.stop();
@@ -933,10 +758,6 @@ ServerHandle::~ServerHandle() {
 }
 
 const std::string& ServerHandle::local_token() const { return impl_->local_token; }
-
-bool ServerHandle::stop_requested() const {
-  return impl_ && impl_->stop_requested->load();
-}
 
 std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   auto t_startup = std::chrono::steady_clock::now();
@@ -971,23 +792,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   if (ec) {
     throw AppError("data_dir", "无法创建数据目录: " + ec.message());
   }
-  // 上次中断留下的 .part / curl 日志不能参与校验，也不能越积越多。
-  cleanup_update_partials(options.data_dir / "updates");
-  log_startup("data_dir+cleanup", t_startup);
-
-  // 编排层唯一状态机：地址与公钥用编译期内嵌值，通道固定 stable。
-  // 状态落数据目录 update-state.json；prefetch/auto_check 开关先随状态持久化，
-  // 自动预下载动作尚未接线（旧 updater_win 也只存标志不自动下）。
-  {
-    UpdateServiceConfig update_config;
-    update_config.endpoint = std::string(kDefaultUpdateEndpoint);
-    update_config.pubkey_hex = std::string(kUpdateSignPubkeyHex);
-    update_config.channel = "stable";
-    update_config.data_dir = options.data_dir;
-    state.update_service =
-        std::make_unique<UpdateService>(std::move(update_config));
-  }
-  log_startup("update_service_ctor", t_startup);
+  log_startup("data_dir", t_startup);
 
   // 恢复上次持久化的会话：进程重启后 WebView2 cookie 还在，server 进程内存空了。
   load_sessions(state);
@@ -1100,177 +905,6 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     set_json(response, body);
   });
 
-  // 版本检查：只读更新清单并比较版本，返回下载页；不下载、不替换。
-  // 判定统一走 core evaluate_update（全仓唯一判据源，分层重构收口点）：
-  //   1) 本地清单（数据目录有运维投放的 manifest.json）命中时以本地为准——
-  //      运维覆盖能力保留，但同受灰度/跳过约束（浏览器/mac 路径首次生效）；
-  //   2) 本地没命中时回落到编排层 UpdateService 的远端判定快照。
-  // 旧版在这里内联过第三份 version/build 双键比较，已删——判据只许 core 一份。
-  state.server.Get("/api/version", [&state, schema, version](
-                                       const httplib::Request&,
-                                       httplib::Response& response) {
-    const UpdateManifest manifest = read_update_manifest(state.data_dir);
-    const std::uint64_t local_build = devcard::compiled_build_number();
-    std::string latest = manifest.latest;
-    json assets = manifest.assets;
-    bool available = false;
-
-    LocalUpdateState local;
-    local.version = version;
-    local.build = local_build;
-    local.channel = "stable";
-    local.install_id =
-        state.update_service ? state.update_service->install_id() : std::string();
-    // 跳过窗口与远端判定同一口径：运维投放的本地清单也受「跳过此版本」约束
-    // （是否过期由 core evaluate_update 判，这里只透传原值）。
-    if (state.update_service) {
-      local.skipped_version = state.update_service->skipped_version();
-      local.skip_until_epoch = state.update_service->skip_until_epoch();
-    }
-    local.now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::system_clock::now().time_since_epoch())
-                          .count();
-
-    if (manifest.found && !latest.empty() && manifest.error.empty()) {
-      available = evaluate_update(manifest.parsed, local).verdict ==
-                  UpdateDecision::Verdict::Available;
-    }
-    if (!available && state.update_service && state.update_service->has_decision()) {
-      const UpdateDecision d = state.update_service->decision();
-      if (d.verdict == UpdateDecision::Verdict::Available) {
-        available = true;
-        latest = d.version;
-        if (d.has_artifact) {
-          assets = json::array({json{{"name", d.artifact.name},
-                                     {"browser_download_url", d.artifact.url},
-                                     {"digest", "sha256:" + d.artifact.sha256},
-                                     {"size", d.artifact.size},
-                                     {"version", d.version}}});
-        }
-      }
-    }
-    set_json(response,
-             json{{"version", version},
-                  {"local_build", local_build},
-                  {"schema_version", schema},
-                  {"latest", latest.empty() ? json(nullptr) : json(latest)},
-                  {"update_available", available},
-                  {"download_url", manifest.download_url},
-                  {"download_page", download_page()},
-                  {"notes", manifest.notes},
-                  {"assets", assets},
-                  // M6：远端检查的开关来自同一份 manifest.json（地址内嵌，
-                  // 间隔用默认配置），前端不写死地址。
-                  {"check", json{{"enabled", manifest.check_enabled},
-                                 {"endpoint", manifest.check_endpoint},
-                                 {"interval_hours", manifest.check_interval_hours}}},
-                  // 清单文件的本地绝对路径不再下发：前端与壳均未消费该字段，
-                  // 留着只会向任意登录用户泄露数据目录结构。
-                  {"checked_at", now_text()},
-                  {"error", manifest.error.empty() ? json(nullptr)
-                                                   : json(manifest.error)}});
-  });
-
-  // 远端 v2 清单的验签：页面用系统 TLS 取到清单原文后交回这里，
-  // 服务端用编译期内嵌公钥验签，通过才把本平台 artifacts 作为下载资产下发。
-  // 不这么做就只能用数据目录里的本地清单——运维没投放时按钮永远是灰的；
-  // 而让页面直接信远端 artifacts 又等于绕过验签（WebView 里没有 Ed25519）。
-  state.server.Post("/api/version/verify",
-                    [](const httplib::Request& request,
-                       httplib::Response& response) {
-                      const json body = parse_body(request.body);
-                      const std::string raw = body.value("manifest", "");
-                      if (raw.empty()) {
-                        throw AppError("bad_json", "manifest 不能为空");
-                      }
-                      const SignedManifest parsed =
-                          parse_signed_manifest(raw, kUpdateSignPubkeyHex);
-                      if (!parsed.ok) {
-                        // 验签失败不算接口错误：前端要把它与「没有新版本」
-                        // 在界面上处理成同一种结果（只提示、不给下载）。
-                        set_json(response, json{{"ok", false},
-                                                {"error", parsed.error}});
-                        return;
-                      }
-                      json assets = json::array();
-                      for (const ManifestArtifact& artifact :
-                           parsed.platform.artifacts) {
-                        assets.push_back(json{
-                            {"name", artifact.name},
-                            {"browser_download_url", artifact.url},
-                            {"digest", "sha256:" + artifact.sha256},
-                            {"size", artifact.size},
-                            {"version", parsed.platform.version},
-                        });
-                      }
-                      set_json(response, json{{"ok", true},
-                                              {"version", parsed.platform.version},
-                                              {"build", parsed.platform.build},
-                                              {"assets", assets}});
-                    });
-
-  // —— 编排层统一状态接口（唯一状态机 UpdateService，见 update_service.h）——
-  // 前端只读这份状态、只调这几个动作；检测判据在 core，编排在这里，
-  // 壳不再各写一份状态机（双胞胎 bug 的根治点）。
-  // 统一载荷：附下载页与本机版本号，前端不必再回读 /api/version。
-  auto update_state_payload = [&state, version]() {
-    json out = state.update_service ? state.update_service->state_json()
-                                    : json{{"enabled", false}};
-    out["download_page"] = download_page();
-    out["version"] = version;
-    return out;
-  };
-
-  state.server.Get("/api/update/state",
-                   [&state, update_state_payload](
-                       const httplib::Request& request,
-                       httplib::Response& response) {
-                     require_admin(state, request);
-                     set_json(response, update_state_payload());
-                   });
-
-  state.server.Post("/api/update/check",
-                    [&state, update_state_payload](
-                        const httplib::Request& request,
-                        httplib::Response& response) {
-                      require_admin(state, request);
-                      if (!state.update_service) {
-                        throw AppError("update_disabled", "更新服务未启用");
-                      }
-                      state.update_service->check_now();
-                      set_json(response, update_state_payload());
-                    });
-
-  state.server.Post("/api/update/skip",
-                    [&state, update_state_payload](
-                        const httplib::Request& request,
-                        httplib::Response& response) {
-                      require_admin(state, request);
-                      if (!state.update_service) {
-                        throw AppError("update_disabled", "更新服务未启用");
-                      }
-                      const json body = parse_body(request.body);
-                      state.update_service->skip_version(
-                          body.value("version", std::string{}),
-                          body.value("hours", static_cast<std::int64_t>(24)));
-                      set_json(response, update_state_payload());
-                    });
-
-  state.server.Post("/api/update/options",
-                    [&state, update_state_payload](
-                        const httplib::Request& request,
-                        httplib::Response& response) {
-                      require_admin(state, request);
-                      if (!state.update_service) {
-                        throw AppError("update_disabled", "更新服务未启用");
-                      }
-                      const json body = parse_body(request.body);
-                      state.update_service->set_options(
-                          body.value("auto_check", true),
-                          body.value("prefetch", false));
-                      set_json(response, update_state_payload());
-                    });
-
   state.server.Post("/api/session/local",
                     [&state](const httplib::Request& request,
                              httplib::Response& response) {
@@ -1346,381 +980,6 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                       audit_event(state, entry);
                       set_json(response, json{{"user", user_json(user)}});
                     });
-
-  // 自更新阶段一：下载 + 双校验（SHA256 与字节数），不做替换。
-  // 下载器走系统 curl：TLS 与证书校验由系统提供，服务端只负责白名单、
-  // 落盘到数据目录 updates/、以及校验；任何失败都删残件并回到「只提示」。
-  state.server.Post("/api/update/download",
-                    [&state, version](const httplib::Request& request,
-                                      httplib::Response& response) {
-                      require_admin(state, request);
-                      // 前端不给入口不算闸门：检查关闭时服务端也要拒绝。
-                      const UpdateManifest manifest =
-                          read_update_manifest(state.data_dir);
-                      if (!manifest.check_enabled) {
-                        throw AppError("update_disabled",
-                                       "更新检查已关闭，不提供下载");
-                      }
-                      const json body = parse_body(request.body);
-                      UpdatePackageSpec spec;
-                      spec.version = body.value("version", "");
-                      spec.file_name = body.value("file_name", "");
-                      spec.url = body.value("url", "");
-                      spec.sha256 = body.value("sha256", "");
-                      spec.size =
-                          body.value("size", static_cast<std::uint64_t>(0));
-                      // 不再带 spec 的调用视为「用编排层判定快照的产物」：
-                      // 服务端验签 + evaluate_update 判定过的 artifact，
-                      // 客户端再也拿不出「来路不明的 spec」让服务端落盘。
-                      const bool legacy_spec =
-                          !spec.url.empty() || !spec.sha256.empty();
-                      if (!legacy_spec) {
-                        if (!state.update_service) {
-                          throw AppError("update_disabled",
-                                         "更新服务未启用，不提供下载");
-                        }
-                        const UpdateDecision d =
-                            state.update_service->decision();
-                        if (d.verdict != UpdateDecision::Verdict::Available ||
-                            !d.has_artifact) {
-                          throw AppError("no_update", "没有可用的新版本");
-                        }
-                        spec.version = d.version;
-                        spec.file_name = d.artifact.name;
-                        spec.url = d.artifact.url;
-                        spec.sha256 = d.artifact.sha256;
-                        spec.size = d.artifact.size;
-                      }
-                      const std::string invalid = validate_update_spec(spec);
-                      if (!invalid.empty()) {
-                        throw AppError(validate_update_spec_code(spec), invalid);
-                      }
-                      // v2：下载用的 url/sha256/size 必须与验签通过的清单一致。
-                      // 否则验签只拦得住「本地提示」，拦不住拿着来路不明的
-                      // spec 直接 POST。清单验签失败时 check_enabled 已为
-                      // false（上面就拒绝了）；数据目录没有清单文件时保持
-                      // 旧行为，由白名单与版本检查兜底。
-                      // 无 spec 路径的产物来自编排层判定快照，天然与清单一致，
-                      // 不再重复比对本地投放文件（本地清单可能根本没投放）。
-                      if (legacy_spec) {
-                        if (manifest.found) {
-                          bool matched = false;
-                          for (const json& item : manifest.assets) {
-                            matched =
-                                item.value("browser_download_url", "") == spec.url &&
-                                item.value("digest", "") == "sha256:" + spec.sha256 &&
-                                item.value("size", std::uint64_t{0}) == spec.size;
-                            if (matched) break;
-                          }
-                          if (!matched) {
-                            throw AppError("not_in_manifest",
-                                           "下载信息与更新清单不一致（清单可能已更新，请重新检查更新）");
-                          }
-                        }
-                        // 没有比当前版本更新的版本时，不允许借下载接口落盘。
-                        // （Windows 同版本的新构建号要等客户端有了本机构建号
-                        // 来源才会放行——见 /api/version 里 build 比较的说明。）
-                        if (compare_version(spec.version, version) <= 0) {
-                          throw AppError("no_update", "没有可用的新版本");
-                        }
-                      }
-                      // 用户在壳层 NSSavePanel 里选的完整落点（可选）。给了就先下到
-                      // updates/ 校验，再整体挪到该路径，避免命令行出现非 ASCII 参数。
-                      std::filesystem::path save_path;
-                      const std::string save_path_text =
-                          body.value("save_path", "");
-                      if (!save_path_text.empty()) {
-                        save_path = path_from_utf8(save_path_text);
-                        if (!save_path.is_absolute()) {
-                          throw AppError("invalid_path",
-                                         "保存位置必须是绝对路径");
-                        }
-                      }
-
-                      const std::filesystem::path updates_dir =
-                          state.data_dir / "updates";
-                      // 与下载器共用同一处计算：轮询读的 part 必须就是 curl 写的那个。
-                      const std::filesystem::path part =
-                          update_part_path(updates_dir, spec.file_name);
-                      const std::shared_ptr<ServerState::UpdateDownload> download =
-                          state.update;
-                      {
-                        std::lock_guard<std::mutex> lock(download->mutex);
-                        if (download->state == "running") {
-                          throw AppError("update_busy",
-                                         "已有更新包正在下载，请稍候");
-                        }
-                        download->state = "running";
-                        download->total = spec.size;
-                        download->received = 0;
-                        download->part_path = part;
-                        download->path.clear();
-                        download->sha256.clear();
-                        download->code.clear();
-                        download->error.clear();
-                      }
-                      std::thread([download, updates_dir, spec, save_path]() {
-                        UpdateDownloadOutcome outcome =
-                            download_update_package(updates_dir, spec);
-                        // 校验通过后再搬到用户选的位置；搬失败就整体失败、不留残件，
-                        // 状态落到 failed 而不是卡在 running。
-                        if (outcome.ok && !save_path.empty()) {
-                          std::string move_error;
-                          if (!relocate_update_package(
-                                  path_from_utf8(outcome.path), save_path,
-                                  &move_error)) {
-                            outcome.ok = false;
-                            outcome.error_code = "save_failed";
-                            outcome.error = move_error;
-                          } else {
-                            outcome.path = path_to_utf8(save_path);
-                          }
-                        }
-                        std::lock_guard<std::mutex> lock(download->mutex);
-                        download->part_path.clear();
-                        if (outcome.ok) {
-                          download->state = "done";
-                          download->path = outcome.path;
-                          download->sha256 = outcome.sha256;
-                          download->received = outcome.bytes;
-                          download->total = outcome.bytes;
-                        } else {
-                          download->state = "failed";
-                          download->code = outcome.error_code;
-                          download->error = outcome.error;
-                        }
-                      }).detach();
-                      set_json(response,
-                               json{{"state", "running"}, {"total", spec.size}},
-                               202);
-                    });
-
-  state.server.Get("/api/update/download",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     require_admin(state, request);
-                     const std::shared_ptr<ServerState::UpdateDownload> download =
-                         state.update;
-                     std::lock_guard<std::mutex> lock(download->mutex);
-                     std::uint64_t received = download->received;
-                     if (download->state == "running" &&
-                         !download->part_path.empty()) {
-                       std::error_code ec;
-                       const auto size =
-                           std::filesystem::file_size(download->part_path, ec);
-                       if (!ec) received = static_cast<std::uint64_t>(size);
-                     }
-                     set_json(response,
-                              json{{"state", download->state},
-                                   {"received", received},
-                                   {"total", download->total},
-                                   {"path", download->path},
-                                   {"sha256", download->sha256},
-                                   {"code", download->code},
-                                   {"error", download->error}});
-                   });
-
-  // 自更新阶段二（仅 Windows 安装版）：把已下载并校验过的 Inno 安装包交给
-  // 独立的协助进程去装。本进程先回 202，约 300ms 后停服退出；安装器负责
-  // 关掉还占着程序文件的实例。退出码与版本变化由新进程从 install-result.json 回读。
-  state.server.Post("/api/update/install",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      require_admin(state, request);
-#ifndef _WIN32
-                      // mac 侧只有下载（阶段一），替换与重启未实现。
-                      (void)response;
-                      throw AppError("install_unsupported",
-                                     "自动安装目前只有 Windows 安装版支持");
-#else
-                      if (!is_installed_layout()) {
-                        throw AppError(
-                            "install_unsupported",
-                            "绿色版不提供自动安装：请退出后手动替换程序目录。");
-                      }
-                      const json body = parse_body(request.body);
-                      const std::filesystem::path updates_dir =
-                          state.data_dir / "updates";
-                      std::filesystem::path package;
-                      std::string expected_sha;
-                      std::uint64_t expected_size = 0;
-                      const std::string requested =
-                          body.value("path", std::string{});
-                      if (!requested.empty()) {
-                        // 显式指定：仅用于重试已落盘的包；仍要自带 SHA256 与字节数复核。
-                        package = path_from_utf8(requested);
-                        expected_sha = body.value("sha256", std::string{});
-                        expected_size =
-                            body.value("size", static_cast<std::uint64_t>(0));
-                        if (!is_valid_sha256(expected_sha) ||
-                            expected_size == 0) {
-                          throw AppError("manifest_invalid",
-                                         "指定安装包时必须同时给出 sha256 与字节数");
-                        }
-                      } else {
-                        std::lock_guard<std::mutex> lock(state.update->mutex);
-                        if (state.update->state != "done") {
-                          throw AppError("update_package_missing",
-                                         "还没有已下载并校验的更新包");
-                        }
-                        package = path_from_utf8(state.update->path);
-                        expected_sha = state.update->sha256;
-                        expected_size = state.update->total;
-                      }
-
-                      std::error_code ec;
-                      const std::filesystem::path base =
-                          std::filesystem::weakly_canonical(updates_dir, ec);
-                      if (ec || base.empty()) {
-                        throw AppError("install_failed",
-                                       "数据目录 updates/ 路径不可用");
-                      }
-                      const std::filesystem::path full =
-                          std::filesystem::weakly_canonical(package, ec);
-                      if (ec || full.empty()) {
-                        throw AppError("update_package_missing",
-                                       "安装包路径不可用：" +
-                                           path_to_utf8(package));
-                      }
-                      // 只认 updates/ 下的 .exe：这个接口不能变成「跑任意程序」。
-                      const std::filesystem::path relative =
-                          full.lexically_relative(base);
-                      if (relative.empty() ||
-                          path_to_utf8(relative).rfind("..", 0) == 0) {
-                        throw AppError("install_package_invalid",
-                                       "安装包必须位于数据目录 updates/ 下");
-                      }
-                      if (full.extension() != L".exe") {
-                        throw AppError("install_package_invalid",
-                                       "只接受 .exe 安装包");
-                      }
-                      if (!std::filesystem::is_regular_file(full, ec)) {
-                        throw AppError("update_package_missing",
-                                       "安装包不存在：" + path_to_utf8(full));
-                      }
-                      // 触发时再校验一次：下载完成到点安装之间文件可能已被换掉。
-                      const UpdateVerification checked =
-                          verify_update_file(full, expected_size, expected_sha);
-                      if (!checked.ok) {
-                        throw AppError(checked.code, checked.error);
-                      }
-
-                      {
-                        std::lock_guard<std::mutex> lock(state.update->mutex);
-                        if (state.update->installing) {
-                          throw AppError("install_busy", "已在安装中，请稍候");
-                        }
-                        state.update->installing = true;
-                      }
-
-                      // 从置位到协助器真正起来之间任何一步失败，都必须复位
-                      // installing；否则本次进程内的重试会一直得到 install_busy，
-                      // 只能靠重启程序恢复。
-                      try {
-                        // 协助器用 devcard-server.exe（它的 main 解析 --apply-update），
-                        // 而不是当前的壳层 DevCard.exe（不处理 --apply-update 参数）。
-                        const std::filesystem::path helper =
-                            updates_dir / "devcard-updater.exe";
-                        const std::filesystem::path server_exe =
-                            current_executable().parent_path() / L"devcard-server.exe";
-                        std::filesystem::copy_file(
-                            server_exe, helper,
-                            std::filesystem::copy_options::overwrite_existing, ec);
-                        if (ec) {
-                          throw AppError("install_failed",
-                                         "无法准备更新协助程序：" + ec.message());
-                        }
-                        // 上一次的结果不能留到这一次，否则界面会把旧结果当成本次结果。
-                        std::filesystem::remove(updates_dir / "install-result.json",
-                                                ec);
-                        // 先落 installing 再起协助器：没这一步，协助器被杀后
-                        // 磁盘上没有任何「升级曾经开始过」的证据。
-                        {
-                          std::string state_error;
-                          if (!write_apply_state(state.data_dir,
-                                                 ApplyState::Installing,
-                                                 "安装接口已受理，等待协助器接管",
-                                                 &state_error)) {
-                            throw AppError("install_failed",
-                                           "无法写入安装状态：" + state_error);
-                          }
-                        }
-                        ApplyUpdateOptions options;
-                        options.setup = full;
-                        options.wait_pid = current_process_id();
-                        options.result = updates_dir / "install-result.json";
-                        options.relaunch = current_executable();
-                        options.relaunch_args = current_arguments();
-                        spawn_apply_update(helper, options);
-                      } catch (...) {
-                        std::lock_guard<std::mutex> lock(state.update->mutex);
-                        state.update->installing = false;
-                        throw;
-                      }
-
-                      set_json(response,
-                               json{{"state", "installing"},
-                                    {"setup", path_to_utf8(full)}},
-                               202);
-                      // 202 写回浏览器后，只置 stop_requested 让本进程退出：
-                      //   - CLI server mode：main.cpp 轮询该标志，退出后析构 ServerHandle 停掉监听
-                      //   - shell 模式：main.cpp 的 watcher 轮询该标志 → PostMessageW(WM_CLOSE)
-                      // 这里不要再碰 state.server（原实现延迟 300ms 调 server.stop()，
-                      // 而脱离线程捕获的是 state 引用：进程若先退出，就是对已销毁对象调成员函数）。
-                      const std::shared_ptr<std::atomic<bool>> stop =
-                          state.stop_requested;
-                      std::thread([stop]() {
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(300));
-                        stop->store(true);
-                      }).detach();
-#endif
-                    });
-
-  // 安装结果：新进程启动后由界面读回，显示「安装器退出码 X｜版本 A → B」。
-  state.server.Get("/api/update/install-result",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     require_admin(state, request);
-                     const std::filesystem::path file =
-                         state.data_dir / "updates" / "install-result.json";
-                     std::error_code ec;
-                     if (!std::filesystem::is_regular_file(file, ec)) {
-                       // 没有结果文件时看状态文件：installing 且超阈值即中断，
-                       // 由「启动时还在 installing」推出来，不落第五个状态。
-                       const ApplyStateSnapshot snapshot =
-                           read_apply_state(state.data_dir);
-                       if (apply_state_interrupted(snapshot)) {
-                         set_json(response,
-                                  json{{"state", "interrupted"},
-                                       {"detail", "升级被中断：协助器未完成安装"},
-                                       {"updated_at", snapshot.updated_at},
-                                       {"age_seconds", snapshot.age_seconds}});
-                         return;
-                       }
-                       if (snapshot.present && snapshot.state == "installing") {
-                         set_json(response, json{{"state", "installing"},
-                                                 {"updated_at", snapshot.updated_at}});
-                         return;
-                       }
-                       set_json(response, json{{"state", "none"}});
-                       return;
-                     }
-                     std::ifstream in(file, std::ios::binary);
-                     if (!in) {
-                       throw AppError("io_error", "无法读取安装结果文件");
-                     }
-                     const std::string text(
-                         (std::istreambuf_iterator<char>(in)),
-                         std::istreambuf_iterator<char>());
-                     const json doc = json::parse(text, nullptr, false);
-                     if (doc.is_discarded() || !doc.is_object()) {
-                       throw AppError("io_error", "安装结果文件不是合法 JSON");
-                     }
-                     json out = doc;
-                     out["state"] = "done";
-                     set_json(response, out);
-                   });
 
   state.server.Post("/api/session/logout",
                     [&state](const httplib::Request& request,
@@ -2609,17 +1868,6 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   });
 
-  // 阶段二判据：握手标记写在数据库与字体初始化之后、HTTP 开始服务之前。
-  // 写失败必须让启动失败——静默跳过会让「新版本启动即崩」这条判据假绿。
-  {
-    std::string marker_error;
-    if (!write_app_started_marker(options.data_dir, DEVCARD_VERSION,
-                                  &marker_error)) {
-      throw AppError("app_started_marker",
-                     "无法写入启动标记 app-started.marker：" + marker_error);
-    }
-  }
-
   log_startup("routes_register", t_startup);
   if (!state.server.bind_to_port(options.host, options.port)) {
     throw AppError(
@@ -2655,9 +1903,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   });
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
-  // 监听起来后再起更新循环：首查延迟 30s，届时端口已就绪。
-  if (state.update_service) state.update_service->start();
-  log_startup("listen_thread+update_start", t_startup);
+  log_startup("listen_thread", t_startup);
   return handle;
 }
 

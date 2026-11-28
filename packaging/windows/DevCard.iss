@@ -75,6 +75,8 @@ Name: "{autodesktop}\DevCard"; Filename: "{app}\DevCard.exe"; WorkingDir: "{app}
 
 [Run]
 Filename: "{app}\DevCard.exe"; Description: "启动 DevCard"; Flags: nowait postinstall skipifsilent
+; 应用内更新：壳引擎拉起安装器时传 /RELAUNCH=1，静默安装完成后自动启动新版本
+Filename: "{app}\DevCard.exe"; Flags: nowait; Check: ShouldRelaunch
 
 [UninstallDelete]
 ; 只清理程序目录内的残留。数据目录 {localappdata}\DevCard\data 不在 {app} 下，
@@ -85,6 +87,13 @@ Type: filesandordirs; Name: "{app}\fonts"
 const
   WebView2Key = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   WebView2Url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+
+// 应用内更新（shell/win/updater_win.cpp）传入 /RELAUNCH=1：
+// 静默安装结束后自动启动新版本，用户不用手动重开。
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
 
 function RuntimeVersionInRoot(RootKey: Integer; const SubKey: String): String;
 var

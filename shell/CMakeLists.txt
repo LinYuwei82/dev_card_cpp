@@ -7,7 +7,6 @@ set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
 add_executable(DevCard MACOSX_BUNDLE
     mac/main.mm
     mac/updater.mm
-    mac/update_selftest.mm
     ${DEVCARD_APP_ICON})
 target_include_directories(DevCard PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/mac"

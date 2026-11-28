@@ -54,10 +54,6 @@ class ServerHandle {
 
   int port() const { return port_; }
 
-  // 自更新阶段二：安装接口先回 202，再置位该标志让 main 正常退出
-  // （停服由 ServerHandle 析构完成，安装器随后才拿到被占用的程序文件）。
-  bool stop_requested() const;
-
   // 进程级一次性本地会话令牌：壳通过页面注入的 meta 换取会话。
   const std::string& local_token() const;
 

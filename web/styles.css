@@ -138,13 +138,6 @@ button { cursor: pointer; }
   padding: 4px 10px; border-radius: 999px; background: var(--brand-50);
   color: var(--brand-700); font-size: 12px; font-weight: 600;
 }
-/* 有新版本：只提示与跳转下载页，不自动下载/替换。 */
-.pill-update {
-  border: 1px solid var(--accent); background: #FBF1E8; color: var(--accent);
-  cursor: pointer; font-family: inherit;
-}
-.pill-update:hover { background: #F6E4D4; }
-
 .page { padding: 22px 28px 28px; display: flex; flex-direction: column; gap: 14px; }
 .toolbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -304,47 +297,6 @@ body:not(.is-export) .app.is-print .statusbar.is-error {
 .modal-card h2 { margin: 0 0 8px; font-size: 17px; }
 .modal-card p { margin: 0; color: var(--text-2); font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
-
-/* —— 更新弹窗专用紧凑样式 —— */
-#update-modal .modal-update {
-  width: min(420px, calc(100% - 32px));
-  padding: 18px 20px;
-}
-#update-modal .modal-update h2 {
-  font-size: 15px; font-weight: 600; margin-bottom: 3px;
-}
-#update-modal .update-version {
-  font-size: 12px; color: var(--text-2);
-}
-#update-modal .update-notes {
-  font-size: 12px; color: var(--text-3);
-  font-style: italic; margin-top: 6px; white-space: pre-wrap;
-}
-#update-modal .update-mandatory {
-  font-size: 12px; color: #b45309; margin-top: 8px;
-  background: #fffbeb; border: 1px solid #fde68a;
-  border-radius: 6px; padding: 6px 8px; white-space: pre-wrap;
-}
-#update-modal .update-mandatory.is-error {
-  color: #b91c1c; background: #fef2f2; border-color: #fecaca;
-}
-#update-modal .update-steps {
-  margin: 8px 0 10px; padding-left: 18px;
-  color: var(--text-2); font-size: 12px; line-height: 1.45;
-}
-#update-modal .update-steps li { margin-bottom: 3px; }
-#update-modal .update-progress,
-#update-modal .update-install-result {
-  font-size: 12px; margin-top: 6px; color: var(--text-2);
-}
-#update-modal .update-install-result { color: var(--success, #229954); }
-#update-modal .update-actions {
-  margin-top: 14px; gap: 8px; flex-wrap: wrap;
-}
-#update-modal .update-footer {
-  font-size: 11px; color: var(--text-3);
-  margin-top: 8px; line-height: 1.4; opacity: .8;
-}
 
 .toast {
   position: fixed; z-index: 50; left: 50%; bottom: 30px; transform: translateX(-50%);

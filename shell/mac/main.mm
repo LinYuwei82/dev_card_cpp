@@ -4,7 +4,6 @@
 #import <WebKit/WebKit.h>
 
 #import "updater.h"
-#import "update_selftest.h"
 
 #include <exception>
 #include <filesystem>
@@ -340,10 +339,9 @@ API_AVAILABLE(macos(11.0))
       [self notify:@"下载页地址无效" kind:@"error"];
     }
   } else if ([action isEqualToString:@"checkForUpdates"]) {
-    // Sparkle 自更新：前端用户点「安装并重启」时转调 Sparkle。
-    // updaterBridge 内部处理 nil 场景（开发期无 SUFeedURL / SUPublicEDKey）。
+    // 原生更新引擎：前端桥触发 core UpdateEngine 立即检查（与菜单同一入口）。
     if (![self.updaterBridge checkForUpdates]) {
-      [self notify:@"Sparkle 未启用（缺少签名公钥或 feed URL）" kind:@"error"];
+      [self notify:@"更新检查未配置（缺少 SUFeedURL / SUPublicEDKey）" kind:@"error"];
     }
   } else if ([action isEqualToString:@"quit"]) {
     // 【回归 Bug 修复｜请勿改动】页面顶栏「退出」在桌面版等于退出应用。
@@ -743,13 +741,13 @@ int main(int argc, const char* argv[]) {
     about_item.target = g_about_handler;
     [app_menu addItem:[NSMenuItem separatorItem]];
 
-    // Sparkle 自动更新菜单项：target 先占位，updaterController 初始化后再绑定。
-    // updaterController 为 nil 时（开发期无 SUFeedURL / SUPublicEDKey）把它隐藏。
+    // 原生更新引擎（core UpdateEngine + NSAlert + Sparkle 安装执行器）：
+    // target/action 与可见性由 bridge.start 按清单配置情况绑定。
     NSMenuItem* check_update_item =
         [app_menu addItemWithTitle:@"检查更新…"
-                             action:@selector(checkForUpdates:)
+                             action:nil
                       keyEquivalent:@""];
-    check_update_item.target = nil;  // 稍后由 updaterController 接管
+    check_update_item.target = nil;  // 稍后由 DevCardUpdaterBridge 接管
 
     [app_menu addItem:[NSMenuItem separatorItem]];
     [app_menu addItemWithTitle:@"退出 DevCard"
@@ -774,12 +772,6 @@ int main(int argc, const char* argv[]) {
     // 保证 980 断点可触发、又不至于窄到内容挤成一列。
     [window setMinSize:NSMakeSize(960, 600)];
     [window center];
-
-    // 自检模式开关保留（DEVCARD_SELFTEST_UPDATE=live/其它）；
-    // 分层重构后检查节流在 server UpdateService，页面不再有 localStorage
-    // 节流键，无需为自检清状态。
-    NSString* selftest_update_mode =
-        NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_UPDATE"];
 
     WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
     WKUserContentController* controller = [[WKUserContentController alloc] init];
@@ -838,9 +830,6 @@ int main(int argc, const char* argv[]) {
     // 负向自检：摘掉 crypto.subtle，验证「判据没跑起来」会被单独拦住。
     BOOL selftest_nosubtle =
         NSProcessInfo.processInfo.environment[@"DEVCARD_SELFTEST_NOSUBTLE"].length > 0;
-    // 自动更新自检：四种失败路径（超时 / DNS / 非 JSON / 版本号非法）必须全静默。
-    // 值为 live 时改打真实发布接口并保留窗口，供验收核对与截屏。
-    BOOL selftest_update = selftest_update_mode.length > 0;
 
     NSString* page = selftest_pdf.length > 0
                          ? (selftest_nosubtle ? @"/?view=print&selftest_nosubtle=1"
@@ -949,8 +938,7 @@ int main(int argc, const char* argv[]) {
     [NSApp activateIgnoringOtherApps:YES];
     StartupLog("shell_window_visible");
 
-    std::thread([options, server_holder, page, selftest_update,
-                 selftest_update_mode, web]() {
+    std::thread([options, server_holder, page, web]() {
       auto result =
           std::make_shared<std::unique_ptr<devcard::ServerHandle>>();
       std::string startup_error;
@@ -974,10 +962,6 @@ int main(int argc, const char* argv[]) {
         [web loadRequest:[NSURLRequest
                              requestWithURL:[NSURL
                                               URLWithString:url_string]]];
-        if (selftest_update) {
-          // 自检细节全部在 shell/mac/update_selftest.mm，页面就绪后启动。
-          DevCardUpdateSelftestStart(web, selftest_update_mode);
-        }
         // 打印自检不在这里启动：见上面 onDidFinish——必须等真实页导航完成。
       });
     }).detach();

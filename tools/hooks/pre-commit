@@ -6,10 +6,9 @@
 #         无 BOM 会被按 GBK 读，中文字面量断裂 → 脚本崩溃。
 #
 # 门禁 2：清单 v2 的 Ed25519 公钥（hex）一致性
-#         分层重构后全仓只剩一处：/api/version 的 kUpdateSignPubkeyHex
-#         （server/src/server.cpp）。Windows 更新桥 DEVCARD_UPDATER_PUBKEY_HEX
-#         （shell/win/CMakeLists.txt）已随 updater_win 一起退役——win 壳不再
-#         自己验签，公钥一致性由 server 单点保证。
+#         v1.4.0 mote 化后全仓只剩一处：kUpdateManifestPubkeyHex
+#         （core/include/devcard/update_manifest.h）。验签在 core 引擎内完成，
+#         server 已退出更新链路；壳不携带公钥。
 #         有 ~/.config/devcard/manifest-keys/ed25519_seed.b64 时还会从种子推导
 #         公钥核对，防止写错。混用 Sparkle 公钥会导致 SIGNATURE_INVALID。
 #
@@ -70,19 +69,23 @@ hex_after_marker() {
         | grep -oE '"[0-9a-fA-F]{64}"' | head -1 | tr -d '"' | tr 'A-F' 'a-f'
 }
 
-SERVER_KEY_FILE="$REPO_ROOT/server/src/server.cpp"
-SERVER_HEX=$(hex_after_marker "$SERVER_KEY_FILE" "kUpdateSignPubkeyHex")
+CORE_KEY_FILE="$REPO_ROOT/core/include/devcard/update_manifest.h"
+CORE_HEX=$(hex_after_marker "$CORE_KEY_FILE" "kUpdateManifestPubkeyHex")
 
 hex_fail=0
-if [ -z "$SERVER_HEX" ]; then
-    echo -e "  ${RED}✗${NC} server/src/server.cpp 里找不到 kUpdateSignPubkeyHex 的 64 位 hex 公钥"
+if [ -z "$CORE_HEX" ]; then
+    echo -e "  ${RED}✗${NC} core/include/devcard/update_manifest.h 里找不到 kUpdateManifestPubkeyHex 的 64 位 hex 公钥"
     hex_fail=$((hex_fail + 1))
 fi
-# updater_win 退役后 win 壳不再有第二处公钥；若 DEVCARD_UPDATER_PUBKEY_HEX
-# 复现（有人把旧桥搬回来），这里拒绝。
+# 公钥只许 core 一处；若 server 旧常量或 win 壳公钥宏复现（有人把旧链路搬回来），这里拒绝。
+if grep -q "kUpdateSignPubkeyHex" "$REPO_ROOT/server/src/server.cpp" 2>/dev/null; then
+    echo -e "  ${RED}✗${NC} server/src/server.cpp 又出现了 kUpdateSignPubkeyHex"
+    echo -e "     v1.4.0 起 server 退出更新链路，清单公钥只在 core 头文件一处。"
+    hex_fail=$((hex_fail + 1))
+fi
 if grep -q "DEVCARD_UPDATER_PUBKEY_HEX" "$REPO_ROOT/shell/win/CMakeLists.txt" 2>/dev/null; then
     echo -e "  ${RED}✗${NC} shell/win/CMakeLists.txt 又出现了 DEVCARD_UPDATER_PUBKEY_HEX"
-    echo -e "     updater_win 已退役，清单验签只在 server 一处；win 壳不应再自带公钥。"
+    echo -e "     清单验签在 core 引擎内完成；win 壳不应再自带公钥。"
     hex_fail=$((hex_fail + 1))
 fi
 
@@ -95,10 +98,10 @@ if [ -f "$SEED_FILE" ] && command -v openssl >/dev/null 2>&1 && command -v xxd >
         derived_hex=$(printf '302e020100300506032b657004220420%s' "$seed_hex" \
             | xxd -r -p | openssl pkey -inform DER -pubout -outform DER 2>/dev/null \
             | tail -c 32 | xxd -p -c 64 | tr -d '\n')
-        if [ -n "$derived_hex" ] && [ -n "$SERVER_HEX" ] && [ "$derived_hex" != "$SERVER_HEX" ]; then
+        if [ -n "$derived_hex" ] && [ -n "$CORE_HEX" ] && [ "$derived_hex" != "$CORE_HEX" ]; then
             echo -e "  ${RED}✗${NC} 清单公钥与签名种子推导值不一致："
             echo -e "     种子推导：$derived_hex"
-            echo -e "     代码硬编码：$SERVER_HEX"
+            echo -e "     代码硬编码：$CORE_HEX"
             hex_fail=$((hex_fail + 1))
         fi
     fi

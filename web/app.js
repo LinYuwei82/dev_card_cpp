@@ -4,7 +4,6 @@ import './js/fonts.js';
 import './js/devices.js';
 import './js/settings.js';
 import './js/users.js';
-import { checkUpdate } from './js/update.js';
 import './js/print.js';
 import { applyBootstrap, showLogin, tryLocalSession } from './js/session.js';
 
@@ -36,15 +35,6 @@ import { applyBootstrap, showLogin, tryLocalSession } from './js/session.js';
         input.focus();
       });
     });
-
-  // ---------- 壳层入口 ----------
-
-  // Windows 壳菜单栏「帮助 → 检查更新」触发：
-  // ExecuteScript 调 window.devcard.checkUpdate()，默认走非静默模式——
-  // 有更新直接弹 modal，无更新弹 toast「已是最新版」。
-  window.devcard = window.devcard || {};
-
-  window.devcard.checkUpdate = function () { checkUpdate(false); };
 
   // ---------- 启动 ----------
   api('GET', '/api/bootstrap')
