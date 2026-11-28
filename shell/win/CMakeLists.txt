@@ -25,8 +25,12 @@ endif()
 # P1：shell_state 承载跨 TU 共享的全局状态与小工具，build_stamp 承载
 # guard.py 搜索的构建戳字符串（独立 TU 避免被入口文件的重构影响）。
 # P2：print_export 承载打印/导出双通道与共用互斥，main.cpp 不再直接操作打印状态。
+# P3：about_dialog / downloads / bridge / webview_host 按职责拆出，
+# main.cpp 只保留入口、窗口过程与 server 生命周期。
 add_executable(DevCard WIN32
-    main.cpp shell_state.cpp print_export.cpp build_stamp.cpp updater_win.cpp
+    main.cpp shell_state.cpp print_export.cpp
+    about_dialog.cpp downloads.cpp bridge.cpp webview_host.cpp
+    build_stamp.cpp updater_win.cpp
     app.manifest app.rc)
 devcard_add_version_rc(DevCard)
 devcard_add_build_stamp(DevCard)
