@@ -267,6 +267,7 @@ constexpr int IDC_ABOUT_OK = 101;
 constexpr int IDC_ABOUT_NOTES = 102;
 constexpr int IDC_ABOUT_MANUAL = 103;
 constexpr int IDC_ABOUT_RELEASES = 104;
+constexpr int IDC_ABOUT_CHECKUPDATE = 105;
 
 std::wstring AboutLinkUrl(int id, const std::wstring& version) {
   if (id == IDC_ABOUT_NOTES)
@@ -325,7 +326,7 @@ LRESULT CALLBACK AboutWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       add_label(L"DevCard 设备管理卡", 84, 20, title_font);
       add_label(ver_line, 84, 50, font);
       add_label(L"物业设备台账与设备管理卡打印工具", 20, 92, font);
-      add_label(L"© 2026 安业物业", 20, 116, font);
+      add_label(L"© 2026 小兔在线", 20, 116, font);
 
       auto add_link = [&](const std::wstring& label, int id, int y) {
         const std::wstring t = L"<a href=\"" + AboutLinkUrl(id, ver) + L"\">" +
@@ -349,11 +350,28 @@ LRESULT CALLBACK AboutWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
               static_cast<UINT_PTR>(static_cast<int>(IDC_ABOUT_OK))),
           inst, nullptr);
       SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+      // 「检查更新」：关闭本对话框后让主窗口走菜单同款流程（IDM_HELP_CHECKUPDATE）。
+      HWND check = CreateWindowExW(
+          0, L"BUTTON", L"检查更新", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+          S(196), S(222), S(90), S(26), hwnd,
+          reinterpret_cast<HMENU>(
+              static_cast<UINT_PTR>(static_cast<int>(IDC_ABOUT_CHECKUPDATE))),
+          inst, nullptr);
+      SendMessageW(check, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
       SetFocus(ok);
       return 0;
     }
     case WM_COMMAND:
-      if (LOWORD(wp) == IDC_ABOUT_OK) DestroyWindow(hwnd);
+      if (LOWORD(wp) == IDC_ABOUT_OK) {
+        DestroyWindow(hwnd);
+      } else if (LOWORD(wp) == IDC_ABOUT_CHECKUPDATE) {
+        const HWND parent = GetParent(hwnd);
+        DestroyWindow(hwnd);  // 先退出模态循环，再触发检查（弹窗不被本框遮挡）
+        if (parent) {
+          PostMessageW(parent, WM_COMMAND,
+                       MAKEWPARAM(IDM_HELP_CHECKUPDATE, 0), 0);
+        }
+      }
       return 0;
     case WM_NOTIFY: {
       const LPNMHDR nm = reinterpret_cast<LPNMHDR>(lp);
