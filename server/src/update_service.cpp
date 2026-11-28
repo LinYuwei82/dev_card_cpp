@@ -117,6 +117,10 @@ UpdateService::UpdateService(UpdateServiceConfig config)
       last_error_ = doc.value("last_error", std::string{});
     }
   }
+  // Windows 上打开的文件句柄会阻止 persist_locked 的「先删后 rename」落盘
+  // （remove 拒绝删除打开中的文件，rename 不覆盖已存在目标），必须在任何
+  // 落盘（含下方追平重置的 persist_locked）前关闭读句柄。
+  in.close();
   if (install_id_.empty()) install_id_ = migrate_install_id_from_win_shell();
   if (install_id_.empty()) install_id_ = random_install_id();
   // 跳过窗口过期即失效，不带进新进程。
