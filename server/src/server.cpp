@@ -1,52 +1,36 @@
 #include "devcard/server.h"
 
+#include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <thread>
+
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
-#include "devcard/sha256.h"
-#include "font_manifest.h"
-
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cctype>
-#include <cstdint>
-#include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <iterator>
-#include <map>
-#include <memory>
-#include <mutex>
-#include <random>
-#include <set>
-#include <string>
-#include <thread>
-#include <vector>
-
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
-
-#include "devcard/backup.h"
-#include "devcard/audit.h"
-#include "devcard/db.h"
 #include "devcard/backend/sqlite_db.h"
 #include "devcard/error.h"
-#include "devcard/image_meta.h"
 #include "devcard/migrations.h"
-#include "devcard/models.h"
 #include "devcard/paths.h"
 #include "devcard/service/device_service.h"
 #include "devcard/service/user_service.h"
-#include "devcard/settings.h"
-#include "devcard/xlsx.h"
+#include "devcard/sha256.h"
 #include "config.h"
-#include "heartbeat.h"
-#include "instance_lock.h"
-#include "web_assets.h"
+#include "error_status.h"
 #include "font_coverage.h"
+#include "font_manifest.h"
+#include "guards.h"
+#include "heartbeat.h"
+#include "http_json.h"
+#include "instance_lock.h"
+#include "logo_store.h"
+#include "routes.h"
+#include "server_state.h"
+#include "sessions.h"
+#include "web_assets.h"
 
 #ifdef _WIN32
 #include <shellapi.h>
@@ -56,25 +40,22 @@
 #endif
 
 namespace devcard {
+
+// server 内部实现细节已拆到独立模块；这里只引入 start_server/安全 handler 仍要用的名字。
+using detail::ServerState;
+using detail::host_allowed;
+using detail::is_bypass_path;
+using detail::is_loopback;
+using detail::load_sessions;
+using detail::random_token;
+using detail::read_file_bytes;
+using detail::session_user;
+using detail::set_json;
+using detail::status_for;
+
 namespace {
 
 using nlohmann::json;
-
-constexpr auto kSessionTtlSeconds = 12 * 3600;  // 12 小时，持久化用秒数方便序列化
-
-// 登录/改密失败计数的单个键（来源 IP 或用户名）。字段用 atomic，
-// 计数与判定另由 ServerState::rate_limit_mutex 串成一次操作。
-struct RateLimitEntry {
-  std::atomic<int> failures{0};
-  std::atomic<long long> window_start{0};  // steady 秒；0 表示窗口未开始
-  std::atomic<long long> locked_until{0};  // steady 秒
-};
-
-long long steady_seconds() {
-  return std::chrono::duration_cast<std::chrono::seconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
 
 // 启动耗时打点：每过一个阶段调一次，向 stderr 输出一行
 // `[startup] 名称 = X.Xms`（距上次打点的间隔）并重置基准。
@@ -88,549 +69,6 @@ void log_startup(const char* name, std::chrono::steady_clock::time_point& t) {
   t = std::chrono::steady_clock::now();
 }
 
-struct Session {
-  std::string user;
-  std::int64_t last_seen_epoch;  // Unix epoch 秒，方便 JSON 持久化
-};
-
-struct ServerState {
-  httplib::Server server;
-  std::thread thread;
-  std::unique_ptr<Db> db;
-  std::unique_ptr<DeviceService> devices;
-  std::unique_ptr<UserService> users;
-  std::unique_ptr<InstanceGuard> instance_guard;
-  std::filesystem::path data_dir;
-  std::filesystem::path font_dir;
-  // 开发态前端目录（--web-dir）：非空时静态资源直读磁盘，跳过内嵌自检。
-  std::filesystem::path web_dir;
-  std::map<std::string, std::string> fonts;
-  FontCoverage coverage;
-  std::string local_token;
-  bool seeded = false;
-  // 库内心跳（多实例第 3 层）：启动时抢占一行，运行期定时刷新。
-  std::string instance_id;
-  std::thread heartbeat_thread;
-  std::atomic<bool> heartbeat_stop{false};
-  // 网络模式（--server）：允许内网来源；本地窗口模式只接受回环。
-  bool network = false;
-  std::string bound_host;
-  std::string machine_name;
-  std::vector<std::string> allowed_hosts;
-
-  std::mutex sessions_mutex;
-  std::map<std::string, Session> sessions;
-
-  // 登录/改密失败限流：内存实现，进程重启清零（不落库）。
-  // 双键（来源 IP / 用户名）各自独立计数，任一超限即拒。
-  RateLimitOptions rate_limit;
-  std::mutex rate_limit_mutex;
-  std::map<std::string, RateLimitEntry> rate_limit_by_ip;
-  std::map<std::string, RateLimitEntry> rate_limit_by_user;
-
-};
-
-std::string json_body(const json& value) { return value.dump(); }
-
-void set_json(httplib::Response& response, const std::string& body, int status = 200) {
-  response.status = status;
-  response.set_header("Content-Type", "application/json; charset=utf-8");
-  response.set_header("Cache-Control", "no-store");
-  response.body = body;
-}
-
-void set_json(httplib::Response& response, const json& value, int status = 200) {
-  set_json(response, json_body(value), status);
-}
-
-void set_asset(httplib::Response& response, const std::string& body, const char* type) {
-  response.status = 200;
-  response.set_header("Content-Type", type);
-  response.set_header("Cache-Control", "no-store");
-  response.body = body;
-}
-
-json device_json(const Device& device) {
-  return {{"id", device.id},
-          {"dev_name", device.dev_name},
-          {"location", device.location},
-          {"control_range", device.control_range},
-          {"phone", device.phone},
-          {"created_at", device.created_at},
-          {"updated_at", device.updated_at},
-          {"version", device.version},
-          {"updated_by", device.updated_by}};
-}
-
-// 409 响应体：最新快照 + 冲突字段 + 版本号。
-// 前端据此提示「刷新后重填」；P3 若以后开放管理员强制覆盖，
-// 直接复用这里的 current/version 即可，不需要再改接口形状。
-json conflict_json(const ConflictError& error) {
-  const ConflictSnapshot& snapshot = error.snapshot();
-  return {{"error", "conflict"},
-          {"message", error.what()},
-          {"fields", snapshot.fields},
-          {"current", device_json(snapshot.current)},
-          {"current_version", snapshot.current.version},
-          {"updated_by", snapshot.current.updated_by},
-          {"updated_at", snapshot.current.updated_at}};
-}
-
-json user_json(const User& user) {
-  return {{"user_name", user.user_name},
-          {"display_name", user.display_name},
-          {"role", user.role},
-          {"must_change_password", user.must_change_password},
-          {"locked_until", user.locked_until},
-          {"created_at", user.created_at},
-          {"updated_at", user.updated_at}};
-}
-
-Device device_from_json(const json& body) {
-  Device device;
-  device.dev_name = body.value("dev_name", "");
-  device.location = body.value("location", "");
-  device.control_range = body.value("control_range", "");
-  device.phone = body.value("phone", "");
-  device.version = body.value("version", static_cast<std::int64_t>(0));
-  return device;
-}
-
-json parse_body(const std::string& body) {
-  try {
-    return json::parse(body.empty() ? "{}" : body);
-  } catch (const json::exception&) {
-    throw AppError("bad_json", "请求体不是合法 JSON");
-  }
-}
-
-int int_param(const httplib::Request& request, const char* name, int fallback) {
-  const std::string value = request.get_param_value(name);
-  if (value.empty()) return fallback;
-  try {
-    return std::stoi(value);
-  } catch (...) {
-    return fallback;
-  }
-}
-
-DeviceQuery query_from(const httplib::Request& request) {
-  DeviceQuery query;
-  query.keyword = request.get_param_value("keyword");
-  query.field = request.get_param_value("field");
-  query.name = request.get_param_value("name");
-  query.location = request.get_param_value("location");
-  query.page = int_param(request, "page", 0);
-  query.page_size = int_param(request, "page_size", 20);
-  query.sort = request.get_param_value("sort");
-  if (query.sort.empty()) query.sort = "id";
-  query.desc = request.get_param_value("desc") == "1";
-  return query;
-}
-
-std::string trim_copy(const std::string& value) {
-  const std::size_t begin = value.find_first_not_of(" \t\r\n");
-  if (begin == std::string::npos) return {};
-  const std::size_t end = value.find_last_not_of(" \t\r\n");
-  return value.substr(begin, end - begin + 1);
-}
-
-// 按 UTF-8 起始字节计数，一个汉字/符号算一个字。
-std::size_t utf8_length(const std::string& value) {
-  std::size_t count = 0;
-  for (unsigned char ch : value) {
-    if ((ch & 0xC0) != 0x80) ++count;
-  }
-  return count;
-}
-
-constexpr std::string_view kLogoSettingKey = "company_logo_path";
-
-// 只接受服务端自己写的相对路径，防路径穿越。
-bool safe_logo_relative(const std::string& path) {
-  return !path.empty() && path.find("..") == std::string::npos &&
-         path.front() != '/' && path.front() != '\\';
-}
-
-std::string read_file_bytes(const std::filesystem::path& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return {};
-  return std::string(std::istreambuf_iterator<char>(in),
-                     std::istreambuf_iterator<char>());
-}
-
-int hex_digit(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return 0;
-}
-
-std::string hex_to_bytes(std::string_view hex) {
-  std::string out;
-  out.reserve(hex.size() / 2);
-  for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
-    out.push_back(
-        static_cast<char>((hex_digit(hex[i]) << 4) | hex_digit(hex[i + 1])));
-  }
-  return out;
-}
-
-const std::string& logo_jpeg() {
-  static const std::string bytes = hex_to_bytes(embedded_logo_jpg_hex());
-  return bytes;
-}
-
-const std::string& favicon_ico() {
-  static const std::string bytes = hex_to_bytes(embedded_favicon_ico_hex());
-  return bytes;
-}
-
-namespace {
-
-using StatusTable = std::map<std::string, int, std::less<>>;
-
-const StatusTable& error_status_table() {
-  // 单张表：错误码 → HTTP。新增码只加一行，不再套 if 链。
-  // 凡是路由会抛的类型都必须在这里，缺一条就会把 4xx 渲染成 500。
-  static const StatusTable kStatus = {
-      {"duplicate", 409},
-      {"last_admin", 409},
-      {"self_delete", 409},
-      {"no_user", 409},
-      {"not_found", 404},
-      {"legacy_db", 409},
-      {"invalid_credentials", 401},
-      {"unauthorized", 401},
-      // 登录/改密失败限流：单独一项，不混进 401/403——客户端要能按 429
-      // 读 Retry-After 决定等待，而不是把「密码错了」和「先别试了」混为一谈。
-      {"too_many_requests", 429},
-      {"locked", 423},
-      {"forbidden", 403},
-      {"must_change_password", 403},
-      {"bad_request", 400},
-      {"bad_version", 400},
-      // 更新包落点必须是绝对路径：用户选了相对路径属于请求错误。
-      {"invalid_path", 400},
-      {"invalid_device", 400},
-      {"invalid_user", 400},
-      {"weak_password", 400},
-      {"bad_field", 400},
-      {"bad_json", 400},
-      {"bad_header", 400},
-      {"bad_xlsx", 400},
-      {"bad_backup", 400},
-      // 备份文件本身打不开：是用户选错了文件，不是服务端故障。
-      {"backup_invalid", 400},
-      {"old_password_required", 400},
-      {"bad_logo", 400},
-      {"logo_too_large", 400},
-      {"bad_company_name", 400},
-      {"logo_write", 400},
-      // 路由可达，但属于服务端 / 磁盘故障：显式写出来，别靠「没登记就 500」兜着。
-      {"backup_failed", 500},
-      {"io_error", 500},
-      {"db_error", 500},
-      // core/src 里会抛、且能经路由走到的码：不登记就会落到 500 兜底，
-      // 前端拿到的 error 字段会从具体码变成空，排障时看不出是哪一层。
-      {"db_exec", 500},
-      {"db_unexpected_row", 500},
-      {"password_hash", 500},
-      {"xlsx_write_failed", 500},
-  };
-  return kStatus;
-}
-
-}  // namespace
-
-std::string random_token() {
-  static const char hex[] = "0123456789abcdef";
-  std::random_device device;
-  std::string token;
-  token.reserve(48);
-  for (int i = 0; i < 24; ++i) token.push_back(hex[device() % 16]);
-  return token;
-}
-
-std::string cookie_value(const httplib::Request& request, const char* name) {
-  const std::string header = request.get_header_value("Cookie");
-  const std::string prefix = std::string(name) + "=";
-  std::size_t start = 0;
-  while (start < header.size()) {
-    std::size_t end = header.find(';', start);
-    if (end == std::string::npos) end = header.size();
-    std::string part = header.substr(start, end - start);
-    while (!part.empty() && std::isspace(static_cast<unsigned char>(part.front()))) {
-      part.erase(part.begin());
-    }
-    if (part.rfind(prefix, 0) == 0) return part.substr(prefix.size());
-    start = end + 1;
-  }
-  return {};
-}
-
-constexpr const char* kSessionsFileName = "sessions.json";
-
-void persist_sessions(ServerState& state) {
-  // 调用者必须已持 sessions_mutex。
-  const auto path = state.data_dir / kSessionsFileName;
-  json doc = json::array();
-  const auto now = static_cast<std::int64_t>(std::time(nullptr));
-  for (const auto& [token, sess] : state.sessions) {
-    if (now - sess.last_seen_epoch > kSessionTtlSeconds) continue;  // 过期不落
-    doc.push_back({{"token", token},
-                   {"user", sess.user},
-                   {"last_seen", sess.last_seen_epoch}});
-  }
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  // 先写临时文件再替换：直接截断写，进程在写一半时被杀会留下半截 JSON，
-  // 下次启动 load_sessions 只能整体丢弃（等于所有人被登出）。
-  const auto temp = path;
-  const auto staging = path.parent_path() / (path.filename().wstring() + L".tmp");
-  {
-    std::ofstream out(staging, std::ios::binary | std::ios::trunc);
-    if (!out) return;
-    out << doc.dump();
-  }
-#ifndef _WIN32
-  // 会话令牌可直接复用：文件收紧到仅本人可读写，别按 umask 落成 0644。
-  ::chmod(staging.c_str(), 0600);
-#endif
-  std::filesystem::rename(staging, temp, ec);
-  if (ec) {
-    std::filesystem::remove(temp, ec);
-    std::filesystem::rename(staging, temp, ec);
-    if (ec) std::filesystem::remove(staging, ec);
-  }
-}
-
-void load_sessions(ServerState& state) {
-  const auto path = state.data_dir / kSessionsFileName;
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return;  // 首次启动：没有文件，空 session map
-  const std::string text((std::istreambuf_iterator<char>(in)),
-                         std::istreambuf_iterator<char>());
-  const json doc = json::parse(text, nullptr, false);
-  if (!doc.is_array()) return;
-  const auto now = static_cast<std::int64_t>(std::time(nullptr));
-  std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  for (const auto& entry : doc) {
-    if (!entry.is_object()) continue;
-    const std::string token = entry.value("token", std::string{});
-    const std::string user = entry.value("user", std::string{});
-    const auto last_seen = entry.value("last_seen", static_cast<std::int64_t>(0));
-    if (token.empty() || user.empty() || last_seen <= 0) continue;
-    if (now - last_seen > kSessionTtlSeconds) continue;
-    state.sessions[token] = Session{user, last_seen};
-  }
-}
-
-std::string session_user(ServerState& state, const httplib::Request& request) {
-  const std::string token = cookie_value(request, "sid");
-  if (token.empty()) return {};
-  std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  auto it = state.sessions.find(token);
-  if (it == state.sessions.end()) return {};
-  const auto now_epoch = static_cast<std::int64_t>(std::time(nullptr));
-  if (now_epoch - it->second.last_seen_epoch > kSessionTtlSeconds) {
-    state.sessions.erase(it);
-    return {};
-  }
-  it->second.last_seen_epoch = now_epoch;
-  return it->second.user;
-}
-
-std::string create_session(ServerState& state, const std::string& user) {
-  const std::string token = random_token();
-  const auto now = static_cast<std::int64_t>(std::time(nullptr));
-  std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  state.sessions[token] = Session{user, now};
-  persist_sessions(state);
-  return token;
-}
-
-void destroy_session(ServerState& state, const httplib::Request& request) {
-  const std::string token = cookie_value(request, "sid");
-  if (token.empty()) return;
-  std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  state.sessions.erase(token);
-  persist_sessions(state);
-}
-
-void drop_sessions_for(ServerState& state, const std::string& user,
-                       const std::string& keep_token = {}) {
-  bool changed = false;
-  std::lock_guard<std::mutex> lock(state.sessions_mutex);
-  for (auto it = state.sessions.begin(); it != state.sessions.end();) {
-    if (it->second.user == user && it->first != keep_token) {
-      it = state.sessions.erase(it);
-      changed = true;
-    } else {
-      ++it;
-    }
-  }
-  if (changed) persist_sessions(state);
-}
-
-void set_session_cookie(httplib::Response& response, const std::string& token) {
-  response.set_header("Set-Cookie",
-                      "sid=" + token +
-                          "; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200");
-}
-
-void clear_session_cookie(httplib::Response& response) {
-  response.set_header("Set-Cookie", "sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-}
-
-bool is_loopback(const std::string& address) {
-  return address == "127.0.0.1" || address == "::1" ||
-         address == "::ffff:127.0.0.1";
-}
-
-struct RateLimitDecision {
-  bool locked = false;
-  int retry_after = 0;
-};
-
-// 回环地址不计：本机界面与壳的自动登录不该被自己的失败计数锁在门外。
-bool rate_limit_exempt(const std::string& address) {
-  return is_loopback(address);
-}
-
-void rate_limit_touch(std::map<std::string, RateLimitEntry>& table,
-                      const std::string& key, const RateLimitOptions& options) {
-  if (key.empty()) return;
-  RateLimitEntry& entry = table[key];
-  const long long now = steady_seconds();
-  const long long start = entry.window_start.load();
-  // 窗口过期就重新计数：5 次必须落在同一个窗口内才累计。
-  if (start == 0 || now - start >= options.window_seconds) {
-    entry.window_start.store(now);
-    entry.failures.store(0);
-  }
-  const int failures = entry.failures.fetch_add(1) + 1;
-  if (failures >= options.max_failures) {
-    entry.locked_until.store(now + options.lock_seconds);
-    entry.failures.store(0);
-    entry.window_start.store(now);
-  }
-}
-
-// 键空间只增不减会随来源 IP 数量无限涨；超过上限时清掉已解锁且窗口过期的项。
-void rate_limit_prune(std::map<std::string, RateLimitEntry>& table,
-                      const RateLimitOptions& options) {
-  if (table.size() <= 1024) return;
-  const long long now = steady_seconds();
-  for (auto item = table.begin(); item != table.end();) {
-    const long long start = item->second.window_start.load();
-    const bool unlocked = item->second.locked_until.load() <= now;
-    const bool expired = start == 0 || now - start >= options.window_seconds;
-    if (unlocked && expired) {
-      item = table.erase(item);
-    } else {
-      ++item;
-    }
-  }
-}
-
-RateLimitDecision rate_limit_check(ServerState& state, const std::string& address,
-                                   const std::string& user) {
-  RateLimitDecision decision;
-  // 本机地址整体不受限：壳与本地界面不能被自己的失败计数锁在门外。
-  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return decision;
-  const long long now = steady_seconds();
-  const auto inspect = [&](const std::map<std::string, RateLimitEntry>& table,
-                           const std::string& key) {
-    if (key.empty()) return;
-    const auto found = table.find(key);
-    if (found == table.end()) return;
-    const long long until = found->second.locked_until.load();
-    if (until <= now) return;
-    decision.locked = true;
-    const int wait = static_cast<int>(until - now);
-    if (wait > decision.retry_after) decision.retry_after = wait;
-  };
-  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
-  if (!rate_limit_exempt(address)) inspect(state.rate_limit_by_ip, address);
-  inspect(state.rate_limit_by_user, user);
-  return decision;
-}
-
-void rate_limit_record_failure(ServerState& state, const std::string& address,
-                               const std::string& user) {
-  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
-  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
-  rate_limit_touch(state.rate_limit_by_ip, address, state.rate_limit);
-  rate_limit_touch(state.rate_limit_by_user, user, state.rate_limit);
-  rate_limit_prune(state.rate_limit_by_ip, state.rate_limit);
-  rate_limit_prune(state.rate_limit_by_user, state.rate_limit);
-}
-
-void rate_limit_clear(ServerState& state, const std::string& address,
-                      const std::string& user) {
-  if (!state.rate_limit.enabled || rate_limit_exempt(address)) return;
-  std::lock_guard<std::mutex> lock(state.rate_limit_mutex);
-  if (!address.empty()) state.rate_limit_by_ip.erase(address);
-  if (!user.empty()) state.rate_limit_by_user.erase(user);
-}
-
-// 锁定期间一律 429，连密码正确也不放行；Retry-After 由响应头带出。
-void throw_rate_limited(httplib::Response& response,
-                        const RateLimitDecision& decision) {
-  const int retry_after = decision.retry_after > 0 ? decision.retry_after : 1;
-  response.set_header("Retry-After", std::to_string(retry_after));
-  throw AppError("too_many_requests",
-                 "失败次数过多，请 " + std::to_string(retry_after) + " 秒后重试");
-}
-
-std::string lowercase(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
-
-// Host 白名单：本地窗口模式只认回环；网络模式再加入实际监听 IP、机器名
-// 与配置的 allowed_hosts，其他 Host 返回 421，用于防 DNS rebinding。
-bool host_allowed(const ServerState& state, std::string host) {
-  if (host.empty()) return false;
-  std::string name = lowercase(host);
-  if (!name.empty() && name.front() == '[') {
-    const std::size_t end = name.find(']');
-    if (end != std::string::npos) name = name.substr(1, end - 1);
-  } else {
-    const std::size_t colon = name.find(':');
-    if (colon != std::string::npos) name = name.substr(0, colon);
-  }
-  if (name == "127.0.0.1" || name == "localhost" || name == "::1") return true;
-  if (!state.network) return false;
-  if (!state.bound_host.empty() && name == lowercase(state.bound_host)) return true;
-  if (!state.machine_name.empty() && name == lowercase(state.machine_name)) {
-    return true;
-  }
-  for (const std::string& allowed : state.allowed_hosts) {
-    if (name == lowercase(allowed)) return true;
-  }
-  return false;
-}
-
-// 免登录/免改密白名单：只允许下面两类，集中在这张表里判断。
-// 更新检查与下载故意不在表内：网络模式下若未认证请求就能让服务端去拉
-// 几十 MB 落盘，等于免费的内容缓存 + 磁盘写放大器；所以「检查个版本」
-// 同样要求登录，强制改密前也不放行。以后不要往这里加更新相关路径。
-constexpr const char* kBypassExactPaths[] = {"/api/health"};
-constexpr const char* kBypassPrefixes[] = {"/api/session/"};
-
-bool is_bypass_path(const std::string& path) {
-  for (const char* exact : kBypassExactPaths) {
-    if (path == exact) return true;
-  }
-  for (const char* prefix : kBypassPrefixes) {
-    if (path.rfind(prefix, 0) == 0) return true;
-  }
-  return false;
-}
-
 unsigned long process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -639,128 +77,8 @@ unsigned long process_id() {
 #endif
 }
 
-AuditContext audit_context(ServerState& state, const httplib::Request& request) {
-  return AuditContext{session_user(state, request), request.remote_addr};
-}
-
-// 独立于业务事务的审计（登录、恢复等）：写失败只告警，不影响主流程，
-// 但不能静默——静默失败等于审计形同虚设。
-void audit_event(ServerState& state, AuditEntry entry) {
-  if (entry.actor.empty()) entry.actor = "system";
-  try {
-    state.db->write([&](Conn& conn) { record_audit(conn, entry); });
-  } catch (const std::exception& error) {
-    std::cerr << "警告：审计写入失败：" << error.what() << std::endl;
-  }
-}
-
-User current_user(ServerState& state, const httplib::Request& request) {
-  const std::string name = session_user(state, request);
-  if (name.empty()) throw AppError("unauthorized", "未登录或会话已过期");
-  try {
-    return state.users->get(name);
-  } catch (const AppError& error) {
-    // 账号已被删除、但会话还没到期：按未登录处理，别把 not_found 当 404 透给前端。
-    if (error.code() == "not_found") {
-      throw AppError("unauthorized", "账号已不存在，请重新登录");
-    }
-    throw;
-  }
-}
-
-User require_admin(ServerState& state, const httplib::Request& request) {
-  User user = current_user(state, request);
-  if (user.role != "admin") throw AppError("forbidden", "需要管理员权限");
-  return user;
-}
-
-// 路径里的 id 只由正则保证是数字，长度不受限：std::stoll 会抛 out_of_range，
-// 落到 std::exception 分支就成了 500，还会把 "stoll" 原样透给客户端。
-std::int64_t parse_path_id(const std::string& text) {
-  std::size_t consumed = 0;
-  std::int64_t value = 0;
-  try {
-    value = std::stoll(text, &consumed);
-  } catch (const std::exception&) {
-    throw AppError("not_found", "记录不存在");
-  }
-  if (consumed != text.size()) {
-    throw AppError("not_found", "记录不存在");
-  }
-  return value;
-}
-
-}  // namespace
-
-int http_status_for(std::string_view code) {
-  const StatusTable& table = error_status_table();
-  const auto found = table.find(code);
-  return found == table.end() ? 500 : found->second;
-}
-
-bool http_status_known(std::string_view code) {
-  const StatusTable& table = error_status_table();
-  return table.find(code) != table.end();
-}
-
-const std::vector<std::string>& route_error_codes() {
-  // 与各路由里 throw AppError(...) 的 code 对应。新增路由错误时，这里和
-  // error_status_table 要一起补，否则 tests 里的「清单覆盖」用例会红。
-  static const std::vector<std::string> kCodes = {
-      "duplicate",        "last_admin",       "self_delete",
-      "no_user",          "not_found",        "legacy_db",
-      "invalid_credentials", "unauthorized",  "locked",
-      "too_many_requests",
-      "forbidden",        "must_change_password",
-      "invalid_device",   "invalid_user",     "weak_password",
-      "bad_field",        "bad_json",         "bad_header",
-      "bad_xlsx",         "bad_backup",
-      "backup_invalid",   "old_password_required",
-      "bad_logo",         "logo_too_large",   "bad_company_name",
-      "logo_write",
-      "backup_failed",    "io_error",         "db_error",
-      "db_exec",          "db_unexpected_row", "password_hash",
-      "xlsx_write_failed", "bad_version",
-      "invalid_path",
-      "bad_request",
-  };
-  return kCodes;
-}
-
-int status_for(const AppError& error) { return http_status_for(error.code()); }
-
-const std::vector<std::string>& mapped_error_codes() {
-  static const std::vector<std::string> kCodes = [] {
-    std::vector<std::string> codes;
-    for (const auto& item : error_status_table()) codes.push_back(item.first);
-    return codes;
-  }();
-  return kCodes;
-}
-
-struct ServerHandle::Impl : ServerState {};
-
-ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
-ServerHandle::~ServerHandle() {
-  if (!impl_) return;
-  impl_->heartbeat_stop = true;
-  if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
-  if (impl_->server.is_running()) impl_->server.stop();
-  if (impl_->thread.joinable()) impl_->thread.join();
-  // 正常析构时删掉自己那一行；异常/强杀留下的行由下次启动按 PID/超时接管。
-  if (impl_->db && !impl_->instance_id.empty()) {
-    try {
-      release_heartbeat(*impl_->db, impl_->instance_id);
-    } catch (const std::exception& error) {
-      std::cerr << "警告：释放库内心跳失败：" << error.what() << std::endl;
-    }
-  }
-}
-
-const std::string& ServerHandle::local_token() const { return impl_->local_token; }
-
-std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
-  auto t_startup = std::chrono::steady_clock::now();
+// 启动第 0 步：内嵌前端与源文件一致性自检。
+void verify_embedded_assets(const ServerOptions& options) {
   // 内嵌前端自检：C2026 截断后页面仍能打开，只是内容少了几个字符，光靠肉眼看不出。
   // 这里比对的是「直读 web/ 源文件」的字节数与 SHA256，不是生成出来的 .cpp。
   // --web-dir 开发态不用内嵌资源，自然不查；但仍要求目录里有 index.html，
@@ -775,10 +93,11 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
                    "--web-dir 下找不到 index.html：" +
                        path_to_utf8(options.web_dir));
   }
-  log_startup("web_assets_check", t_startup);
+}
 
-  auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
-  ServerState& state = *handle->impl_;
+// 启动第 1 步：把 options 落到 ServerState，并完成目录/会话/锁/库/种子/字体初始化。
+void initialize_state(ServerState& state, const ServerOptions& options,
+                      std::chrono::steady_clock::time_point& t_startup) {
   state.data_dir = options.data_dir;
   state.web_dir = options.web_dir;
   state.network = options.network;
@@ -888,869 +207,24 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   }
   log_startup("fonts_verify", t_startup);
 
+}
+
+// 启动第 2 步：挂载全部业务路由。
+void register_all_routes(ServerState& state) {
   const auto schema = state.db->schema_version();
   const std::string version = DEVCARD_VERSION;
 
-  state.server.Get("/api/health", [&state, schema, version](
-                                     const httplib::Request&,
-                                     httplib::Response& response) {
-    nlohmann::json body{{"status", "ok"},
-                        {"version", version},
-                        {"schema_version", schema},
-                        {"mode", state.network ? "network" : "local"}};
-    // 强制升级握手：只有管理员显式配置了 min_supported_version 才下发，
-    // 老服务端/未配置时不出现这个键，客户端按「无要求」处理。
-    const std::string min_supported = get_setting(*state.db, "min_supported_version");
-    if (!min_supported.empty()) body["min_supported_version"] = min_supported;
-    set_json(response, body);
-  });
+  register_session_routes(state, schema, version);
+  register_device_routes(state);
+  register_print_routes(state);
+  register_user_routes(state);
+  register_system_routes(state);
+  register_static_routes(state);
 
-  state.server.Post("/api/session/local",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      if (!is_loopback(request.remote_addr)) {
-                        throw AppError("forbidden", "本地会话只能从本机建立");
-                      }
-                      const json body = parse_body(request.body);
-                      const std::string token = body.value("token", "");
-                      if (token != state.local_token) {
-                        throw AppError("invalid_credentials", "本地会话令牌无效");
-                      }
-                      const std::string name = state.users->local_user();
-                      if (name.empty()) {
-                        throw AppError("no_user",
-                                       "没有可用账号，请执行 --set-password <用户名>");
-                      }
-                      const User user = state.users->get(name);
-                      set_session_cookie(response, create_session(state, name));
-                      set_json(response, json{{"user", user_json(user)}});
-                    });
+}
 
-  state.server.Post("/api/session/login",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const json body = parse_body(request.body);
-                      const std::string username = body.value("username", "");
-                      const std::string password = body.value("password", "");
-                      // 先查锁定再验密码：锁定期内即使密码正确也拒，
-                      // 否则攻击者只要撞对一次就能把计数清零。
-                      const RateLimitDecision limited =
-                          rate_limit_check(state, request.remote_addr, username);
-                      if (limited.locked) {
-                        AuditEntry blocked;
-                        blocked.actor = username.empty() ? "anonymous" : username;
-                        blocked.actor_ip = request.remote_addr;
-                        blocked.action = "login_blocked";
-                        blocked.entity = "user";
-                        blocked.entity_id = username;
-                        blocked.summary = "失败次数过多，429 拒绝（" +
-                                          std::to_string(limited.retry_after) +
-                                          " 秒后可重试）";
-                        audit_event(state, blocked);
-                        throw_rate_limited(response, limited);
-                      }
-                      User user;
-                      try {
-                        user = state.users->authenticate(username, password);
-                      } catch (const AppError& error) {
-                        rate_limit_record_failure(state, request.remote_addr,
-                                                 username);
-                        // 失败也记：撞库在审计里必须能看出来自哪个 IP。
-                        AuditEntry entry;
-                        entry.actor = username.empty() ? "anonymous" : username;
-                        entry.actor_ip = request.remote_addr;
-                        entry.action = "login_failed";
-                        entry.entity = "user";
-                        entry.entity_id = username;
-                        entry.summary = error.what();
-                        audit_event(state, entry);
-                        throw;
-                      }
-                      // 登录成功清零：同一键的正常使用不该被历史失败拖累。
-                      rate_limit_clear(state, request.remote_addr, username);
-                      set_session_cookie(response,
-                                         create_session(state, user.user_name));
-                      AuditEntry entry;
-                      entry.actor = user.user_name;
-                      entry.actor_ip = request.remote_addr;
-                      entry.action = "login";
-                      entry.entity = "user";
-                      entry.entity_id = user.user_name;
-                      entry.summary = "登录成功";
-                      audit_event(state, entry);
-                      set_json(response, json{{"user", user_json(user)}});
-                    });
-
-  state.server.Post("/api/session/logout",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      destroy_session(state, request);
-                      clear_session_cookie(response);
-                      set_json(response, json{{"ok", true}});
-                    });
-
-  state.server.Get("/api/bootstrap", [&state, schema, version](
-                                         const httplib::Request& request,
-                                         httplib::Response& response) {
-    const User user = current_user(state, request);
-    set_json(response, json{{"user", user_json(user)},
-                            {"version", version},
-                            {"schema_version", schema},
-                            {"data_dir", path_to_utf8(state.data_dir)},
-                            {"company_name", company_name(*state.db)},
-                            {"company_name_print", company_print_name(*state.db)},
-                            {"company_name_is_default",
-                             get_setting(*state.db, "print_company_name").empty()},
-                            {"company_name_max_width", kCompanyNameMaxWidth},
-                            {"company_logo_url", "/company-logo"},
-                            {"company_logo_updated_at",
-                             get_setting(*state.db, "company_logo_updated_at")}});
-  });
-
-  state.server.Get("/api/devices", [&state](const httplib::Request& request,
-                                            httplib::Response& response) {
-    const DevicePage page = state.devices->list(query_from(request));
-    json items = json::array();
-    for (const Device& device : page.items) items.push_back(device_json(device));
-    set_json(response, json{{"items", items},
-                            {"total", page.total},
-                            {"total_all", page.total_all},
-                            {"page", page.page},
-                            {"page_size", page.page_size}});
-  });
-
-  state.server.Get("/api/devices/options",
-                   [&state](const httplib::Request&, httplib::Response& response) {
-                     const DeviceOptions values = state.devices->options();
-                     set_json(response, json{{"names", values.names},
-                                             {"locations", values.locations}});
-                   });
-
-  state.server.Post("/api/devices/import",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const auto rows = xlsx::read(request.body);
-                      const ImportReport report = state.devices->import_rows(
-                          rows, audit_context(state, request));
-                      set_json(response, json{{"imported", report.imported},
-                                              {"skipped_empty", report.skipped_empty},
-                                              {"skipped_invalid", report.skipped_invalid},
-                                              {"invalid_rows", report.invalid_rows},
-                                              {"duplicates", report.duplicates},
-                                              {"truncated", report.truncated}});
-                    });
-
-  // 导入模板：第一个工作表只放表头（与导入校验同一份常量），
-  // 第二个工作表放填写说明与假号码示例，避免模板与校验各写一份。
-  state.server.Get("/api/devices/template",
-                   [](const httplib::Request&, httplib::Response& response) {
-                     xlsx::Sheet data;
-                     data.name = "设备台账";
-                     data.rows.push_back(DeviceService::expected_header());
-
-                     xlsx::Sheet help;
-                     help.name = "填写说明";
-                     help.rows = {
-                         {"列名", "含义与要求"},
-                         {"设备名称", "必填；导入时超过 10 个字符会被截断"},
-                         {"位置", "必填；导入时超过 10 个字符会被截断"},
-                         {"控制范围", "必填；导入时超过 10 个字符会被截断"},
-                         {"维护电话", "必填；仅数字、空格、短横线；导入时超过 11 个字符会被截断"},
-                         {},
-                         {"示例（假号码，请勿直接使用）",
-                          "13800000001（卡片上显示为 138 0000 0001）"},
-                         {},
-                         {"说明",
-                          "第一个工作表只有表头，可直接上传，导入 0 行；四列全空的行会跳过，"
-                          "重复记录照常导入并提示。"},
-                     };
-
-                     response.status = 200;
-                     response.set_header(
-                         "Content-Type",
-                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-                     response.set_header(
-                         "Content-Disposition",
-                         "attachment; filename=\"devices-template.xlsx\"; "
-                         "filename*=UTF-8''%E8%AE%BE%E5%A4%87%E5%AF%BC%E5%85%A5"
-                         "%E6%A8%A1%E6%9D%BF.xlsx");
-                     response.set_header("Cache-Control", "no-store");
-                     response.body = xlsx::write_workbook({data, help});
-                   });
-
-  state.server.Get("/api/devices/export",
-                   [&state](const httplib::Request&, httplib::Response& response) {
-                     const std::string body =
-                         xlsx::write(state.devices->export_rows());
-                     response.status = 200;
-                     response.set_header(
-                         "Content-Type",
-                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-                     response.set_header(
-                         "Content-Disposition",
-                         "attachment; filename=\"devices.xlsx\"; "
-                         "filename*=UTF-8''%E8%AE%BE%E5%A4%87%E5%8F%B0%E8%B4%A6.xlsx");
-                     response.set_header("Cache-Control", "no-store");
-                     response.body = body;
-                   });
-
-  // 打印字体覆盖范围：前端据此在录入与预览时提示「这些字不在打印字体范围内」。
-  // 清单来自随包字体 cmap，不是手写表格，换字体会自动跟着变。
-  state.server.Get("/api/fonts/coverage",
-                   [&state](const httplib::Request&, httplib::Response& response) {
-                     json ranges = json::array();
-                     for (const auto& range : state.coverage.ranges()) {
-                       ranges.push_back({range.first, range.second});
-                     }
-                     // 字体的字节数与 SHA256 一并下发：前端不再自己写死这两个数，
-                     // 否则重新子集后忘了同步，导出会以「字节数不符」永久中止。
-                     json fonts = json::array();
-                     for (const auto& spec : kEmbeddedFonts) {
-                       fonts.push_back({{"name", spec.name},
-                                        {"url", spec.url},
-                                        {"bytes", spec.bytes},
-                                        {"sha256", spec.sha256}});
-                     }
-                     set_json(response,
-                              json{{"available", !state.coverage.empty()},
-                                   {"count", state.coverage.count()},
-                                   {"ranges", ranges},
-                                   {"fonts", fonts}});
-                   });
-
-  // 打印数据快照：与台账共用筛选条件，一次取全量（不分页），供前端排版。
-  // 前端导出 PDF 与直接打印复用同一份返回，不再二次请求。
-  state.server.Get("/api/print/cards", [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     DeviceQuery query = query_from(request);
-                     query.page = 0;
-                     query.page_size = 1000;
-                     query.sort = "id";
-                     query.desc = false;
-
-                     std::vector<Device> items;
-                     std::int64_t total = 0;
-                     bool truncated = false;
-                     // 打印卡片截断上限：随响应返回 print_limit，
-                     // 前端文案直接引用该值，不再各自写死数字。
-                     constexpr std::size_t kPrintCardLimit = 10000;
-                     while (true) {
-                       const DevicePage page = state.devices->list(query);
-                       if (query.page == 0) total = page.total;
-                       items.insert(items.end(), page.items.begin(), page.items.end());
-                       if (page.items.empty() ||
-                           static_cast<std::int64_t>(items.size()) >= total) {
-                         break;
-                       }
-                       if (items.size() >= kPrintCardLimit) {
-                         truncated = true;
-                         break;
-                       }
-                       ++query.page;
-                     }
-
-                     const std::string ids_text = request.get_param_value("ids");
-                     if (!ids_text.empty()) {
-                       std::set<std::int64_t> wanted;
-                       std::size_t start = 0;
-                       while (start <= ids_text.size()) {
-                         const std::size_t comma = ids_text.find(',', start);
-                         const std::string part = ids_text.substr(
-                             start, comma == std::string::npos
-                                        ? std::string::npos
-                                        : comma - start);
-                         try {
-                           if (!part.empty()) wanted.insert(std::stoll(part));
-                         } catch (...) {
-                           throw AppError("bad_json", "ids 必须是逗号分隔的数字");
-                         }
-                         if (comma == std::string::npos) break;
-                         start = comma + 1;
-                       }
-                       items.erase(
-                           std::remove_if(items.begin(), items.end(),
-                                          [&](const Device& device) {
-                                            return wanted.count(device.id) == 0;
-                                          }),
-                           items.end());
-                       total = static_cast<std::int64_t>(items.size());
-                     }
-
-                     json array = json::array();
-                     for (const Device& device : items) {
-                       array.push_back(device_json(device));
-                     }
-                     set_json(response, json{{"items", array},
-                                             {"total", total},
-                                             {"truncated", truncated},
-                                             {"print_limit", kPrintCardLimit},
-                                             {"company_name", company_print_name(*state.db)}});
-                   });
-
-  state.server.Get(R"(/api/devices/(\d+))",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     const auto id = parse_path_id(request.matches[1].str());
-                     set_json(response, device_json(state.devices->get(id)));
-                   });
-
-  state.server.Post("/api/devices", [&state](const httplib::Request& request,
-                                             httplib::Response& response) {
-    Device device = device_from_json(parse_body(request.body));
-    set_json(response,
-             device_json(state.devices->create(std::move(device),
-                                               audit_context(state, request))),
-             201);
-  });
-
-  state.server.Put(R"(/api/devices/(\d+))",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     const auto id = parse_path_id(request.matches[1].str());
-                     Device device = device_from_json(parse_body(request.body));
-                     try {
-                       set_json(response,
-                                device_json(state.devices->update(
-                                    id, std::move(device),
-                                    audit_context(state, request))));
-                     } catch (const ConflictError& error) {
-                       set_json(response, conflict_json(error), 409);
-                     }
-                   });
-
-  // P3：管理员强制覆盖。普通用户 403（role 校验在服务端，不依赖按钮隐藏）；
-  // 覆盖的受害者版本与 updated_by/updated_at 由 core 写入 force_overwrite 审计。
-  state.server.Post(R"(/api/devices/(\d+)/force)",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const User actor = require_admin(state, request);
-                      const auto id = parse_path_id(request.matches[1].str());
-                      Device device = device_from_json(parse_body(request.body));
-                      const AuditContext context{actor.user_name,
-                                                 request.remote_addr};
-                      set_json(response,
-                               device_json(state.devices->force_update(
-                                   id, std::move(device), context)));
-                    });
-
-  state.server.Delete(R"(/api/devices/(\d+))",
-                      [&state](const httplib::Request& request,
-                               httplib::Response& response) {
-                        const std::string version_text =
-                            request.get_param_value("version");
-                        if (version_text.empty()) {
-                          throw AppError(
-                              "bad_version",
-                              "删除需要带 ?version=N：请先刷新列表，"
-                              "避免用过期页面删掉别人刚改过的记录");
-                        }
-                        std::int64_t version = 0;
-                        try {
-                          version = std::stoll(version_text);
-                        } catch (...) {
-                          throw AppError("bad_version",
-                                         "version 必须是整数：" + version_text);
-                        }
-                        try {
-                          state.devices->remove(
-                              parse_path_id(request.matches[1].str()), version,
-                              audit_context(state, request));
-                          set_json(response, json{{"ok", true}});
-                        } catch (const ConflictError& error) {
-                          set_json(response, conflict_json(error), 409);
-                        }
-                      });
-
-  // 合并重复：删除三字段完全相同的多余记录（每组保留最早一条）。
-  // 删除是管理员动作且不可撤销，因此要求显式确认串，避免误触。
-  state.server.Post("/api/devices/dedupe",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const User actor = require_admin(state, request);
-                      const json body = parse_body(request.body);
-                      if (body.value("confirm", "") != "MERGE_DUPLICATES") {
-                        throw AppError(
-                            "bad_request",
-                            "合并重复需要确认：请求体带 "
-                            "{\"confirm\":\"MERGE_DUPLICATES\"}");
-                      }
-                      const DedupeReport report = state.devices->dedupe(
-                          AuditContext{actor.user_name, request.remote_addr});
-                      set_json(response, json{{"removed", report.removed},
-                                              {"remaining", report.remaining}});
-                    });
-
-  state.server.Get("/api/users", [&state](const httplib::Request& request,
-                                          httplib::Response& response) {
-    require_admin(state, request);
-    json items = json::array();
-    for (const User& user : state.users->list()) items.push_back(user_json(user));
-    set_json(response, json{{"items", items}});
-  });
-
-  state.server.Post("/api/users", [&state](const httplib::Request& request,
-                                           httplib::Response& response) {
-    require_admin(state, request);
-    const json body = parse_body(request.body);
-    const User user = state.users->create(
-        body.value("user_name", ""), body.value("password", ""),
-        body.value("display_name", ""), body.value("role", "user"));
-    set_json(response, json{{"user", user_json(user)}}, 201);
-  });
-
-  state.server.Put("/api/users", [&state](const httplib::Request& request,
-                                          httplib::Response& response) {
-    require_admin(state, request);
-    const json body = parse_body(request.body);
-    const User user = state.users->update_profile(
-        body.value("user_name", ""), body.value("display_name", ""),
-        body.value("role", "user"));
-    set_json(response, json{{"user", user_json(user)}});
-  });
-
-  state.server.Delete("/api/users", [&state](const httplib::Request& request,
-                                             httplib::Response& response) {
-    const User actor = require_admin(state, request);
-    const std::string name = request.get_param_value("name");
-    state.users->remove(name, actor.user_name);
-    drop_sessions_for(state, name);
-    set_json(response, json{{"ok", true}});
-  });
-
-  state.server.Post("/api/users/password",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const User actor = current_user(state, request);
-                      // 改密同样双键计数：猜旧密码与撞登录密码是同一类攻击。
-                      const RateLimitDecision limited =
-                          rate_limit_check(state, request.remote_addr,
-                                           actor.user_name);
-                      if (limited.locked) throw_rate_limited(response, limited);
-                      std::string target;
-                      try {
-                        const json body = parse_body(request.body);
-                        target = body.value("user_name", "");
-                        if (target.empty()) target = actor.user_name;
-                        const std::string new_password = body.value("new_password", "");
-                        if (new_password.empty()) {
-                          throw AppError("bad_json", "new_password 不能为空");
-                        }
-                        if (target == actor.user_name) {
-                          // 是否免旧密码只由服务端状态决定：本次是首次登录或管理员
-                          // 重置后的强制改密时，用户本来就不掌握旧密码。
-                          if (actor.must_change_password) {
-                            state.users->complete_forced_change(actor.user_name,
-                                                                new_password);
-                          } else {
-                            const std::string old_password =
-                                body.value("old_password", "");
-                            if (old_password.empty()) {
-                              throw AppError("old_password_required", "请输入原密码");
-                            }
-                            state.users->change_password(actor.user_name, old_password,
-                                                         new_password);
-                          }
-                        } else {
-                          if (actor.role != "admin") {
-                            throw AppError("forbidden", "需要管理员权限");
-                          }
-                          state.users->reset_password(target, new_password);
-                        }
-                        if (!state.users->any_must_change()) {
-                          remove_seed_password_file(state.data_dir);
-                        }
-                        // 改密 / 重置后旧会话一律作废；改自己的密码时保留当前这条，
-                        // 免得刚改完就把自己踢回登录页。
-                        const std::string keep =
-                            target == actor.user_name
-                                ? cookie_value(request, "sid")
-                                : std::string{};
-                        drop_sessions_for(state, target, keep);
-                        set_json(response, json{{"ok", true}, {"user_name", target}});
-                      } catch (const AppError&) {
-                        // 只有冲着操作者自己来的失败才计数：管理员重置别人的密码失败
-                        // （比如用户名打错）不该把管理员自己锁在门外。
-                        if (target.empty() || target == actor.user_name) {
-                          rate_limit_record_failure(state, request.remote_addr,
-                                                    actor.user_name);
-                        }
-                        throw;
-                      }
-                      rate_limit_clear(state, request.remote_addr, actor.user_name);
-                    });
-
-  // 打印卡片头部公司名：仅管理员可改；空值表示恢复默认。
-  state.server.Put("/api/system/company",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     require_admin(state, request);
-                     const json body = json::parse(request.body, nullptr, false);
-                     if (body.is_discarded() || !body.is_object()) {
-                       throw AppError("bad_json", "请求体必须是 JSON 对象");
-                     }
-                     const std::string value =
-                         trim_copy(body.value("company_name", std::string{}));
-                     if (utf8_length(value) > kCompanyNameInputMaxLength) {
-                       throw AppError(
-                           "bad_company_name",
-                           "公司名称最多 16 个字符（卡面按 13 字宽打印）");
-                     }
-                     state.db->write([&](Conn& conn) {
-                       set_setting(conn, "print_company_name", value);
-                     });
-                     set_json(response,
-                              json{{"company_name", company_name(*state.db)},
-                                   {"company_name_print",
-                                    company_print_name(*state.db)},
-                                   {"company_name_width",
-                                    company_name_width(company_name(*state.db))},
-                                   {"company_name_max_width", kCompanyNameMaxWidth},
-                                   {"is_default",
-                                    get_setting(*state.db, "print_company_name")
-                                        .empty()}});
-                   });
-
-  // 自定义图标：只收 PNG/JPEG，文件落在数据目录 assets/ 下，app_setting 只存相对路径。
-  state.server.Post("/api/system/company-logo",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      require_admin(state, request);
-                      constexpr std::size_t kMaxBytes = 2 * 1024 * 1024;
-                      if (request.body.empty()) {
-                        throw AppError("bad_logo", "请选择要上传的图片");
-                      }
-                      if (request.body.size() > kMaxBytes) {
-                        throw AppError("logo_too_large", "图标不能超过 2 MB");
-                      }
-                      const ImageInfo info = inspect_image(request.body);
-                      if (info.format == ImageFormat::kUnknown) {
-                        throw AppError("bad_logo",
-                                       "只接受 PNG 或 JPEG 图片（不支持 SVG）");
-                      }
-                      const double ratio =
-                          static_cast<double>(info.width) / info.height;
-                      const bool aspect_warning =
-                          ratio < kLogoMinAspect || ratio > kLogoMaxAspect;
-
-                      const bool png = info.format == ImageFormat::kPng;
-                      const std::string relative =
-                          std::string("assets/company-logo.") + (png ? "png" : "jpg");
-                      std::error_code ec;
-                      std::filesystem::create_directories(state.data_dir / "assets",
-                                                          ec);
-                      {
-                        std::ofstream out(state.data_dir / relative,
-                                          std::ios::binary | std::ios::trunc);
-                        if (!out) {
-                          throw AppError("logo_write",
-                                         "图标写入失败，请检查数据目录权限");
-                        }
-                        out.write(request.body.data(),
-                                  static_cast<std::streamsize>(request.body.size()));
-                      }
-                      // 换格式时清掉旧文件，避免两份并存。
-                      std::filesystem::remove(
-                          state.data_dir /
-                              (std::string("assets/company-logo.") +
-                               (png ? "jpg" : "png")),
-                          ec);
-                      state.db->write([&](Conn& conn) {
-                        set_setting(conn, kLogoSettingKey, relative);
-                        set_setting(conn, "company_logo_updated_at", now_text());
-                      });
-
-                      const bool low_resolution =
-                          info.width < kLogoMinPixels ||
-                          info.height < kLogoMinPixels;
-                      std::string message = "图标已更新";
-                      if (low_resolution) {
-                        message += "；分辨率低于 104×104 像素，300 dpi 打印可能发虚";
-                      }
-                      if (aspect_warning) {
-                        message +=
-                            "；图片偏扁或偏窄，缩放后会显得很小，建议换成接近方形的图";
-                      }
-                      set_json(response,
-                               json{{"logo_url", "/company-logo"},
-                                    {"format", png ? "png" : "jpeg"},
-                                    {"width", info.width},
-                                    {"height", info.height},
-                                    {"low_resolution", low_resolution},
-                                    {"aspect_warning", aspect_warning},
-                                    {"updated_at",
-                                     get_setting(*state.db,
-                                                 "company_logo_updated_at")},
-                                    {"message", message}});
-                    });
-
-  state.server.Delete("/api/system/company-logo",
-                      [&state](const httplib::Request& request,
-                               httplib::Response& response) {
-                        require_admin(state, request);
-                        state.db->write([&](Conn& conn) {
-                          set_setting(conn, kLogoSettingKey, "");
-                          set_setting(conn, "company_logo_updated_at", "");
-                        });
-                        std::error_code ec;
-                        std::filesystem::remove(
-                            state.data_dir / "assets/company-logo.png", ec);
-                        std::filesystem::remove(
-                            state.data_dir / "assets/company-logo.jpg", ec);
-                        set_json(response, json{{"logo_url", "/company-logo"},
-                                                {"is_default", true},
-                                                {"updated_at", ""}});
-                      });
-
-  state.server.Get("/api/system/backups",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     require_admin(state, request);
-                     json items = json::array();
-                     for (const BackupEntry& entry : list_backups(state.data_dir)) {
-                       items.push_back(json{{"name", entry.name},
-                                            {"bytes", entry.bytes},
-                                            {"created_at", entry.created_at}});
-                     }
-                     set_json(response, json{{"items", items}});
-                   });
-
-  state.server.Post("/api/system/backup",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      require_admin(state, request);
-                      const BackupEntry entry =
-                          create_backup(*state.db, state.data_dir, "manual");
-                      set_json(response, json{{"name", entry.name},
-                                              {"bytes", entry.bytes},
-                                              {"created_at", entry.created_at}}, 201);
-                    });
-
-  state.server.Post("/api/system/restore",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      const User actor = require_admin(state, request);
-                      const json body = parse_body(request.body);
-                      if (body.value("confirm", "") != "RESTORE") {
-                        throw AppError("bad_json", "恢复操作需要 confirm=RESTORE");
-                      }
-                      const std::string name = body.value("name", "");
-                      restore_backup(*state.db, state.data_dir, name);
-                      // 备份里带着导出时的心跳行，恢复后必须由当前实例重写，
-                      // 否则定时刷新会因 instance_id 不匹配而停摆。
-                      force_heartbeat(*state.db, state.instance_id);
-                      {
-                        std::lock_guard<std::mutex> lock(state.sessions_mutex);
-                        state.sessions.clear();
-                        persist_sessions(state);
-                      }
-                      AuditEntry entry;
-                      entry.actor = actor.user_name;
-                      entry.actor_ip = request.remote_addr;
-                      entry.action = "restore";
-                      entry.entity = "system";
-                      entry.summary = "从备份恢复：" + name;
-                      audit_event(state, entry);
-                      clear_session_cookie(response);
-                      set_json(response, json{{"ok", true}, {"reload", true}});
-                    });
-
-  // ==== P1 新增：打开数据目录（整段插入，rebase 时整段保留）====
-  // 路径只取服务端自己判定的 state.data_dir，不接受前端传参；
-  // 仅管理员可用，避免普通用户借服务端拉起资源管理器。
-  state.server.Post("/api/system/open-data-dir",
-                    [&state](const httplib::Request& request,
-                             httplib::Response& response) {
-                      require_admin(state, request);
-#ifdef _WIN32
-                      const std::wstring dir = state.data_dir.wstring();
-                      const HINSTANCE result =
-                          ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr,
-                                        nullptr, SW_SHOWNORMAL);
-                      if (reinterpret_cast<std::intptr_t>(result) <= 32) {
-                        throw AppError("bad_request",
-                                       "无法打开数据目录：" +
-                                           path_to_utf8(state.data_dir));
-                      }
-                      set_json(response,
-                               json{{"ok", true},
-                                    {"path", path_to_utf8(state.data_dir)}});
-#else
-                      (void)response;
-                      throw AppError("bad_request",
-                                     "打开数据目录仅在 Windows 版本提供");
-#endif
-                    });
-  // ==== P1 新增段结束 ====
-
-  // 审计查询：仅管理员。user 角色一律 403。
-  state.server.Get("/api/audit", [&state](const httplib::Request& request,
-                                          httplib::Response& response) {
-    require_admin(state, request);
-    const int limit = int_param(request, "limit", 200);
-    json items = json::array();
-    for (const AuditEntry& entry : list_audit(*state.db, limit)) {
-      items.push_back({{"id", entry.id},
-                       {"at", entry.at},
-                       {"actor", entry.actor},
-                       {"actor_ip", entry.actor_ip},
-                       {"action", entry.action},
-                       {"entity", entry.entity},
-                       {"entity_id", entry.entity_id},
-                       {"summary", entry.summary},
-                       {"before", entry.before_json},
-                       {"after", entry.after_json}});
-    }
-    set_json(response, json{{"items", items}});
-  });
-
-  state.server.Get("/", [&state](const httplib::Request&, httplib::Response& response) {
-    // 开发态（--web-dir）每次请求都重读磁盘，改完刷新即生效。
-    std::string html = state.web_dir.empty()
-                           ? std::string(embedded_index_html())
-                           : read_file_bytes(state.web_dir / "index.html");
-    if (html.empty()) {
-      throw AppError("not_found", "前端文件不存在：index.html");
-    }
-    // 本地窗口模式注入一次性令牌供壳自动登录；网络模式绝不注入：
-    // 否则任何能打开首页的人都能拿到本地自动登录令牌。
-    if (!state.network) {
-      const std::string meta = "<meta name=\"devcard-local-token\" content=\"" +
-                               state.local_token + "\">";
-      const std::size_t head = html.find("</head>");
-      if (head != std::string::npos) html.insert(head, meta + "\n");
-    }
-    set_asset(response, html, "text/html; charset=utf-8");
-  });
-  state.server.Get("/styles.css", [&state](const httplib::Request&,
-                                           httplib::Response& response) {
-    std::string css = state.web_dir.empty() ? std::string(embedded_styles_css())
-                                            : read_file_bytes(state.web_dir / "styles.css");
-    if (css.empty()) throw AppError("not_found", "前端文件不存在：styles.css");
-    set_asset(response, css, "text/css; charset=utf-8");
-  });
-  state.server.Get("/app.js", [&state](const httplib::Request&,
-                                       httplib::Response& response) {
-    std::string js = state.web_dir.empty() ? std::string(embedded_app_js())
-                                           : read_file_bytes(state.web_dir / "app.js");
-    if (js.empty()) throw AppError("not_found", "前端文件不存在：app.js");
-    set_asset(response, js, "application/javascript; charset=utf-8");
-  });
-  // 前端 ES 模块（app.js 里 import 的那些）：整表按内嵌路径注册，开发态读磁盘。
-  for (std::size_t i = 0; i < embedded_js_module_count(); ++i) {
-    const JsModule* module = &embedded_js_modules()[i];
-    state.server.Get(
-        module->path,
-        [&state, module](const httplib::Request&, httplib::Response& response) {
-          std::string js = state.web_dir.empty()
-                               ? std::string(module->data)
-                               : read_file_bytes(state.web_dir / (module->path + 1));
-          if (js.empty()) {
-            throw AppError("not_found", "前端文件不存在：" + std::string(module->path));
-          }
-          set_asset(response, js, "application/javascript; charset=utf-8");
-        });
-  }
-  // 子集字体：@font-face 从这里取，界面与打印共用同一份。
-  // 只认白名单里的两个文件名，字体目录不整体开放成静态目录。
-  state.server.Get(R"(/fonts/([A-Za-z0-9._-]+))",
-                   [&state](const httplib::Request& request,
-                            httplib::Response& response) {
-                     const std::string name = request.matches[1].str();
-                     const auto it = state.fonts.find(name);
-                     if (it == state.fonts.end()) {
-                       set_json(response,
-                                json{{"error", "not_found"},
-                                     {"message", "字体不存在：" + name}},
-                                404);
-                       return;
-                     }
-                     response.status = 200;
-                     response.set_header("Content-Type", "font/ttf");
-                     // 导出前的门禁资源：它必须在每次导出时被真正取到并校验，
-                     // 缓存一天等于把「取不到就中止」这条判据拆掉。本地回环传 4.56 MB 是几毫秒。
-                     response.set_header("Cache-Control", "no-store");
-                     response.body = it->second;
-                   });
-  // 打印图标：优先数据目录下的自定义文件，缺失时回落内嵌默认 logo。
-  state.server.Get("/company-logo",
-                   [&state](const httplib::Request&, httplib::Response& response) {
-                     const std::string relative =
-                         get_setting(*state.db, kLogoSettingKey);
-                     if (safe_logo_relative(relative)) {
-                       const std::filesystem::path path = state.data_dir / relative;
-                       std::string bytes = read_file_bytes(path);
-                       if (!bytes.empty()) {
-                         const bool png = path.extension() == ".png";
-                         response.status = 200;
-                         response.set_header("Content-Type",
-                                             png ? "image/png" : "image/jpeg");
-                         response.set_header("Cache-Control", "no-store");
-                         response.body = std::move(bytes);
-                         return;
-                       }
-                     }
-                     response.status = 200;
-                     response.set_header("Content-Type", "image/jpeg");
-                     response.set_header("Cache-Control", "no-store");
-                     response.body = logo_jpeg();
-                   });
-  state.server.Get("/logo.jpg", [](const httplib::Request&, httplib::Response& response) {
-    response.status = 200;
-    response.set_header("Content-Type", "image/jpeg");
-    response.set_header("Cache-Control", "public, max-age=86400");
-    response.body = logo_jpeg();
-  });
-  // 浏览器标签图标：开发态（--web-dir）优先读磁盘，打包后回落内嵌。
-  state.server.Get("/favicon.ico",
-                   [&state](const httplib::Request&,
-                            httplib::Response& response) {
-                     std::string bytes;
-                     if (!state.web_dir.empty()) {
-                       bytes = read_file_bytes(state.web_dir / "favicon.ico");
-                     }
-                     if (bytes.empty()) bytes = favicon_ico();
-                     if (bytes.empty()) {
-                       set_json(response,
-                                json{{"error", "not_found"},
-                                     {"message", "favicon.ico 不存在"}},
-                                404);
-                       return;
-                     }
-                     response.status = 200;
-                     response.set_header("Content-Type", "image/x-icon");
-                     response.set_header("Cache-Control", "no-store");
-                     response.body = std::move(bytes);
-                   });
-
-  // Web 图标与 manifest：开发态（--web-dir）优先读磁盘，打包后回落到内嵌。
-  // 这些路径都在 /api/ 之外，认证中间件不介入。
-  for (std::size_t i = 0; i < embedded_static_asset_count(); ++i) {
-    // 按值捕获指针：asset 是循环内的引用变量，捕获它的引用会在下一轮迭代后悬垂。
-    const StaticAsset* asset = &embedded_static_assets()[i];
-    state.server.Get(
-        asset->path,
-        [&state, asset](const httplib::Request&, httplib::Response& response) {
-          std::string bytes;
-          if (!state.web_dir.empty()) {
-            // asset->path 以 / 开头，直接拼会覆盖 web_dir，必须先去掉。
-            bytes = read_file_bytes(state.web_dir / (asset->path + 1));
-          }
-          if (bytes.empty()) bytes = hex_to_bytes(asset->hex);
-          if (bytes.empty()) {
-            set_json(response,
-                     json{{"error", "not_found"},
-                          {"message", std::string(asset->path) + " 不存在"}},
-                     404);
-            return;
-          }
-          response.status = 200;
-          response.set_header("Content-Type", asset->mime);
-          response.set_header("Cache-Control", "public, max-age=86400");
-          response.body = std::move(bytes);
-        });
-  }
-
-  // 认证与 CSRF 兜底：/api/health 与 /api/session/* 免认证。
+// 启动第 3 步：认证闸门与统一响应/异常处理。
+void register_security_handlers(ServerState& state) {
   state.server.set_pre_routing_handler(
       [&state](const httplib::Request& request, httplib::Response& response) {
         // 校验顺序写死，不要交换：
@@ -1868,7 +342,12 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
     }
   });
 
-  log_startup("routes_register", t_startup);
+}
+
+// 启动第 4 步：绑定端口、启动心跳与监听线程。
+void bind_and_serve(ServerState& state, const ServerOptions& options,
+                    int& bound_port,
+                    std::chrono::steady_clock::time_point& t_startup) {
   if (!state.server.bind_to_port(options.host, options.port)) {
     throw AppError(
         "port_in_use",
@@ -1879,7 +358,7 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
             std::to_string(options.port));
   }
   log_startup("bind", t_startup);
-  handle->port_ = options.port;
+  bound_port = options.port;
   // 锁文件回写监听地址：第二个实例失败时能直接报出占用者在哪个地址上。
   state.instance_guard->set_owner_info(
       "PID " + std::to_string(process_id()) + "，启动于 " + now_text() +
@@ -1904,6 +383,43 @@ std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
   });
   state.thread = std::thread([&state] { state.server.listen_after_bind(); });
   log_startup("listen_thread", t_startup);
+}
+
+}  // namespace
+
+struct ServerHandle::Impl : ServerState {};
+
+ServerHandle::ServerHandle() : impl_(std::make_unique<Impl>()) {}
+ServerHandle::~ServerHandle() {
+  if (!impl_) return;
+  impl_->heartbeat_stop = true;
+  if (impl_->heartbeat_thread.joinable()) impl_->heartbeat_thread.join();
+  if (impl_->server.is_running()) impl_->server.stop();
+  if (impl_->thread.joinable()) impl_->thread.join();
+  // 正常析构时删掉自己那一行；异常/强杀留下的行由下次启动按 PID/超时接管。
+  if (impl_->db && !impl_->instance_id.empty()) {
+    try {
+      release_heartbeat(*impl_->db, impl_->instance_id);
+    } catch (const std::exception& error) {
+      std::cerr << "警告：释放库内心跳失败：" << error.what() << std::endl;
+    }
+  }
+}
+
+const std::string& ServerHandle::local_token() const { return impl_->local_token; }
+
+std::unique_ptr<ServerHandle> start_server(const ServerOptions& options) {
+  auto t_startup = std::chrono::steady_clock::now();
+  verify_embedded_assets(options);
+  log_startup("web_assets_check", t_startup);
+
+  auto handle = std::unique_ptr<ServerHandle>(new ServerHandle());
+  ServerState& state = *handle->impl_;
+  initialize_state(state, options, t_startup);
+  register_all_routes(state);
+  register_security_handlers(state);
+  log_startup("routes_register", t_startup);
+  bind_and_serve(state, options, handle->port_, t_startup);
   return handle;
 }
 

@@ -44,6 +44,18 @@ add_custom_command(
 
 add_library(devcard_server STATIC
     src/server.cpp
+    src/error_status.cpp
+    src/guards.cpp
+    src/http_json.cpp
+    src/logo_store.cpp
+    src/rate_limit.cpp
+    src/sessions.cpp
+    src/routes_assets.cpp
+    src/routes_devices.cpp
+    src/routes_print.cpp
+    src/routes_session.cpp
+    src/routes_system.cpp
+    src/routes_users.cpp
     src/platform_paths.cpp
     src/config.cpp
     src/instance_lock.cpp
