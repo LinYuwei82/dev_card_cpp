@@ -7,6 +7,7 @@ set_source_files_properties(${DEVCARD_APP_ICON} PROPERTIES
 # M1：shell_state 承载启动期共享设施，about_panel 承载「关于」面板与常驻单例。
 # M2：download_handler 承载导航/下载/JS 面板，print_export 承载导出与打印通道。
 # M3：bridge 承载 JS 消息分发，app_delegate 承载应用/窗口生命周期。
+# M4：window_host 承载窗口/WebView 装配，print_selftest 承载打印自检。
 add_executable(DevCard MACOSX_BUNDLE
     mac/main.mm
     mac/shell_state.mm
@@ -15,6 +16,8 @@ add_executable(DevCard MACOSX_BUNDLE
     mac/print_export.mm
     mac/bridge.mm
     mac/app_delegate.mm
+    mac/window_host.mm
+    mac/print_selftest.mm
     mac/updater.mm
     ${DEVCARD_APP_ICON})
 target_include_directories(DevCard PRIVATE
