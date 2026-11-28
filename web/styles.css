@@ -229,6 +229,7 @@ td.col-actions { text-align: right; white-space: nowrap; }
   font-size: 12px; padding: 2px 6px; border-radius: 6px;
 }
 .statusbar .status-link:hover { background: var(--brand-50); }
+.statusbar .status-link { cursor: pointer; }
 .statusbar.is-error { background: var(--danger-50); border-top-color: var(--danger); }
 /* 错误态放两行：定高 51px（与窄屏两行态一致），再长就裁掉，不压住上方内容。
    带上 app 前缀是因为锁高规则的特异性更高，裸类名会被它盖掉。 */

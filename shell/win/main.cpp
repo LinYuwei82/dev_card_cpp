@@ -92,9 +92,8 @@ constexpr wchar_t kSplashHtml[] =
 constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
 constexpr wchar_t kWindowTitle[] = L"设备管理卡";
 
-// 菜单栏命令 ID（帮助菜单）
+// 「检查更新」命令 ID：菜单栏已撤，关于面板的「检查更新」按钮仍以此消息交回主窗口处理
 constexpr int IDM_HELP_CHECKUPDATE = 1001;
-constexpr int IDM_HELP_ABOUT = 1002;
 
 struct ShellState {
   HWND hwnd = nullptr;
@@ -842,11 +841,14 @@ void HandleBridgeMessage(const std::wstring& json_text) {
       ExitExportMode();
     } else if (action == "openDataDir") {
       OpenDataDir(Widen(message.value("path", std::string())));
+    } else if (action == "showAbout") {
+      // 状态栏版本号点击：弹原生「关于 DevCard」面板（菜单栏已撤，这是唯一入口）。
+      ShowAboutDialog(g.hwnd);
     } else if (action == "openExternal") {
       OpenExternal(Widen(message.value("url", std::string())));
     } else if (action == "quit") {
       // 【回归 Bug 修复｜请勿改动】页面顶栏「退出」在桌面版等于退出应用。
-      // 走 WM_CLOSE 复用菜单退出的确认框与停机流程；删掉这条分支，
+      // 走 WM_CLOSE 复用关窗确认框与停机流程；删掉这条分支，
       // 前端就会落回注销分支停在登录页（历史反馈已出现两次）。
       PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
     }
@@ -1047,11 +1049,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
     case WM_COMMAND: {
       switch (LOWORD(wparam)) {
         case IDM_HELP_CHECKUPDATE:
-          // 原生更新引擎（core UpdateEngine），不再绕道前端横幅
+          // 原生更新引擎（core UpdateEngine）：关于面板「检查更新」按钮转发至此
           devcard::win::check_for_updates_now(hwnd);
-          break;
-        case IDM_HELP_ABOUT:
-          ShowAboutDialog(hwnd);
           break;
       }
       return 0;
@@ -1244,20 +1243,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     Fatal(L"主窗口创建失败。");
     CoUninitialize();
     return 1;
-  }
-
-  // 菜单栏：帮助 → 检查更新 / 关于。
-  // 菜单句柄归系统管理，窗口销毁时自动释放，无需手动 DestroyMenu。
-  {
-    HMENU hMenuBar = CreateMenu();
-    HMENU hHelpMenu = CreatePopupMenu();
-    AppendMenuW(hHelpMenu, MF_STRING, IDM_HELP_CHECKUPDATE, L"检查更新");
-    AppendMenuW(hHelpMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hHelpMenu, MF_STRING, IDM_HELP_ABOUT, L"关于 DevCard");
-    AppendMenuW(hMenuBar, MF_POPUP,
-                reinterpret_cast<UINT_PTR>(hHelpMenu), L"帮助");
-    SetMenu(g.hwnd, hMenuBar);
-    DrawMenuBar(g.hwnd);
   }
 
   // 原生更新引擎：安装程序拉起后经正常关闭流程退出（停 server、释放端口）；

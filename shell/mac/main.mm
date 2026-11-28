@@ -290,6 +290,8 @@ API_AVAILABLE(macos(11.0))
 @property(nonatomic, retain) PDFDocument* printDocument;
 // Sparkle 自更新桥（从 shell/mac/updater.h 引入；桥内部持有 controller + delegate）。
 @property(nonatomic, strong) DevCardUpdaterBridge* updaterBridge;
+// 「关于 DevCard」面板处理器（状态栏版本号点击走 showAbout 时复用）。
+@property(nonatomic, assign, nullable) DevCardAboutHelper* aboutHandler;
 @end
 
 @implementation PrintBridge
@@ -343,6 +345,9 @@ API_AVAILABLE(macos(11.0))
     } else {
       [self notify:@"下载页地址无效" kind:@"error"];
     }
+  } else if ([action isEqualToString:@"showAbout"]) {
+    // 状态栏版本号点击：与 App 菜单「关于 DevCard」同一个面板。
+    [self.aboutHandler showAbout:nil];
   } else if ([action isEqualToString:@"checkForUpdates"]) {
     // 原生更新引擎：前端桥触发 core UpdateEngine 立即检查（与菜单同一入口）。
     if (![self.updaterBridge checkForUpdates]) {
@@ -785,6 +790,8 @@ int main(int argc, const char* argv[]) {
     bridge.updaterBridge.checkUpdateMenuItem = check_update_item_placeholder;
     // 「关于」面板的「检查更新」按钮与菜单项共用同一个更新桥。
     g_about_handler.updaterBridge = bridge.updaterBridge;
+    // 状态栏版本号点击（showAbout）复用同一个关于处理器。
+    bridge.aboutHandler = g_about_handler;
     [controller addScriptMessageHandler:bridge name:@"devcard"];
     // 页面据此判断是壳内还是普通浏览器，决定「导出 PDF」按钮的行为。
     [controller

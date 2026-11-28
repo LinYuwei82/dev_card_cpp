@@ -30,6 +30,16 @@ import { loadPrint } from './print.js';
     }
   });
 
+  // 桌面壳：点状态栏版本号打开原生「关于 DevCard」面板。
+  // win 壳已撤菜单栏，这里是「关于 / 检查更新」的唯一入口；浏览器版不绑定。
+  if (hasNativeBridge()) {
+    el.statusVersion.classList.add('status-link');
+    el.statusVersion.title = '关于 DevCard';
+    el.statusVersion.addEventListener('click', function () {
+      sendToShell('showAbout');
+    });
+  }
+
   // ---------- 会话 ----------
   function showLogin(message) {
     el.app.hidden = true;
