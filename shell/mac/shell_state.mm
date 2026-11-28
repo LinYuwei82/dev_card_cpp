@@ -1,6 +1,8 @@
 // macOS 壳共享启动设施的实现（M1 从 main.mm 拆出）。
 #include "shell_state.h"
 
+#import <WebKit/WebKit.h>
+
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>

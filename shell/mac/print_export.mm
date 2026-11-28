@@ -1,7 +1,9 @@
 // macOS 壳的打印双通道（M2 从 main.mm 拆出）。
 #import "print_export.h"
 
+#import <PDFKit/PDFKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <WebKit/WebKit.h>
 
 #include "shell_state.h"
 

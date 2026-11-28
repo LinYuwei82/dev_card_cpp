@@ -5,8 +5,9 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
-#import <WebKit/WebKit.h>
-#import <Quartz/Quartz.h>
+
+@class WKWebView;
+@class PDFDocument;
 
 @interface DevCardPrintBridge : NSObject
 @property(nonatomic, assign) WKWebView* webView;

@@ -5,9 +5,10 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
-#import <WebKit/WebKit.h>
 
 #include <string>
+
+@class WKWebView;
 
 // 启动耗时打点：main 入口先调 DevCardStartupClockBegin()，之后各阶段调
 // DevCardStartupLog()，与 server 侧 [startup] 日志同格式。
