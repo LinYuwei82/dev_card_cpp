@@ -32,7 +32,7 @@
 AppId={{6F1E7A52-3C4B-4E8D-9A21-5B7C0D3E8F14}
 AppName=DevCard
 AppVersion={#AppVersion}
-AppPublisher=深圳市安业物业管理有限公司
+AppPublisher=小兔在线
 DefaultDirName={localappdata}\Programs\DevCard
 DefaultGroupName=DevCard
 DisableProgramGroupPage=yes
