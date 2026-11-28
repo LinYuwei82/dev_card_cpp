@@ -124,6 +124,27 @@ UpdateService::UpdateService(UpdateServiceConfig config)
     skipped_version_.clear();
     skip_until_epoch_ = 0;
   }
+  // 自更新重启后本地版本已追平上次判定的目标版本：过期的 available/skipped
+  // 判定立即失效并落盘，否则顶栏会残留「有新版本 vX」提示直到下一轮检查
+  // （最长 24 小时）。
+  if (decision_.verdict == UpdateDecision::Verdict::Available ||
+      decision_.verdict == UpdateDecision::Verdict::Skipped) {
+    ProductVersion latest{}, mine{};
+    if (!decision_.version.empty() &&
+        parse_product_version(decision_.version, latest) &&
+        parse_product_version(current_product_version(), mine)) {
+      const int cmp = compare_product_version(mine, latest);
+      const bool caught_up =
+          cmp > 0 || (cmp == 0 && compiled_build_number() >= decision_.build);
+      if (caught_up) {
+        decision_ = UpdateDecision{};
+        decision_.reason = "up_to_date";
+        has_decision_ = false;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        persist_locked();
+      }
+    }
+  }
 }
 
 UpdateService::~UpdateService() { stop(); }
