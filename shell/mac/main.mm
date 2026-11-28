@@ -25,8 +25,6 @@
 // 「关于」面板：版本/构建号来自编译期注入（VERSION.txt + tag 序号），
 // 与更新链路清单版本同源。链接按钮打开 OSS 手册/更新记录与 GitHub 发布页。
 @interface DevCardAboutHelper : NSObject
-/// 「检查更新」按钮接的更新桥（与菜单项同一个 bridge，start 后才有引擎）。
-@property (nonatomic, assign, nullable) DevCardUpdaterBridge* updaterBridge;
 - (void)showAbout:(id)sender;
 @end
 
@@ -49,21 +47,18 @@
       [NSString stringWithFormat:@"%@\n物业设备台账与设备管理卡打印工具\n\n© 2026 小兔在线",
                                  version_line];
   [alert addButtonWithTitle:@"好"];
-  [alert addButtonWithTitle:@"检查更新"];
   [alert addButtonWithTitle:@"更新记录"];
   [alert addButtonWithTitle:@"用户手册"];
   [alert addButtonWithTitle:@"发布页"];
   NSModalResponse response = [alert runModal];
   NSString* url = nil;
-  if (response == NSAlertSecondButtonReturn) {  // 检查更新
-    [self.updaterBridge checkForUpdates];
-  } else if (response == NSAlertThirdButtonReturn) {
+  if (response == NSAlertSecondButtonReturn) {
     url = [NSString stringWithFormat:
                @"https://dl.xiaotu.online/devcard/release-notes-%@.html",
                [NSString stringWithUTF8String:ver.c_str()]];
-  } else if (response == NSAlertFirstButtonReturn + 3) {  // 第 4 个按钮（SDK 无 Fourth 常量）
+  } else if (response == NSAlertThirdButtonReturn) {
     url = @"https://dl.xiaotu.online/devcard/manual.pdf";
-  } else if (response == NSAlertFirstButtonReturn + 4) {  // 第 5 个按钮
+  } else if (response == NSAlertFirstButtonReturn + 3) {  // 第 4 个按钮（SDK 无 Fourth 常量）
     url = @"https://github.com/LinYuwei82/dev_card_cpp/releases";
   }
   if (url) {
@@ -788,8 +783,6 @@ int main(int argc, const char* argv[]) {
     PrintBridge* bridge = [[PrintBridge alloc] init];
     bridge.updaterBridge = [[DevCardUpdaterBridge alloc] init];
     bridge.updaterBridge.checkUpdateMenuItem = check_update_item_placeholder;
-    // 「关于」面板的「检查更新」按钮与菜单项共用同一个更新桥。
-    g_about_handler.updaterBridge = bridge.updaterBridge;
     // 状态栏版本号点击（showAbout）复用同一个关于处理器。
     bridge.aboutHandler = g_about_handler;
     [controller addScriptMessageHandler:bridge name:@"devcard"];

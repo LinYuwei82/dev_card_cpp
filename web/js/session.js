@@ -30,13 +30,18 @@ import { loadPrint } from './print.js';
     }
   });
 
-  // 桌面壳：点状态栏版本号打开原生「关于 DevCard」面板。
-  // win 壳已撤菜单栏，这里是「关于 / 检查更新」的唯一入口；浏览器版不绑定。
+  // 桌面壳：点状态栏版本号打开原生「关于 DevCard」面板；版本号旁的「检查更新」
+  // 按钮直接触发原生检查——两个入口 Windows / macOS 完全一致（浏览器版不显示）。
   if (hasNativeBridge()) {
     el.statusVersion.classList.add('status-link');
     el.statusVersion.title = '关于 DevCard';
     el.statusVersion.addEventListener('click', function () {
       sendToShell('showAbout');
+    });
+    el.statusCheckUpdate.hidden = false;
+    el.statusCheckUpdate.title = '立即检查一次，不受 24 小时间隔限制';
+    el.statusCheckUpdate.addEventListener('click', function () {
+      sendToShell('checkForUpdates');
     });
   }
 

@@ -182,6 +182,7 @@
     statusMode: document.getElementById('status-mode'),
     statusCount: document.getElementById('status-count'),
     statusVersion: document.getElementById('status-version'),
+    statusCheckUpdate: document.getElementById('status-check-update'),
     statusSchema: document.getElementById('status-schema'),
     statusDatadir: document.getElementById('status-datadir'),
     statusError: document.getElementById('status-error'),

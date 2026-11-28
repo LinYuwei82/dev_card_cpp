@@ -92,9 +92,6 @@ constexpr wchar_t kSplashHtml[] =
 constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
 constexpr wchar_t kWindowTitle[] = L"设备管理卡";
 
-// 「检查更新」命令 ID：菜单栏已撤，关于面板的「检查更新」按钮仍以此消息交回主窗口处理
-constexpr int IDM_HELP_CHECKUPDATE = 1001;
-
 struct ShellState {
   HWND hwnd = nullptr;
   bool devtools = false;
@@ -266,7 +263,6 @@ constexpr int IDC_ABOUT_OK = 101;
 constexpr int IDC_ABOUT_NOTES = 102;
 constexpr int IDC_ABOUT_MANUAL = 103;
 constexpr int IDC_ABOUT_RELEASES = 104;
-constexpr int IDC_ABOUT_CHECKUPDATE = 105;
 
 std::wstring AboutLinkUrl(int id, const std::wstring& version) {
   if (id == IDC_ABOUT_NOTES)
@@ -349,28 +345,11 @@ LRESULT CALLBACK AboutWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
               static_cast<UINT_PTR>(static_cast<int>(IDC_ABOUT_OK))),
           inst, nullptr);
       SendMessageW(ok, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-      // 「检查更新」：关闭本对话框后让主窗口走菜单同款流程（IDM_HELP_CHECKUPDATE）。
-      HWND check = CreateWindowExW(
-          0, L"BUTTON", L"检查更新", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-          S(196), S(222), S(90), S(26), hwnd,
-          reinterpret_cast<HMENU>(
-              static_cast<UINT_PTR>(static_cast<int>(IDC_ABOUT_CHECKUPDATE))),
-          inst, nullptr);
-      SendMessageW(check, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
       SetFocus(ok);
       return 0;
     }
     case WM_COMMAND:
-      if (LOWORD(wp) == IDC_ABOUT_OK) {
-        DestroyWindow(hwnd);
-      } else if (LOWORD(wp) == IDC_ABOUT_CHECKUPDATE) {
-        const HWND parent = GetParent(hwnd);
-        DestroyWindow(hwnd);  // 先退出模态循环，再触发检查（弹窗不被本框遮挡）
-        if (parent) {
-          PostMessageW(parent, WM_COMMAND,
-                       MAKEWPARAM(IDM_HELP_CHECKUPDATE, 0), 0);
-        }
-      }
+      if (LOWORD(wp) == IDC_ABOUT_OK) DestroyWindow(hwnd);
       return 0;
     case WM_NOTIFY: {
       const LPNMHDR nm = reinterpret_cast<LPNMHDR>(lp);
@@ -842,8 +821,11 @@ void HandleBridgeMessage(const std::wstring& json_text) {
     } else if (action == "openDataDir") {
       OpenDataDir(Widen(message.value("path", std::string())));
     } else if (action == "showAbout") {
-      // 状态栏版本号点击：弹原生「关于 DevCard」面板（菜单栏已撤，这是唯一入口）。
+      // 状态栏版本号点击：弹原生「关于 DevCard」面板。
       ShowAboutDialog(g.hwnd);
+    } else if (action == "checkForUpdates") {
+      // 状态栏「检查更新」按钮：原生引擎立即检查（与 macOS 同一入口形态）。
+      devcard::win::check_for_updates_now(g.hwnd);
     } else if (action == "openExternal") {
       OpenExternal(Widen(message.value("url", std::string())));
     } else if (action == "quit") {
@@ -1046,15 +1028,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
         return 0;
       }
       return DefWindowProcW(hwnd, message, wparam, lparam);
-    case WM_COMMAND: {
-      switch (LOWORD(wparam)) {
-        case IDM_HELP_CHECKUPDATE:
-          // 原生更新引擎（core UpdateEngine）：关于面板「检查更新」按钮转发至此
-          devcard::win::check_for_updates_now(hwnd);
-          break;
-      }
-      return 0;
-    }
     case devcard::win::kUpdateResultMessage:
       // 后台 fetch 结果回流：交回引擎 onManifest（已在 UI 线程）
       if (devcard::win::handle_update_message(hwnd, lparam)) return 0;

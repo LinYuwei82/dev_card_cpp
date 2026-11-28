@@ -29,7 +29,7 @@ void start_update_checker(HWND hwnd);
 // WM_TIMER(kUpdateTimer) 的处理：重置为 24 小时周期，把 tick 交给引擎（节流在引擎内）
 void run_update_timer(HWND hwnd);
 
-// 菜单「检查更新」：引擎立即检查，无论结果都给出提示
+// 「检查更新」（状态栏按钮经桥转发）：引擎立即检查，无论结果都给出提示
 void check_for_updates_now(HWND hwnd);
 
 // WM_APP 的 fetch 结果消息：交回引擎 onManifest；true 表示消息属于更新模块
