@@ -62,10 +62,10 @@ Ninja 是单配置生成器，**产物没有 `Release/` 子目录**：
 - **数据目录**：macOS `~/Library/Application Support/Anye/DevCard/`（见 `server/src/platform_paths.cpp`）；Windows 安装版 `%LOCALAPPDATA%\DevCard\data`、便携版 exe 旁 `data\`（显式覆盖优先，形态默认排最后，候选都不可写时报 `data_dir_unwritable`，不回退临时目录）。库文件 `devicedb.db`，自定义图标在 `assets/` 下（不进程序包、不进仓库）。旧版库（只有 `tb_device`/`tb_user`、无 `schema_migration`）启动直接报 `legacy_db`，不会在原库上建表。
 - **版本**：只改根目录 `VERSION.txt`；server 版本串、Windows 版本资源、macOS bundle 版本自动跟随。改版本后必须重新 configure（PE 与 bundle 版本在 configure 阶段注入）。
 - **验证打印**：界面「卡片打印」→「导出 PDF」/「直接打印」；自动化导出可用环境变量 `DEVCARD_PRINT_SELFTEST_PDF=<输出路径>` 启动壳程序，导出后自动退出。
-- **版本检查**：`GET /api/version` 读取数据目录下的 `manifest.json`（Schema v2 统一清单，两平台同一份、Ed25519 签名，服务端用编译期内嵌公钥验签后只取 `platforms.<本平台>`），返回本平台 `latest`、`build` 与产物资产。清单缺失、验签失败或非法时不显示提示，不影响台账。远端检查由页面 `fetch` 走 `/api/version` 下发的 `check{enabled,endpoint,interval_hours}`（默认 `https://dl.xiaotu.online/devcard/updates/stable/manifest.json`、24 小时）。macOS 壳的「检查更新」经原生桥转交 Sparkle；Windows 壳与浏览器走清单通道。
+- **版本检查**：桌面壳内完成（v1.4.0 起）。`core` 的 `UpdateEngine` 拉取远端 `manifest.json`（Schema v2，两平台同一份、Ed25519 签名）并验签，只取 `platforms.<本平台>` 段，按 version/build、灰度、跳过窗口与强制期限判定；Windows 由 `shell/win/updater_win.cpp` 弹 TaskDialog 并静默安装，macOS 由 `shell/mac/updater.mm` 提示后交给 Sparkle 2.10.1 安装。服务端与网页不参与更新链路，也不读取数据目录的清单副本。
 - **构建号**：`cmake -DDEVCARD_BUILD=<seq>` 经 `cmake/devcard_version.cmake` 的 `devcard_add_build_stamp()` 注入所有生产 target 的编译期宏 `DEVCARD_BUILD`（整数）与 `DEVCARD_BUILD_STR`（字符串）；客户端 `compiled_build_number()` 读取，同版本重发时清单 `build > 本机构建号` 才提示更新。未注入时返回 0，回退到只比 version。`seq` 来自发布 tag（见 §2.3）。
 - **账号与密码**：首次启动生成 `root` 与 `安业物业` 两个随机密码账号，写入数据目录 `初始账号密码.txt`（0600），全部改密后自动删除；首次登录与管理员重置不要求旧密码（按 `must_change_password` 判定），自助改密仍验旧密码。
-- **接口契约测试**：`tests/test_api_contract.cpp` 随 `ctest` 运行——进程内起真实服务，锁死认证闸门顺序、乐观锁 409 响应形状、`/api/version` 字段集，并把前端 `app.js` 与 `js/*.js` 里的全部 `/api/` 字面量与服务端路由契约表比对。
+- **接口契约测试**：`tests/test_api_contract.cpp` 随 `ctest` 运行——进程内起真实服务，锁死认证闸门顺序、乐观锁 409 响应形状，并把前端 `app.js` 与 `js/*.js` 里的全部 `/api/` 字面量与服务端路由契约表比对。
 - **会话持久化**：登录会话落盘 `data_dir/sessions.json`（TTL 12 小时），进程重启后旧 cookie 仍有效；滑动 TTL 只改内存，`last_seen` 落盘值有滞后。
 - **公司名**：录入上限 16 个字符，卡面仍按 13 字宽截断；界面实时预览「将打印为：……」。13 字与 16 字两张样张已实测等价：132,718 B / 2 页 / 12 + 5 / 跨页 0。
 - 新增依赖全部内嵌（cpp-httplib、miniz、sqlite amalgamation），不需要 Qt。
@@ -122,13 +122,13 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\test_webview2_clean_v
 - 绿色版产物：`dist\DevCard-<版本>-win64-portable.zip`，包内 `DevCard.exe`、`devcard-server.exe`、`fonts\`、`VERSION.txt`；数据目录为 exe 旁 `data\`，升级时手动替换程序目录并保留 `data\`。
 - 安装版产物：`dist\DevCard-<版本>-setup.exe`（发布脚本再按 v2 命名复制为 `devcard-<版本>-win64-setup.exe` 上传 OSS）。
 - 自检：两个 exe 的 `ProductVersion` 必须等于 `VERSION.txt`、字体齐全且非空、包内不得出现 `*.db`；绿色包内 `DevCard.exe` 必须含 `DEVCARD_BUILD=<seq>` 标记。
-- 发布脚本用 `manifest_v2.py` 生成并签名 `dist\manifest.json`（Windows 段 `artifacts.setup` / `artifacts.portable` 记录 OSS 地址、大小与 SHA256）；上传后需同步一份到数据目录，本机服务才会读到。
+- 发布脚本用 `manifest_v2.py` 生成并签名 `dist\manifest.json`（Windows 段 `artifacts.setup` / `artifacts.portable` 记录 OSS 地址、大小与 SHA256）；上传 OSS 后客户端直接拉远端清单，不再需要同步到数据目录。
 - CI 的 Windows job 只构建、测试并产出绿色包与安装包；正式发布由 `release-windows` 工作流完成（见 §2.3）。
 
 ### 2.3 发布号、门禁与 CI
 
 - **版本号**：只改 `VERSION.txt`（`x.y.z`）。
-- **发布号**：annotated tag `v<semver>+<seq>`，例如 `v1.3.6+7`；`semver` 必须等于 `VERSION.txt`，`seq` 从 1 起、只增不减，**构建号 `build = seq`**（无固定基数，旧的时间戳/大数构建号方案已废弃）。
+- **发布号**：annotated tag `v<semver>+<seq>`，例如 `v1.4.4+18`；`semver` 必须等于 `VERSION.txt`，`seq` 从 1 起、只增不减，**构建号 `build = seq`**（无固定基数，旧的时间戳/大数构建号方案已废弃）。
 - **分配并推送 tag**：`python3 tools/release/release_tag.py create --push`（默认取「已有最大序号 + 1」，也可 `--seq` 显式指定；tag 不可删除重打）。
 - **CI 解析**：`release-windows.yml` 在 tag 触发时执行 `release_tag.py parse --ensure-latest`，把 `BUILD` 写入 `DEVCARD_BUILD`；`workflow_dispatch` 手动触发**必须填 `build`**。
 - **发版前门禁**：`tools/release/check_version_bump.py --build <seq> --manifest-url https://dl.xiaotu.online/devcard/updates/stable/manifest.json`——版本不得回退，同版本重发时 build 必须严格大于线上所有平台的最大 build。
