@@ -8,6 +8,11 @@ function(devcard_add_version_rc target)
     set(DEVCARD_RC_FILENAME "${target}.exe")
     configure_file("${DEVCARD_VERSION_RC_TEMPLATE}" "${output}" @ONLY)
     if(WIN32)
+        # 把模板记为生成文件的依赖：模板一改，rc 必然重新生成、exe 必然重建
+        # （中文署名曾被旧 rc 缓存坑过一次：configure_file 不比较内容，
+        # ninja 也不认识模板，只 configure 不 touch 输出就不会重跑）。
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${DEVCARD_VERSION_RC_TEMPLATE}")
         target_sources(${target} PRIVATE "${output}")
     endif()
 endfunction()
