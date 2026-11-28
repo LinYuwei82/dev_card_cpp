@@ -339,11 +339,10 @@ import { setView } from './session.js';
         return response.blob();
       })
       .then(function (blob) {
-        // Windows 壳没有 saveFile 桥（NSSavePanel 仅 macOS 实现）：走浏览器下载
-        // 通道，WebView2 的 DownloadStarting 会接管落点到下载目录并提示完成；
-        // 若误走 shellSaveFile，消息被壳丢弃、Promise 永不 resolve，按钮会卡死。
-        if (!window.__devcardShell || !bridge ||
-            (window.chrome && window.chrome.webview)) {
+        // 桌面壳（macOS NSSavePanel / Windows IFileSaveDialog）具备 saveFile 桥，
+        // 由壳层弹保存对话框；浏览器没有壳，退回 <a download>。
+        // 旧版壳没有 __devcardSaveFile 标记，仍走浏览器下载，避免 Promise 卡死。
+        if (!window.__devcardShell || !bridge || !window.__devcardSaveFile) {
           downloadInBrowser(blob, options.filename);
           toast(options.okText);
           return null;

@@ -57,6 +57,8 @@ void InjectShim() {
   // win 壳只提供四适配器（fetch/设置/TaskDialog/安装），提示与页面无关。
   const wchar_t* script =
       L"window.__devcardShell = true;"
+      // 页面据此选择「壳内弹保存对话框」而不是浏览器下载（saveFile 桥）。
+      L"window.__devcardSaveFile = true;"
       L"if (window.chrome && window.chrome.webview) {"
       L"  window.webkit = window.webkit || {};"
       L"  window.webkit.messageHandlers = window.webkit.messageHandlers || {};"

@@ -5,7 +5,8 @@
 //
 // P1–P3 拆分后本文件只保留：单实例入口、窗口过程、server 生命周期。
 // 其余职责：共享状态见 shell_state.h、WebView 宿主见 webview_host.h、
-// JS 桥见 bridge.h、下载见 downloads.h、打印/导出见 print_export.h。
+// JS 桥见 bridge.h、下载见 downloads.h、打印/导出见 print_export.h、
+// 页面保存文件见 save_file.h。
 // 验收清单见 docs/改造技术方案.md §10.9，不要在 Windows 实跑前宣称可用。
 
 #include <windows.h>

@@ -15,6 +15,7 @@
 
 #include "about_dialog.h"
 #include "print_export.h"
+#include "save_file.h"
 #include "shell_state.h"
 #include "updater_win.h"
 
@@ -32,6 +33,11 @@ void HandleBridgeMessage(const std::wstring& json_text) {
     const std::string action = message.value("action", std::string());
     if (action == "exportPdf") {
       ExportPdf(message.value("filename", std::string("设备管理卡.pdf")));
+    } else if (action == "saveFile") {
+      // 导出设备台账 / 下载导入模板：弹系统保存对话框后原子写入。
+      SaveFileFromBridge(message.value("filename", std::string()),
+                         message.value("title", std::string()),
+                         message.value("contentBase64", std::string()));
     } else if (action == "print") {
       ShowPrintDialog();
     } else if (action == "printDone") {

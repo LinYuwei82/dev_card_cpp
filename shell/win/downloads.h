@@ -4,8 +4,13 @@
 // 同名文件追加序号，完成后通过页面通知提示落盘位置。
 #pragma once
 
+#include <filesystem>
+
 namespace devcard {
 namespace win {
+
+// 用户「下载」文件夹；取不到时退回 <用户目录>\Downloads 或当前目录。
+std::filesystem::path DownloadsDir();
 
 // WebView2 就绪后注册 add_DownloadStarting。
 void RegisterDownloadHandling();

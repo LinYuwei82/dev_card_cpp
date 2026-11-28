@@ -76,9 +76,11 @@
   bridge.aboutHandler = about_handler;
   [controller addScriptMessageHandler:bridge name:@"devcard"];
   // 页面据此判断是壳内还是普通浏览器，决定「导出 PDF」按钮的行为。
+  // __devcardSaveFile 表示壳具备 saveFile 桥（NSSavePanel），xlsx 导出走它。
   [controller
       addUserScript:[[WKUserScript alloc]
-                        initWithSource:@"window.__devcardShell = true;"
+                        initWithSource:@"window.__devcardShell = true; "
+                                       @"window.__devcardSaveFile = true;"
                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                       forMainFrameOnly:YES]];
   config.userContentController = controller;

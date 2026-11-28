@@ -31,20 +31,6 @@ struct DownloadWatch {
 
 std::vector<std::shared_ptr<DownloadWatch>> g_downloads;
 
-std::filesystem::path DownloadsDir() {
-  PWSTR raw = nullptr;
-  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, KF_FLAG_DEFAULT,
-                                     nullptr, &raw))) {
-    std::filesystem::path path(raw);
-    CoTaskMemFree(raw);
-    return path;
-  }
-  wchar_t profile[MAX_PATH] = {};
-  const DWORD length = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
-  if (length > 0) return std::filesystem::path(profile) / L"Downloads";
-  return std::filesystem::current_path();
-}
-
 // 同名文件不覆盖：追加 (1)、(2) … 与浏览器下载行为一致。
 std::filesystem::path UniquePath(const std::filesystem::path& path) {
   std::error_code ec;
@@ -120,6 +106,20 @@ void HandleDownloadStarting(ICoreWebView2DownloadStartingEventArgs* args) {
 }
 
 }  // namespace
+
+std::filesystem::path DownloadsDir() {
+  PWSTR raw = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, KF_FLAG_DEFAULT,
+                                     nullptr, &raw))) {
+    std::filesystem::path path(raw);
+    CoTaskMemFree(raw);
+    return path;
+  }
+  wchar_t profile[MAX_PATH] = {};
+  const DWORD length = GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH);
+  if (length > 0) return std::filesystem::path(profile) / L"Downloads";
+  return std::filesystem::current_path();
+}
 
 void RegisterDownloadHandling() {
   if (!g.webview) return;
