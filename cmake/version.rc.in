@@ -16,10 +16,10 @@ VS_VERSION_INFO VERSIONINFO
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904b0"
+        BLOCK "080404b0"
         BEGIN
-            VALUE "CompanyName", "Xiaotu Online"
-            VALUE "LegalCopyright", "Copyright (C) 2026 Xiaotu Online"
+            VALUE "CompanyName", "小兔在线"
+            VALUE "LegalCopyright", "Copyright © 2026 小兔在线"
             VALUE "FileDescription", "DevCard"
             VALUE "FileVersion", "@DEVCARD_VERSION_STRING@"
             VALUE "InternalName", "@DEVCARD_RC_FILENAME@"
@@ -30,6 +30,6 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x0409, 1200
+        VALUE "Translation", 0x0804, 1200
     END
 END

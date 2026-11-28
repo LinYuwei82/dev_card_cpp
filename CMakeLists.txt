@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
     # 源码/资源/内嵌前端字符串统一按 UTF-8 解释（§10.1）。
     add_compile_options(/utf-8)
+    # rc.exe 默认按系统 ANSI 码页解析 .rc，中文版本资源必须显式 /utf-8。
+    set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /utf-8")
     # 静态 CRT：发布包不依赖 VC++ Redistributable。Windows 上需实测（§10.8.1）。
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
