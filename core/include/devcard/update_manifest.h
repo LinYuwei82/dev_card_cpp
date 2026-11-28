@@ -86,7 +86,7 @@ struct SignedManifest {
 SignedManifest parse_signed_manifest(std::string_view raw_json,
                                      std::string_view pubkey_hex);
 
-// ---- 更新判定共享原语（检测层唯一判据源，server UpdateService 使用） ----
+// ---- 更新判定共享原语（检测层唯一判据源，core UpdateEngine 使用） ----
 // 注：曾有过一个 evaluate_manifest 汇总判定函数，但生产代码（updater_win 与
 // server /api/version）各自内联了判定流程，无人调用且语义已漂移，已删除。
 // 本次分层重构把判定以 evaluate_update 的形态收回 core，且这次真的有唯一调用方。
@@ -141,8 +141,8 @@ struct UpdateDecision {
 
 // 唯一一份更新判定：channel → 版本/build 双键 → mandatory 直通灰度与跳过
 // （raw mandatory 标志即豁免，不等到期）→ 灰度 → 跳过 → 选产物。
-// 语义与 updater_win L613-700、server /api/version L1071-1076 的并集对齐，
-// 收口后这两处必须改为调用本函数（防回潮自检盯住这一点）。
+// 历史上 win 壳与 server 曾各有一份内联判定（语义漂移的根源），v1.4.0 起
+// 收口为唯一调用方 core UpdateEngine，win/mac 壳只经引擎拿结论（门禁防回潮）。
 UpdateDecision evaluate_update(const SignedManifest& manifest,
                                const LocalUpdateState& local);
 

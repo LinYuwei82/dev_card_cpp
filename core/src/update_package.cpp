@@ -427,20 +427,6 @@ UpdateDownloadOutcome download_update_package(
   return outcome;
 }
 
-void cleanup_update_partials(const std::filesystem::path& updates_dir) {
-  std::error_code ec;
-  if (!std::filesystem::is_directory(updates_dir, ec)) return;
-  for (const auto& entry : std::filesystem::directory_iterator(updates_dir, ec)) {
-    if (ec) break;
-    const std::string name = path_to_utf8(entry.path().filename());
-    const bool partial =
-        name.size() >= 5 && name.compare(name.size() - 5, 5, ".part") == 0;
-    const bool log = name.size() >= 5 &&
-                     name.compare(name.size() - 5, 5, ".log") == 0;
-    if (partial || log) std::filesystem::remove(entry.path(), ec);
-  }
-}
-
 bool relocate_update_package(const std::filesystem::path& source,
                              const std::filesystem::path& target,
                              std::string* error) {

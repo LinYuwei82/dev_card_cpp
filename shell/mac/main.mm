@@ -23,7 +23,7 @@
 #include "devcard/update_manifest.h"
 
 // 「关于」面板：版本/构建号来自编译期注入（VERSION.txt + tag 序号），
-// 与 server /api/version、更新链路同源。链接按钮打开 OSS 手册/更新记录与 GitHub 发布页。
+// 与更新链路清单版本同源。链接按钮打开 OSS 手册/更新记录与 GitHub 发布页。
 @interface DevCardAboutHelper : NSObject
 - (void)showAbout:(id)sender;
 @end

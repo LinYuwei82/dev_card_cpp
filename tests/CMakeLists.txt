@@ -46,7 +46,7 @@ target_compile_definitions(devcard_embed_web_tests PRIVATE
     DEVCARD_EMBED_SCRIPT="${CMAKE_SOURCE_DIR}/cmake/embed_web.cmake")
 add_test(NAME devcard_embed_web_tests COMMAND devcard_embed_web_tests)
 
-# 接口契约测试（最小版）：认证闸门顺序、乐观锁 409 形状、/api/version 字段集、
+# 接口契约测试（最小版）：认证闸门顺序、乐观锁 409 形状、
 # 前端 app.js 的 /api/ 字面量与路由契约表比对。跨层改动靠它拦截，见文件头说明。
 add_executable(devcard_api_contract_tests test_api_contract.cpp)
 target_link_libraries(devcard_api_contract_tests PRIVATE devcard_server)

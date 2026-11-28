@@ -91,9 +91,6 @@ UpdateDownloadOutcome download_update_package(
     const std::filesystem::path& updates_dir, const UpdatePackageSpec& spec,
     const UpdateFetcher& fetcher = curl_fetch);
 
-// 启动时清理上次中断留下的 `.part` 与 curl 日志。
-void cleanup_update_partials(const std::filesystem::path& updates_dir);
-
 // 把已校验的包从 updates/ 挪到用户选定位置：同卷走 rename（原子）；
 // 跨卷退回「目标旁的 .part → 改名 → 删源」，任何一步失败都不留下残件，
 // 源文件保持原样，错误可直接展示。

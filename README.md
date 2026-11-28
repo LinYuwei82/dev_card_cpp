@@ -193,7 +193,7 @@ dev_card_cpp/
 - Windows 安装器 `packaging/windows/DevCard.iss`（每用户安装、`PrivilegesRequired=lowest`、不注册服务、卸载只删 `{app}` 并提示数据目录）**已编译并实测 `/VERYSILENT` 安装/卸载**；检测到缺少 WebView2 Runtime 时显示可选的「运行环境」安装任务（勾选后下载官方 Evergreen Bootstrapper 并静默安装）。向导页未逐页点、SmartScreen 仍待验；无 Runtime 状态下的真实下载安装已于 2026-11-22 实机验证（Win11 清空 Runtime 静默装回 157.0.4341.60；Win10 19041 干净 VM 34 s 装回并在交互桌面确认窗口与页面渲染，验证脚本 `packaging/windows/test_webview2_clean_vm.ps1`），任务选中/取消/默认与下载失败路径另有模拟验证。
 - **卸载不删数据目录**：安装版卸载只移除程序文件与快捷方式，数据目录保留，结束页提示路径。
 - **实物打印未验**：本机没有打印机，只验证了「同一份 2 页 A4 PDF 能构造打印任务」，打印面板确认与出纸需要目标打印机。
-- Windows 自更新协助器（`devcard-server.exe --apply-update`）以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS` 静默替换，完成后写 `install-result.json` 并拉起新版本；1.2.0 → 1.2.1 已实测闭环。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
+- Windows 自更新（v1.4.0 起 mote 化）：win 壳内 core UpdateEngine 验签清单并判定，TaskDialog 原生弹窗提示后直接以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1` 静默装 setup，装完由安装器拉起新版本；绿色版下载 zip 后打开所在目录并退出，由用户替换。server/web 不再参与更新链路。仍未做：安装向导页逐页点、实物打印与导出桥端到端、SmartScreen 实际拦截文案、交互回归，清单见 [改造技术方案 §10.9](docs/改造技术方案.md)。
 - **更新信任锚**：清单统一走 Ed25519 验签（公钥随客户端编译）；Windows 暂不购买 Authenticode 代码签名证书（2026-11-17 决定，发布页有 SmartScreen 提示）；macOS 另有 Developer ID 签名 + Apple 公证 + appcast 内 EdDSA 签名。
 - macOS 自更新由 Sparkle 承担；appcast 由 `tools/release/generate_appcast.py` 生成，EdDSA 私钥存 `~/.config/devcard/sparkle-keys/`（不进仓库）。
 - 源码注释提到的 Python 原版不在本仓库，历史行为未逐条比对。

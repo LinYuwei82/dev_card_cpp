@@ -260,8 +260,8 @@ void OpenDataDir(const std::wstring& raw_path) {
 }
 
 // ---- 「关于」对话框（帮助菜单）----
-// 版本/构建号来自编译期注入（VERSION.txt + tag 序号），与 server /api/version
-// 及更新链路同源；链接用 SYSLINK 控件，打开 OSS 更新记录/手册与 GitHub 发布页。
+// 版本/构建号来自编译期注入（VERSION.txt + tag 序号），与更新链路清单版本
+// 同源；链接用 SYSLINK 控件，打开 OSS 更新记录/手册与 GitHub 发布页。
 constexpr wchar_t kAboutClass[] = L"DevCardAboutDialog";
 constexpr int IDC_ABOUT_OK = 101;
 constexpr int IDC_ABOUT_NOTES = 102;
@@ -952,8 +952,8 @@ void InjectShim() {
   // 页面按 window.webkit.messageHandlers.devcard 判断是否在壳内；
   // 这里把 WebView2 的 chrome.webview 桥映射成同一形状，页面代码不用改。
   //
-  // 自动更新不再注入更新 shim：分层重构后检测/编排全在 server，
-  // win 壳只是平台安装器（协助器），前端直接调 /api/update/state 等接口。
+  // 自动更新不再注入更新 shim：v1.4.0 分层后检测/编排全在 core UpdateEngine，
+  // win 壳只提供四适配器（fetch/设置/TaskDialog/安装），提示与页面无关。
   const wchar_t* script =
       L"window.__devcardShell = true;"
       L"if (window.chrome && window.chrome.webview) {"
