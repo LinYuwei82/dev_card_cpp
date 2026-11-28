@@ -31,8 +31,22 @@ bool LogEnabled() {
   return std::getenv("DEVCARD_UPDATE_LOG") != nullptr;
 }
 
+// 与 win 壳同口径：NSLog 之外同步写 DEVCARD_UPDATE_LOG 文件，真机排障不依赖 Console。
+void LogLine(const std::string& line) {
+  NSLog(@"%s", line.c_str());
+  const char* path = std::getenv("DEVCARD_UPDATE_LOG");
+  if (path && *path) {
+    FILE* f = std::fopen(path, "a");
+    if (f) {
+      std::fwrite(line.data(), 1, line.size(), f);
+      std::fputc('\n', f);
+      std::fclose(f);
+    }
+  }
+}
+
 void EngineLog(const std::string& line) {
-  if (LogEnabled()) NSLog(@"%s", line.c_str());
+  if (LogEnabled()) LogLine(line);
 }
 
 void ShellLog(const char* format, ...) __attribute__((format(printf, 1, 2)));
@@ -43,7 +57,7 @@ void ShellLog(const char* format, ...) {
   va_start(args, format);
   std::vsnprintf(buffer, sizeof(buffer), format, args);
   va_end(args);
-  NSLog(@"NATIVE update %s", buffer);
+  LogLine(std::string("NATIVE update ") + buffer);
 }
 
 NSString* ToStr(const std::string& text) {
@@ -63,6 +77,11 @@ class MacFetcher : public devcard::ManifestFetcher {
       if (done) done(0, "", "更新地址不合法");
       return;
     }
+    // MRC 下 ObjC 块捕获 C++ 对象是 memcpy 语义：块复制到堆不会调拷贝构造、
+    // 释放不调析构，栈上 std::function 在 asyncGet 返回后即销毁——回调必须
+    // 显式放堆上，由块捕获裸指针（POD 安全），完成时恰好执行一次并自删。
+    struct Pending { Callback fn; };
+    Pending* pending = new Pending{std::move(done)};
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:nsUrl];
     request.timeoutInterval = kRequestTimeout;
     request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
@@ -78,7 +97,8 @@ class MacFetcher : public devcard::ManifestFetcher {
                 error ? FromStr(error.localizedDescription) : std::string();
             // 引擎要求结果回到主线程
             dispatch_async(dispatch_get_main_queue(), ^{
-              if (done) done((int)status, body, reason);
+              if (pending->fn) pending->fn((int)status, body, reason);
+              delete pending;
             });
           }];
     [task resume];
