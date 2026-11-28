@@ -248,11 +248,40 @@ int check_csp() {
         }
       }
     }
+
+    // 静态资源路由回归：app.js 的模块 import 与 favicon/PWA 资源必须都能取到。
+    // 拆分 server.cpp 时曾漏注册 /js/*.js，页面只剩空白背景（2026-11-28）。
+    for (std::size_t i = 0; i < devcard::embedded_js_module_count(); ++i) {
+      const devcard::JsModule* module = &devcard::embedded_js_modules()[i];
+      const auto module_response = client.Get(module->path);
+      if (!module_response || module_response->status != 200 ||
+          module_response->body.empty()) {
+        std::cerr << "[失败] 前端模块取不到：" << module->path << "（HTTP "
+                  << (module_response ? std::to_string(module_response->status)
+                                      : "连接失败")
+                  << "）" << std::endl;
+        failures = 1;
+      }
+    }
+    for (std::size_t i = 0; i < devcard::embedded_static_asset_count(); ++i) {
+      const devcard::StaticAsset* asset = &devcard::embedded_static_assets()[i];
+      const auto asset_response = client.Get(asset->path);
+      if (!asset_response || asset_response->status != 200 ||
+          asset_response->body.empty()) {
+        std::cerr << "[失败] 静态资源取不到：" << asset->path << "（HTTP "
+                  << (asset_response ? std::to_string(asset_response->status)
+                                     : "连接失败")
+                  << "）" << std::endl;
+        failures = 1;
+      }
+    }
   }
   server.reset();
   fs::remove_all(data_dir);
   if (failures == 0) {
-    std::cout << "CSP 自检通过：`/` 的 connect-src 覆盖 https: 与 http:" << std::endl;
+    std::cout << "CSP 与静态资源路由自检通过：`/` 的 connect-src 覆盖 https: 与 "
+                 "http:，js 模块与图标/manifest 全部可下载"
+              << std::endl;
   }
   return failures;
 }

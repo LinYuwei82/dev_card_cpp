@@ -47,6 +47,51 @@ void register_static_routes(ServerState& state) {
     if (js.empty()) throw AppError("not_found", "前端文件不存在：app.js");
     set_asset(response, js, "application/javascript; charset=utf-8");
   });
+  // 前端 ES 模块（app.js 里 import 的那些）：整表按内嵌路径注册，开发态读磁盘。
+  // 拆 server.cpp 时漏掉这段会让 app.js 的 import 全 404，页面只剩空白背景。
+  for (std::size_t i = 0; i < embedded_js_module_count(); ++i) {
+    const JsModule* module = &embedded_js_modules()[i];
+    state.server.Get(
+        module->path,
+        [&state, module](const httplib::Request&, httplib::Response& response) {
+          std::string js = state.web_dir.empty()
+                               ? std::string(module->data)
+                               : read_file_bytes(state.web_dir / (module->path + 1));
+          if (js.empty()) {
+            throw AppError("not_found", "前端文件不存在：" + std::string(module->path));
+          }
+          set_asset(response, js, "application/javascript; charset=utf-8");
+        });
+  }
+
+  // Web 图标与 manifest：开发态（--web-dir）优先读磁盘，打包后回落到内嵌。
+  // 这些路径都在 /api/ 之外，认证中间件不介入。
+  for (std::size_t i = 0; i < embedded_static_asset_count(); ++i) {
+    // 按值捕获指针：asset 是循环内的引用变量，捕获它的引用会在下一轮迭代后悬垂。
+    const StaticAsset* asset = &embedded_static_assets()[i];
+    state.server.Get(
+        asset->path,
+        [&state, asset](const httplib::Request&, httplib::Response& response) {
+          std::string bytes;
+          if (!state.web_dir.empty()) {
+            // asset->path 以 / 开头，直接拼会覆盖 web_dir，必须先去掉。
+            bytes = read_file_bytes(state.web_dir / (asset->path + 1));
+          }
+          if (bytes.empty()) bytes = hex_to_bytes(asset->hex);
+          if (bytes.empty()) {
+            set_json(response,
+                     json{{"error", "not_found"},
+                          {"message", std::string(asset->path) + " 不存在"}},
+                     404);
+            return;
+          }
+          response.status = 200;
+          response.set_header("Content-Type", asset->mime);
+          response.set_header("Cache-Control", "public, max-age=86400");
+          response.body = std::move(bytes);
+        });
+  }
+
   state.server.Get(R"(/fonts/([A-Za-z0-9._-]+))",
                    [&state](const httplib::Request& request,
                             httplib::Response& response) {
