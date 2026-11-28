@@ -70,6 +70,14 @@ void update_log(const char* format, ...) {
   va_end(args);
   const std::string line = std::string("NATIVE update ") + buffer;
   OutputDebugStringA((line + "\n").c_str());
+  // 与 engine_logger 同口径落文件：下载/安装各阶段的壳侧日志只认这个函数，
+  // 只走 OutputDebugString 的话真机排障时文件里看不到安装链路。
+  const std::string path = env_value("DEVCARD_UPDATE_LOG");
+  if (!path.empty()) {
+    std::ofstream file(std::filesystem::path(utf8_to_wide(path)),
+                       std::ios::app | std::ios::binary);
+    if (file) file << line << "\n";
+  }
 }
 
 void engine_logger(const std::string& line) {
