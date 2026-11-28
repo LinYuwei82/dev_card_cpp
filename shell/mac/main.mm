@@ -22,115 +22,9 @@
 #include "devcard/server.h"
 #include "devcard/update_manifest.h"
 
-// 「关于」面板：版本/构建号来自编译期注入（VERSION.txt + tag 序号），
-// 与更新链路清单版本同源。链接按钮打开 OSS 手册/更新记录与 GitHub 发布页。
-@interface DevCardAboutHelper : NSObject
-- (void)showAbout:(id)sender;
-@end
+#import "about_panel.h"
+#import "shell_state.h"
 
-@implementation DevCardAboutHelper
-- (void)showAbout:(id)sender {
-  (void)sender;
-  const std::string ver = devcard::current_product_version();
-  const uint64_t build = devcard::compiled_build_number();
-  NSString* version_line =
-      build > 0
-          ? [NSString stringWithFormat:@"版本 v%@（构建 %llu）",
-                                       [NSString stringWithUTF8String:ver.c_str()],
-                                       (unsigned long long)build]
-          : [NSString stringWithFormat:@"版本 v%@",
-                                        [NSString stringWithUTF8String:ver.c_str()]];
-  NSAlert* alert = [[NSAlert alloc] init];
-  alert.icon = NSApp.applicationIconImage;
-  alert.messageText = @"DevCard 设备管理卡";
-  alert.informativeText =
-      [NSString stringWithFormat:@"%@\n物业设备台账与设备管理卡打印工具\n\n© 2026 小兔在线",
-                                 version_line];
-  [alert addButtonWithTitle:@"好"];
-  [alert addButtonWithTitle:@"更新记录"];
-  [alert addButtonWithTitle:@"用户手册"];
-  [alert addButtonWithTitle:@"发布页"];
-  NSModalResponse response = [alert runModal];
-  NSString* url = nil;
-  if (response == NSAlertSecondButtonReturn) {
-    url = [NSString stringWithFormat:
-               @"https://dl.xiaotu.online/devcard/release-notes-%@.html",
-               [NSString stringWithUTF8String:ver.c_str()]];
-  } else if (response == NSAlertThirdButtonReturn) {
-    url = @"https://dl.xiaotu.online/devcard/manual.pdf";
-  } else if (response == NSAlertFirstButtonReturn + 3) {  // 第 4 个按钮（SDK 无 Fourth 常量）
-    url = @"https://github.com/LinYuwei82/dev_card_cpp/releases";
-  }
-  if (url) {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
-  }
-}
-@end
-
-namespace {
-
-// 启动耗时打点：从 main 入口起算的累计毫秒，与 server 侧 [startup] 日志同格式。
-std::chrono::steady_clock::time_point g_startup_t0;
-void StartupLog(const char* name) {
-  const double ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - g_startup_t0)
-                        .count();
-  NSLog(@"[startup] %s = %.1fms(cum)", name, ms);
-}
-
-// 单实例：锁文件放在数据目录，第二个进程拿不到锁就激活已有窗口后退出。
-// 用独立的 shell.lock，避免和服务端自己的实例锁互相影响。
-int acquire_single_instance_lock(const std::string& data_dir) {
-  std::error_code ec;
-  std::filesystem::create_directories(data_dir, ec);
-  const std::string lock_path = data_dir + "/shell.lock";
-  const int fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
-  if (fd < 0) return -1;
-  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-    ::close(fd);
-    return -2;
-  }
-  return fd;  // 进程存活期间一直持有，退出时由内核释放
-}
-
-void activate_existing_instance() {
-  NSArray<NSRunningApplication*>* apps = [NSRunningApplication
-      runningApplicationsWithBundleIdentifier:@"com.anye.devcard.new"];
-  const pid_t self = NSProcessInfo.processInfo.processIdentifier;
-  for (NSRunningApplication* app in apps) {
-    if (app.processIdentifier == self) continue;
-    [app activateWithOptions:NSApplicationActivateAllWindows];
-    break;
-  }
-}
-
-void show_error(const std::string& message) {
-  NSAlert* alert = [[NSAlert alloc] init];
-  alert.messageText = @"DevCard 启动失败";
-  alert.informativeText = [NSString stringWithUTF8String:message.c_str()];
-  [alert addButtonWithTitle:@"退出"];
-  [alert runModal];
-  [alert release];
-}
-
-// 打印统一使用 A4、零边距、100% 缩放；分页由页面里的 @page 控制。
-// 导出 PDF 与直接打印共用这份设置，只有 jobDisposition 不同。
-NSPrintInfo* a4_print_info() {
-  NSPrintInfo* info = [NSPrintInfo.sharedPrintInfo copy];
-  info.paperSize = NSMakeSize(595.28, 841.89);
-  info.orientation = NSPaperOrientationPortrait;
-  info.topMargin = 0;
-  info.bottomMargin = 0;
-  info.leftMargin = 0;
-  info.rightMargin = 0;
-  info.horizontallyCentered = NO;
-  info.verticallyCentered = NO;
-  // 调用方都是同步传给 printOperationForPrintInfo:（内部自行 retain），
-  // 这里 autorelease 掉 copy 的所有权，避免每次打印/导出泄漏一份。
-  return [info autorelease];
-}
-
-}  // namespace
 
 // WKWebView 默认不处理 <a download> / Content-Disposition 下载，导出会静默失败。
 // 这里把下载接到系统「下载」目录，中文文件名原样保留。
@@ -657,7 +551,7 @@ API_AVAILABLE(macos(11.0))
                           return;
                         }
                         NSPrintOperation* operation =
-                            [document printOperationForPrintInfo:a4_print_info()
+                            [document printOperationForPrintInfo:DevCardA4PrintInfo()
                                                     scalingMode:kPDFPrintPageScaleNone
                                                      autoRotate:NO];
                         if (!operation) {
@@ -704,7 +598,7 @@ API_AVAILABLE(macos(11.0))
 
 
 int main(int argc, const char* argv[]) {
-  g_startup_t0 = std::chrono::steady_clock::now();
+  DevCardStartupClockBegin();
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -713,10 +607,10 @@ int main(int argc, const char* argv[]) {
     options.data_dir = devcard::default_data_dir();
     options.port = 18080;
 
-    const int instance_lock = acquire_single_instance_lock(options.data_dir);
+    const int instance_lock = DevCardAcquireSingleInstanceLock(options.data_dir);
     if (instance_lock == -2) {
       // 已有实例：把它叫到前台，本进程直接退出，不弹错误框。
-      activate_existing_instance();
+      DevCardActivateExistingInstance();
       return 0;
     }
     if (instance_lock < 0) {
@@ -738,12 +632,12 @@ int main(int argc, const char* argv[]) {
     NSMenu* app_menu = [[NSMenu alloc] init];
 
     // 关于 DevCard：系统惯例放应用菜单首位。target 用常驻实例，随进程存活。
-    static DevCardAboutHelper* g_about_handler = [DevCardAboutHelper new];
+    DevCardAboutHelper* about_handler = DevCardSharedAboutHandler();
     NSMenuItem* about_item =
         [app_menu addItemWithTitle:@"关于 DevCard"
                              action:@selector(showAbout:)
                       keyEquivalent:@""];
-    about_item.target = g_about_handler;
+    about_item.target = about_handler;
     [app_menu addItem:[NSMenuItem separatorItem]];
 
     // 原生更新引擎（core UpdateEngine + NSAlert + Sparkle 安装执行器）：
@@ -784,7 +678,7 @@ int main(int argc, const char* argv[]) {
     bridge.updaterBridge = [[DevCardUpdaterBridge alloc] init];
     bridge.updaterBridge.checkUpdateMenuItem = check_update_item_placeholder;
     // 状态栏版本号点击（showAbout）复用同一个关于处理器。
-    bridge.aboutHandler = g_about_handler;
+    bridge.aboutHandler = about_handler;
     [controller addScriptMessageHandler:bridge name:@"devcard"];
     // 页面据此判断是壳内还是普通浏览器，决定「导出 PDF」按钮的行为。
     [controller
@@ -805,7 +699,7 @@ int main(int argc, const char* argv[]) {
     auto print_poll_slot = std::make_shared<std::function<void(int)>>();
     __block BOOL print_poll_started = NO;
     download_handler.onDidFinish = ^{
-      StartupLog("webview_did_finish");
+      DevCardStartupLog("webview_did_finish");
       if (*print_poll_slot && !print_poll_started &&
           [web.URL.absoluteString hasPrefix:@"http://"]) {
         print_poll_started = YES;
@@ -892,7 +786,7 @@ int main(int argc, const char* argv[]) {
                       PDFDocument* document = [[PDFDocument alloc]
                           initWithURL:[NSURL fileURLWithPath:selftest_pdf]];
                       NSPrintOperation* operation =
-                          [document printOperationForPrintInfo:a4_print_info()
+                          [document printOperationForPrintInfo:DevCardA4PrintInfo()
                                                   scalingMode:kPDFPrintPageScaleNone
                                                    autoRotate:NO];
                       NSLog(@"DEVCARD_SELFTEST print_channel pages=%lu operation=%@",
@@ -943,7 +837,7 @@ int main(int argc, const char* argv[]) {
          baseURL:nil];
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-    StartupLog("shell_window_visible");
+    DevCardStartupLog("shell_window_visible");
 
     std::thread([options, server_holder, page, web]() {
       auto result =
@@ -954,11 +848,11 @@ int main(int argc, const char* argv[]) {
       } catch (const std::exception& error) {
         startup_error = error.what();
       }
-      StartupLog("shell_start_server");
+      DevCardStartupLog("shell_start_server");
       dispatch_async(dispatch_get_main_queue(), ^{
         if (!*result) {
           // 启动失败（字体损坏/实例占用/端口冲突等）：沿用既有弹窗语义。
-          show_error(startup_error);
+          DevCardShowFatalError(startup_error);
           [NSApp terminate:nil];
           return;
         }
