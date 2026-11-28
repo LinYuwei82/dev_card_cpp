@@ -6,22 +6,6 @@
 // 状态：代码已写，尚未在 Windows 上编译与实跑。验收清单见
 // docs/改造技术方案.md §10.9，不要在 Windows 实跑前宣称可用。
 
-// ---------------------------------------------------------------- BUILD_STR
-// guard.py 从绿色包 / setup.exe 的 DevCard.exe 里搜这个静态字符串，
-// 与清单 build 比对，防止清单 build 大于编译值导致客户端反复提示同一版本。
-// CMake 侧 cmake/devcard_version.cmake 的 devcard_add_build_stamp() 注入两个宏：
-//   DEVCARD_BUILD=<seq>      — 整数（core 里 static_cast<uint64_t> 用）
-//   DEVCARD_BUILD_STR="<seq>" — 字符串（shell 里 kBuildStamp 拼接用，这里）
-#ifndef DEVCARD_BUILD_STR
-#define STRINGIFY_(x) #x
-#define STRINGIFY(x) STRINGIFY_(x)
-#define DEVCARD_BUILD_STR STRINGIFY(DEVCARD_BUILD)
-#endif
-namespace {
-constexpr const char kBuildStamp[] = "DEVCARD_BUILD=" DEVCARD_BUILD_STR;
-constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
-}  // namespace
-
 #include <windows.h>
 #include <knownfolders.h>
 #include <shlobj.h>
@@ -56,23 +40,30 @@ constexpr const char *const kBuildStampRef = kBuildStamp;  // 防 LTO 丢弃
 #include <nlohmann/json.hpp>
 
 #include "devcard/server.h"
+#include "shell_state.h"
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
-namespace {
+// P1：跨 TU 共享的状态与工具已迁到 shell_state.h/.cpp，这里显式引入，
+// 保持本文件其余代码的写法不变。
+using devcard::win::DevToolsEnabled;
+using devcard::win::Fatal;
+using devcard::win::g;
+using devcard::win::HResultText;
+using devcard::win::IsHttpUrl;
+using devcard::win::kWindowClass;
+using devcard::win::kWindowTitle;
+using devcard::win::Narrow;
+using devcard::win::Notify;
+using devcard::win::OpenDataDir;
+using devcard::win::OpenExternal;
+using devcard::win::StartupClockBegin;
+using devcard::win::StartupLog;
+using devcard::win::StartsWith;
+using devcard::win::Widen;
 
-// 启动耗时打点：从 wWinMain 入口起算的累计毫秒，与 server 侧 [startup] 日志同格式。
-// GUI 启动无控制台时 fprintf 是空操作，不影响正常用户。
-std::chrono::steady_clock::time_point g_startup_t0;
-void StartupLog(const char* name) {
-  const double ms = std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - g_startup_t0)
-                        .count();
-  // 用 cerr+endl 而非 fprintf：MSVC 重定向到文件时 fprintf(stderr) 可能滞留
-  // 缓冲，验收脚本 taskkill 强杀会丢尾部日志。
-  std::cerr << "[startup] " << name << " = " << ms << "ms(cum)" << std::endl;
-}
+namespace {
 
 // 启动 splash：纯内联 HTML，不依赖 server 与网络。
 constexpr wchar_t kSplashHtml[] =
@@ -89,111 +80,7 @@ constexpr wchar_t kSplashHtml[] =
     L"<body><div><div class='spin' style='margin:0 auto'></div>"
     L"<p style='text-align:center'>正在启动 DevCard…</p></div></body></html>";
 
-constexpr wchar_t kWindowClass[] = L"DevCardShellWindow";
-constexpr wchar_t kWindowTitle[] = L"设备管理卡";
-
-struct ShellState {
-  HWND hwnd = nullptr;
-  bool devtools = false;
-  bool print_busy = false;
-  // 由更新引擎退出钩子写入、UI 线程在 WM_CLOSE 读取，必须是原子量。
-  std::atomic<bool> server_exit_requested{false};
-  std::wstring origin;
-  // server 后台启动完成后由 WM_APP_SERVER_READY 置位；webview 就绪时据此
-  // 决定直接导航真实页面还是先显示内联 splash。
-  bool server_ready = false;
-  // 后台启动失败（弹窗后销毁窗口）：进程退出码保持既有的 1。
-  bool startup_failed = false;
-  std::filesystem::path data_dir;
-  ComPtr<ICoreWebView2Environment> env;
-  ComPtr<ICoreWebView2Controller> controller;
-  ComPtr<ICoreWebView2> webview;
-};
-
-ShellState g;
 std::unique_ptr<devcard::ServerHandle> g_server;
-
-std::wstring Widen(const std::string& utf8) {
-  if (utf8.empty()) return std::wstring();
-  const int size = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
-                                       static_cast<int>(utf8.size()), nullptr, 0);
-  if (size <= 0) return std::wstring();
-  std::wstring out(static_cast<size_t>(size), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
-                      out.data(), size);
-  return out;
-}
-
-std::string Narrow(const std::wstring& wide) {
-  if (wide.empty()) return std::string();
-  const int size = WideCharToMultiByte(CP_UTF8, 0, wide.data(),
-                                       static_cast<int>(wide.size()), nullptr, 0,
-                                       nullptr, nullptr);
-  if (size <= 0) return std::string();
-  std::string out(static_cast<size_t>(size), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
-                      out.data(), size, nullptr, nullptr);
-  return out;
-}
-
-void Fatal(const std::wstring& message) {
-  // MB_TOPMOST | MB_SETFOREGROUND 让 MessageBox 抢过所有窗口置顶，
-  // 避免被其他进程的窗口挡住导致用户看不到错误。
-  // MessageBox 返回后（用户点"确定"）立即 ExitProcess(1)，
-  // 不留一个进程存活但服务器/窗口都没起来的"僵尸"实例。
-  // ExitProcess 跳过 C++ 栈展开，但 Windows 会自动关闭所有句柄——
-  // InstanceGuard 的 LockFileEx、DB mutex、socket 都会被释放。
-  MessageBoxW(nullptr, message.c_str(), L"DevCard 启动失败",
-              MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
-  ExitProcess(1);
-}
-
-void Notify(const wchar_t* kind, const std::wstring& message) {
-  if (!g.webview) return;
-  nlohmann::json kind_json =
-      kind ? nlohmann::json(Narrow(kind)) : nlohmann::json(nullptr);
-  const std::string js =
-      "window.__devcardNotify && window.__devcardNotify(" + kind_json.dump() +
-      "," + nlohmann::json(Narrow(message)).dump() + ");";
-  const std::wstring wide_js = Widen(js);
-  auto handler = Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-      [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
-  g.webview->ExecuteScript(wide_js.c_str(), handler.Get());
-}
-
-std::wstring HResultText(HRESULT hr) {
-  wchar_t buffer[16] = {};
-  swprintf_s(buffer, L"0x%08X", static_cast<unsigned int>(hr));
-  return buffer;
-}
-
-bool StartsWith(const std::wstring& value, const std::wstring& prefix) {
-  return value.size() >= prefix.size() &&
-         value.compare(0, prefix.size(), prefix) == 0;
-}
-
-bool IsHttpUrl(const std::wstring& value) {
-  const std::wstring lower = [&value] {
-    std::wstring s = value;
-    for (wchar_t& c : s) c = static_cast<wchar_t>(std::towlower(c));
-    return s;
-  }();
-  return StartsWith(lower, L"https://") || StartsWith(lower, L"http://");
-}
-
-bool DevToolsEnabled() {
-  wchar_t buffer[16] = {};
-  const DWORD length = GetEnvironmentVariableW(L"DEVCARD_DEVTOOLS", buffer, 16);
-  if (length > 0) {
-    const wchar_t c = buffer[0];
-    return c == L'1' || c == L't' || c == L'T' || c == L'y' || c == L'Y';
-  }
-#if !defined(NDEBUG)
-  return true;
-#else
-  return false;
-#endif
-}
 
 std::filesystem::path DownloadsDir() {
   PWSTR raw = nullptr;
@@ -222,37 +109,6 @@ std::filesystem::path UniquePath(const std::filesystem::path& path) {
     if (!std::filesystem::exists(candidate, ec)) return candidate;
   }
   return path;
-}
-
-void OpenExternal(const std::wstring& url) {
-  if (!IsHttpUrl(url)) {
-    Notify(L"error", L"链接地址无效");
-    return;
-  }
-  const HINSTANCE result = ShellExecuteW(g.hwnd, L"open", url.c_str(), nullptr,
-                                         nullptr, SW_SHOWNORMAL);
-  if (reinterpret_cast<INT_PTR>(result) <= 32) {
-    Notify(L"error", L"无法打开链接：" + url);
-  }
-}
-
-void OpenDataDir(const std::wstring& raw_path) {
-  if (raw_path.empty()) {
-    Notify(L"error", L"数据目录为空");
-    return;
-  }
-  const std::filesystem::path path(raw_path);
-  std::error_code ec;
-  if (!std::filesystem::is_directory(path, ec)) {
-    Notify(L"error", L"数据目录不存在：" + path.wstring());
-    return;
-  }
-  const HINSTANCE result =
-      ShellExecuteW(g.hwnd, L"open", path.c_str(), nullptr, nullptr,
-                    SW_SHOWNORMAL);
-  if (reinterpret_cast<INT_PTR>(result) <= 32) {
-    Notify(L"error", L"无法打开数据目录：" + path.wstring());
-  }
 }
 
 // ---- 「关于」对话框（帮助菜单）----
@@ -1141,7 +997,7 @@ bool CreateWebView() {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
-  g_startup_t0 = std::chrono::steady_clock::now();
+  StartupClockBegin();
   // 从 cmd 启动或重定向时，stderr 里的中文按 UTF-8 写出，需要把控制台代码页切到 UTF-8；
   // 纯 GUI 启动（无控制台）时本调用是空操作。
   win_encoding::init_console();

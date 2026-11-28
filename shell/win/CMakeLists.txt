@@ -22,7 +22,11 @@ endif()
 
 # v1.4.0 起更新完全壳侧化：判定与编排在 core（devcard::UpdateEngine），
 # 本壳只做平台适配器（WinHTTP 网络、注册表、TaskDialog、下载与静默安装）。
-add_executable(DevCard WIN32 main.cpp updater_win.cpp app.manifest app.rc)
+# P1：shell_state 承载跨 TU 共享的全局状态与小工具，build_stamp 承载
+# guard.py 搜索的构建戳字符串（独立 TU 避免被入口文件的重构影响）。
+add_executable(DevCard WIN32
+    main.cpp shell_state.cpp build_stamp.cpp updater_win.cpp
+    app.manifest app.rc)
 devcard_add_version_rc(DevCard)
 devcard_add_build_stamp(DevCard)
 
