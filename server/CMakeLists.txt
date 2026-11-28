@@ -56,6 +56,7 @@ add_library(devcard_server STATIC
     src/routes_session.cpp
     src/routes_system.cpp
     src/routes_users.cpp
+    src/security_handlers.cpp
     src/platform_paths.cpp
     src/config.cpp
     src/instance_lock.cpp
