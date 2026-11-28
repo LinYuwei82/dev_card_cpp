@@ -24,8 +24,9 @@ endif()
 # 本壳只做平台适配器（WinHTTP 网络、注册表、TaskDialog、下载与静默安装）。
 # P1：shell_state 承载跨 TU 共享的全局状态与小工具，build_stamp 承载
 # guard.py 搜索的构建戳字符串（独立 TU 避免被入口文件的重构影响）。
+# P2：print_export 承载打印/导出双通道与共用互斥，main.cpp 不再直接操作打印状态。
 add_executable(DevCard WIN32
-    main.cpp shell_state.cpp build_stamp.cpp updater_win.cpp
+    main.cpp shell_state.cpp print_export.cpp build_stamp.cpp updater_win.cpp
     app.manifest app.rc)
 devcard_add_version_rc(DevCard)
 devcard_add_build_stamp(DevCard)
