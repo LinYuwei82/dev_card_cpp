@@ -18,7 +18,8 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "Anye"
+            VALUE "CompanyName", "Xiaotu Online"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Xiaotu Online"
             VALUE "FileDescription", "DevCard"
             VALUE "FileVersion", "@DEVCARD_VERSION_STRING@"
             VALUE "InternalName", "@DEVCARD_RC_FILENAME@"

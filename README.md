@@ -202,6 +202,6 @@ dev_card_cpp/
 
 本项目以 **GNU Affero General Public License v3.0** 发布，官方全文见 [LICENSE](LICENSE)。
 
-Copyright (C) 2026 linyw <458499311@qq.com>
+Copyright (C) 2026 小兔在线 <458499311@qq.com>
 
 如需商业授权，请另行联系作者。

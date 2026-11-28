@@ -79,7 +79,7 @@ def main():
     d.append(ET.Element("true"))
 
     plist("LSMinimumSystemVersion", "15.0")
-    plist("NSHumanReadableCopyright", "")
+    plist("NSHumanReadableCopyright", "© 2026 小兔在线")
 
     # Sparkle 2 两键：必须同时有 SUFeedURL + SUPublicEDKey 才启用。
     # 只给一个是配置错误——Sparkle 会报错退出。
